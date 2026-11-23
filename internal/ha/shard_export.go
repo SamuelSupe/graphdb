@@ -36,17 +36,21 @@ func (c *Cluster) runExportCleanup(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			var expired []*tenantExport
 			c.exportMu.Lock()
 			c.App.mu.RLock()
 			for key, entry := range c.exports {
 				owner, err := c.App.ownership(ctx, entry.action.Tenant)
 				if err == nil && (owner.State != "frozen" || owner.MoveID != entry.action.MoveID || owner.Epoch != entry.action.Epoch || time.Since(entry.used) > 5*time.Minute) {
-					entry.close()
+					expired = append(expired, entry)
 					delete(c.exports, key)
 				}
 			}
 			c.App.mu.RUnlock()
 			c.exportMu.Unlock()
+			for _, entry := range expired {
+				entry.close()
+			}
 		}
 	}
 }
@@ -98,15 +102,17 @@ func (c *Cluster) tenantExport(ctx context.Context, action sharding.Action) (*te
 	if err != nil {
 		return nil, err
 	}
+	var toClose *tenantExport
 	c.exportMu.Lock()
-	defer c.exportMu.Unlock()
 	if ctx.Err() != nil || c.exportClosed {
+		c.exportMu.Unlock()
 		entry.close()
 		return nil, errors.Join(ctx.Err(), context.Canceled)
 	}
 	if cached := c.exports[key]; cached != nil {
-		entry.close()
 		cached.used = time.Now()
+		c.exportMu.Unlock()
+		entry.close()
 		return cached, nil
 	}
 	if len(c.exports) >= 4 {
@@ -116,13 +122,17 @@ func (c *Cluster) tenantExport(ctx context.Context, action sharding.Action) (*te
 				oldest = id
 			}
 		}
-		c.exports[oldest].close()
+		toClose = c.exports[oldest]
 		delete(c.exports, oldest)
 	}
 	if c.exports == nil {
 		c.exports = make(map[string]*tenantExport)
 	}
 	c.exports[key] = entry
+	c.exportMu.Unlock()
+	if toClose != nil {
+		toClose.close()
+	}
 	return entry, nil
 }
 

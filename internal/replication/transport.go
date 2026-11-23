@@ -234,6 +234,8 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 					streamClient := *client
 					streamClient.Timeout = 10 * time.Minute
 					client = &streamClient
+				} else if packet.control && n.controlClient.Client != nil {
+					client = n.controlClient.Client
 				}
 				response, err := client.Do(request)
 				if err != nil {

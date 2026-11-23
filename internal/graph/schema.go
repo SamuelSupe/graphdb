@@ -146,7 +146,7 @@ func (g *Graph) validateEntitiesAgainstCITypesForKinds(
 	kinds map[string]struct{},
 ) error {
 	if kinds == nil {
-		kinds = entityKindSet(g.Entities)
+		kinds = g.usedEntityKindSet()
 	}
 	fieldsByKind := make(map[string]map[string]FieldSpec, len(kinds))
 	for kind := range kinds {
@@ -161,21 +161,28 @@ func (g *Graph) validateEntitiesAgainstCITypesForKinds(
 		return err
 	}
 	identityOwners := map[string]map[string]string{}
-	for _, entity := range g.Entities.All() {
-		if _, affected := kinds[entity.Kind]; !affected {
+	for kind := range kinds {
+		kindIDs := g.kindEntityIDs.At(kind)
+		if kindIDs == nil {
 			continue
 		}
-		if err := validateEntityFieldsWithSpecs(
-			entity,
-			fieldsByKind[entity.Kind],
-		); err != nil {
-			return err
-		}
-		if err := uniqueValidator.validate(entity); err != nil {
-			return err
-		}
-		if err := g.validateCIIdentityOwners(entity, identityOwners); err != nil {
-			return err
+		for id := range kindIDs.Keys() {
+			entity, ok := g.Entities.Get(id)
+			if !ok {
+				continue
+			}
+			if err := validateEntityFieldsWithSpecs(
+				entity,
+				fieldsByKind[entity.Kind],
+			); err != nil {
+				return err
+			}
+			if err := uniqueValidator.validate(entity); err != nil {
+				return err
+			}
+			if err := g.validateCIIdentityOwners(entity, identityOwners); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

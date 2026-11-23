@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 )
@@ -13,7 +14,7 @@ import (
 // Pruning runs after object operations and their publication barriers. Taking
 // all IO permits excludes the gap between another writer's mkdir and rename.
 // Replication retains its directories until journal recovery/commit completes.
-func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) error {
+func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) (retErr error) {
 	if s.runtime == nil || len(keys) == 0 || IsReplicatedContext(ctx) {
 		return nil
 	}
@@ -22,9 +23,29 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 		return err
 	}
 	defer release()
+	dirtyParents := make(map[string]struct{})
+	flushDirtyParents := func() error {
+		if len(dirtyParents) == 0 {
+			return nil
+		}
+		dirs := make([]string, 0, len(dirtyParents))
+		for dir := range dirtyParents {
+			dirs = append(dirs, dir)
+		}
+		sort.Strings(dirs)
+		clear(dirtyParents)
+		var syncErr error
+		for _, dir := range dirs {
+			if err := syncDir(dir); err != nil && !os.IsNotExist(err) {
+				syncErr = errors.Join(syncErr, err)
+			}
+		}
+		return syncErr
+	}
 	var unlock func()
 	defer func() {
 		if unlock != nil {
+			retErr = errors.Join(retErr, flushDirtyParents())
 			unlock()
 		}
 	}()
@@ -45,6 +66,9 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 		// Share the IO gate with foreground work even when a GC batch retires
 		// many directories. Never leave a pending directory barrier behind.
 		if unlock != nil && (index%64 == 0 || time.Since(started) >= 50*time.Millisecond) {
+			if err := flushDirtyParents(); err != nil {
+				return err
+			}
 			unlock()
 			unlock = nil
 			clear(seen)
@@ -105,6 +129,8 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 				return err
 			}
 			seen[dir] = true
+			delete(dirtyParents, dir)
+			dirtyParents[filepath.Dir(dir)] = struct{}{}
 			s.caseMu.Lock()
 			for _, path := range []string{dir, filepath.Dir(dir)} {
 				if cached, ok := s.directorySpellings[path]; ok {
@@ -113,12 +139,9 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 				}
 			}
 			s.caseMu.Unlock()
-			if err := syncDir(filepath.Dir(dir)); err != nil {
-				return err
-			}
 		}
 	}
-	return nil
+	return flushDirtyParents()
 }
 
 // This is only a hint: rmdir rechecks emptiness under the exclusive IO gate.

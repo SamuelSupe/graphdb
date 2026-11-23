@@ -7,11 +7,12 @@ import (
 )
 
 type indexCatalogLoad struct {
-	done     chan struct{}
-	catalog  IndexCatalog
-	meta     ObjectMeta
-	err      error
-	canceled bool
+	done       chan struct{}
+	generation uint64
+	catalog    IndexCatalog
+	meta       ObjectMeta
+	err        error
+	canceled   bool
 }
 
 func (s *TenantStore) getCachedIndexCatalogFreshLocked(
@@ -49,17 +50,41 @@ func (s *TenantStore) loadIndexCatalog(
 				return IndexCatalog{}, ObjectMeta{}, ctx.Err()
 			}
 		}
-		load := &indexCatalogLoad{done: make(chan struct{})}
+		load := &indexCatalogLoad{
+			done:       make(chan struct{}),
+			generation: s.indexCatalogGeneration[tenantID],
+		}
+		if s.indexCatalogLoads == nil {
+			s.indexCatalogLoads = map[string]*indexCatalogLoad{}
+		}
 		s.indexCatalogLoads[tenantID] = load
 		s.lockMu.Unlock()
 
-		catalog, meta, err := s.getIndexCatalogWithMeta(ctx, tenantID)
-		s.finishIndexCatalogLoad(
-			tenantID, load, catalog, meta, err,
-			loadCanceledByContext(ctx, err),
-		)
-		return copyIndexCatalog(load.catalog), load.meta, load.err
+		return s.runIndexCatalogLoad(ctx, tenantID, load)
 	}
+}
+
+func (s *TenantStore) runIndexCatalogLoad(
+	ctx context.Context,
+	tenantID string,
+	load *indexCatalogLoad,
+) (IndexCatalog, ObjectMeta, error) {
+	finished := false
+	defer func() {
+		if !finished {
+			s.finishIndexCatalogLoad(
+				tenantID, load, IndexCatalog{}, ObjectMeta{},
+				errors.New("index catalog load aborted"), false,
+			)
+		}
+	}()
+	catalog, meta, err := s.getIndexCatalogWithMeta(ctx, tenantID)
+	s.finishIndexCatalogLoad(
+		tenantID, load, catalog, meta, err,
+		loadCanceledByContext(ctx, err),
+	)
+	finished = true
+	return copyIndexCatalog(load.catalog), load.meta, load.err
 }
 
 func (s *TenantStore) finishIndexCatalogLoad(
@@ -76,30 +101,35 @@ func (s *TenantStore) finishIndexCatalogLoad(
 	}
 
 	s.lockMu.Lock()
+	stale := s.indexCatalogGeneration[tenantID] != load.generation
 	if cached, cachedMeta, ok := s.getCachedIndexCatalogFreshLocked(
 		tenantID, time.Now(),
 	); ok {
 		catalog, meta = cached, cachedMeta
 		_, _, err = indexCatalogCacheResult(cached, cachedMeta)
-	} else if err == nil {
-		catalog.contentHash = contentHash
-		s.setCachedIndexCatalogEntryLocked(tenantID, cachedIndexCatalog{
-			catalog:     copyIndexCatalog(catalog),
-			meta:        meta,
-			contentHash: contentHash,
-			checkedAt:   time.Now(),
-		})
-	} else if errors.Is(err, ErrNotFound) {
-		s.setCachedIndexCatalogEntryLocked(tenantID, cachedIndexCatalog{
-			meta:      meta,
-			checkedAt: time.Now(),
-		})
+	} else if !stale {
+		if err == nil {
+			catalog.contentHash = contentHash
+			s.setCachedIndexCatalogEntryLocked(tenantID, cachedIndexCatalog{
+				catalog:     copyIndexCatalog(catalog),
+				meta:        meta,
+				contentHash: contentHash,
+				checkedAt:   time.Now(),
+			})
+		} else if errors.Is(err, ErrNotFound) {
+			s.setCachedIndexCatalogEntryLocked(tenantID, cachedIndexCatalog{
+				meta:      meta,
+				checkedAt: time.Now(),
+			})
+		}
 	}
 	load.catalog = copyIndexCatalog(catalog)
 	load.meta = meta
 	load.err = err
 	load.canceled = canceled
-	delete(s.indexCatalogLoads, tenantID)
+	if s.indexCatalogLoads[tenantID] == load {
+		delete(s.indexCatalogLoads, tenantID)
+	}
 	close(load.done)
 	s.lockMu.Unlock()
 }

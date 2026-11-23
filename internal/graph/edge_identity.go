@@ -53,7 +53,7 @@ func normalizeEdgeSourceList(sources []EdgeSource, observedAt time.Time) []EdgeS
 		if source.Source == "" && source.ExternalID == "" && source.EdgeID == "" {
 			continue
 		}
-		if source.Confidence < 0 || source.Confidence > 1 {
+		if invalidConfidence(source.Confidence) {
 			source.Confidence = 0
 		}
 		if source.ObservedAt.IsZero() {

@@ -61,18 +61,26 @@ func (e *BackpressureError) RetryAfterMS() int64 {
 	return e.RetryAfter.Milliseconds()
 }
 
+const (
+	pressureMaxSamples        = 128
+	pressureMaxTrackedTenants = 4096
+)
+
 type WritePressure struct {
-	mu           sync.Mutex
-	clock        func() time.Time
-	config       BackpressureConfig
-	latencies    []time.Duration
-	latencyTimes []time.Time
-	latencyEWMA  time.Duration
-	objectErrors []time.Time
-	conflicts    map[string][]time.Time
-	maxSamples   int
-	lastTailSize map[string]int
-	lastUsage    map[string]tenantPressureUsage
+	mu             sync.Mutex
+	clock          func() time.Time
+	config         BackpressureConfig
+	latencyBuf     [pressureMaxSamples]time.Duration
+	latencyTimeBuf [pressureMaxSamples]time.Time
+	latencyHead    int
+	latencyCount   int
+	latencyEWMA    time.Duration
+	errorBuf       [pressureMaxSamples]time.Time
+	errorHead      int
+	errorCount     int
+	conflicts      map[string][]time.Time
+	lastTailSize   map[string]int
+	lastUsage      map[string]tenantPressureUsage
 }
 
 type tenantPressureUsage struct {
@@ -86,7 +94,6 @@ func NewWritePressure(config BackpressureConfig) *WritePressure {
 	return &WritePressure{
 		config:       config,
 		conflicts:    map[string][]time.Time{},
-		maxSamples:   128,
 		lastTailSize: map[string]int{},
 		lastUsage:    map[string]tenantPressureUsage{},
 	}
@@ -126,20 +133,25 @@ func (p *WritePressure) RecordObjectLatency(duration time.Duration) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	now := p.now()
+	p.recordLatencyLocked(p.now(), duration)
+}
+
+func (p *WritePressure) recordLatencyLocked(now time.Time, duration time.Duration) {
 	p.trimLatenciesLocked(now, p.config)
-	p.latencies = append(p.latencies, duration)
-	p.latencyTimes = append(p.latencyTimes, now)
+	if p.latencyCount < pressureMaxSamples {
+		idx := (p.latencyHead + p.latencyCount) % pressureMaxSamples
+		p.latencyBuf[idx] = duration
+		p.latencyTimeBuf[idx] = now
+		p.latencyCount++
+	} else {
+		p.latencyBuf[p.latencyHead] = duration
+		p.latencyTimeBuf[p.latencyHead] = now
+		p.latencyHead = (p.latencyHead + 1) % pressureMaxSamples
+	}
 	if p.latencyEWMA <= 0 {
 		p.latencyEWMA = duration
 	} else {
 		p.latencyEWMA = (p.latencyEWMA*7 + duration) / 8
-	}
-	if len(p.latencies) > p.maxSamples {
-		copy(p.latencies, p.latencies[len(p.latencies)-p.maxSamples:])
-		p.latencies = p.latencies[:p.maxSamples]
-		copy(p.latencyTimes, p.latencyTimes[len(p.latencyTimes)-p.maxSamples:])
-		p.latencyTimes = p.latencyTimes[:p.maxSamples]
 	}
 }
 
@@ -147,16 +159,26 @@ func (p *WritePressure) RecordObjectOperation(duration time.Duration, err error)
 	if p == nil {
 		return
 	}
-	p.RecordObjectLatency(duration)
-	if !IsObjectStorePressureError(err) {
+	isErr := IsObjectStorePressureError(err)
+	if duration <= 0 && !isErr {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.objectErrors = append(p.objectErrors, p.now())
-	if len(p.objectErrors) > p.maxSamples {
-		copy(p.objectErrors, p.objectErrors[len(p.objectErrors)-p.maxSamples:])
-		p.objectErrors = p.objectErrors[:p.maxSamples]
+	now := p.now()
+	if duration > 0 {
+		p.recordLatencyLocked(now, duration)
+	}
+	if !isErr {
+		return
+	}
+	if p.errorCount < pressureMaxSamples {
+		idx := (p.errorHead + p.errorCount) % pressureMaxSamples
+		p.errorBuf[idx] = now
+		p.errorCount++
+	} else {
+		p.errorBuf[p.errorHead] = now
+		p.errorHead = (p.errorHead + 1) % pressureMaxSamples
 	}
 }
 
@@ -167,6 +189,11 @@ func (p *WritePressure) RecordManifestCASConflict(tenantID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
+	if _, exists := p.conflicts[tenantID]; !exists && len(p.conflicts) >= pressureMaxTrackedTenants {
+		for id := range p.conflicts {
+			p.trimConflictsLocked(id, now)
+		}
+	}
 	p.conflicts[tenantID] = append(p.trimConflictsLocked(tenantID, now), now)
 }
 
@@ -176,6 +203,9 @@ func (p *WritePressure) RecordCommitTail(tenantID string, length int) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if _, exists := p.lastTailSize[tenantID]; !exists && len(p.lastTailSize) >= pressureMaxTrackedTenants {
+		clear(p.lastTailSize)
+	}
 	p.lastTailSize[tenantID] = length
 }
 
@@ -185,31 +215,72 @@ func (p *WritePressure) RecordTenantUsage(tenantID string, objectCount int, tota
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.lastUsage[tenantID] = tenantPressureUsage{objectCount: objectCount, totalBytes: totalBytes, observedAt: p.now()}
+	now := p.now()
+	if _, exists := p.lastUsage[tenantID]; !exists && len(p.lastUsage) >= pressureMaxTrackedTenants {
+		for id, usage := range p.lastUsage {
+			if now.Sub(usage.observedAt) >= 10*time.Minute {
+				delete(p.lastUsage, id)
+			}
+		}
+		if len(p.lastUsage) >= pressureMaxTrackedTenants {
+			clear(p.lastUsage)
+		}
+	}
+	p.lastUsage[tenantID] = tenantPressureUsage{objectCount: objectCount, totalBytes: totalBytes, observedAt: now}
 }
 
 func (p *WritePressure) Reasons(tenantID string) []BackpressureReason {
 	if p == nil {
 		return nil
 	}
-	return p.ReasonsWithConfig(tenantID, p.Config())
+	return p.reasonsWithConfig(tenantID, BackpressureConfig{}, true)
 }
 
 func (p *WritePressure) ReasonsWithConfig(tenantID string, config BackpressureConfig) []BackpressureReason {
 	if p == nil {
 		return nil
 	}
-	config = NormalizeConfig(config)
+	return p.reasonsWithConfig(tenantID, config, false)
+}
+
+func (p *WritePressure) reasonsWithConfig(tenantID string, config BackpressureConfig, useOwnConfig bool) []BackpressureReason {
+	var latencyScratch [pressureMaxSamples]time.Duration
+	latencyCount := 0
+	var latencyEWMA time.Duration
+	var errorCount int
+	var conflictCount int
+	var usage tenantPressureUsage
+	var hasUsage bool
+
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	if useOwnConfig {
+		config = p.config
+	}
+	config = NormalizeConfig(config)
 	now := p.now()
-	reasons := make([]BackpressureReason, 0, 2)
 	p.trimLatenciesLocked(now, config)
 	if config.ObjectLatencyThreshold > 0 {
-		p95 := percentileDuration(p.latencies, 0.95)
+		latencyCount = p.latencyCount
+		for i := 0; i < latencyCount; i++ {
+			latencyScratch[i] = p.latencyBuf[(p.latencyHead+i)%pressureMaxSamples]
+		}
+		latencyEWMA = p.latencyEWMA
+	}
+	if config.ObjectErrorThreshold > 0 {
+		errorCount = p.trimObjectErrorsLocked(now, config)
+	}
+	if config.CASConflictThreshold > 0 {
+		conflictCount = len(p.trimConflictsLockedWithConfigLocked(tenantID, now, config))
+	}
+	usage, hasUsage = p.lastUsage[tenantID]
+	p.mu.Unlock()
+
+	reasons := make([]BackpressureReason, 0, 2)
+	if config.ObjectLatencyThreshold > 0 {
+		p95 := percentileDurationInPlace(latencyScratch[:latencyCount], 0.95)
 		current := p95
-		if p.latencyEWMA > current {
-			current = p.latencyEWMA
+		if latencyEWMA > current {
+			current = latencyEWMA
 		}
 		if current > config.ObjectLatencyThreshold {
 			reasons = append(reasons, BackpressureReason{
@@ -220,29 +291,23 @@ func (p *WritePressure) ReasonsWithConfig(tenantID string, config BackpressureCo
 			})
 		}
 	}
-	if config.ObjectErrorThreshold > 0 {
-		count := len(p.trimObjectErrorsLocked(now, config))
-		if count >= config.ObjectErrorThreshold {
-			reasons = append(reasons, BackpressureReason{
-				Code:      "object_store_errors_high",
-				Current:   float64(count),
-				Threshold: float64(config.ObjectErrorThreshold),
-				Message:   "object store errors are above threshold",
-			})
-		}
+	if config.ObjectErrorThreshold > 0 && errorCount >= config.ObjectErrorThreshold {
+		reasons = append(reasons, BackpressureReason{
+			Code:      "object_store_errors_high",
+			Current:   float64(errorCount),
+			Threshold: float64(config.ObjectErrorThreshold),
+			Message:   "object store errors are above threshold",
+		})
 	}
-	if config.CASConflictThreshold > 0 {
-		count := len(p.trimConflictsLockedWithConfigLocked(tenantID, now, config))
-		if count >= config.CASConflictThreshold {
-			reasons = append(reasons, BackpressureReason{
-				Code:      "manifest_cas_conflicts_high",
-				Current:   float64(count),
-				Threshold: float64(config.CASConflictThreshold),
-				Message:   "manifest compare-and-swap conflicts are above threshold",
-			})
-		}
+	if config.CASConflictThreshold > 0 && conflictCount >= config.CASConflictThreshold {
+		reasons = append(reasons, BackpressureReason{
+			Code:      "manifest_cas_conflicts_high",
+			Current:   float64(conflictCount),
+			Threshold: float64(config.CASConflictThreshold),
+			Message:   "manifest compare-and-swap conflicts are above threshold",
+		})
 	}
-	if usage, ok := p.lastUsage[tenantID]; ok {
+	if hasUsage {
 		if config.MaxObjectsPerTenant > 0 && usage.objectCount >= config.MaxObjectsPerTenant {
 			reasons = append(reasons, BackpressureReason{
 				Code:      "tenant_object_count_high",
@@ -288,6 +353,10 @@ func (p *WritePressure) trimConflictsLockedWithConfigLocked(tenantID string, now
 	for start < len(items) && items[start].Before(cutoff) {
 		start++
 	}
+	if start >= len(items) {
+		delete(p.conflicts, tenantID)
+		return nil
+	}
 	if start > 0 {
 		items = append([]time.Time(nil), items[start:]...)
 		p.conflicts[tenantID] = items
@@ -295,42 +364,38 @@ func (p *WritePressure) trimConflictsLockedWithConfigLocked(tenantID string, now
 	return items
 }
 
-func (p *WritePressure) trimObjectErrorsLocked(now time.Time, config BackpressureConfig) []time.Time {
-	if len(p.objectErrors) == 0 {
-		return nil
+func (p *WritePressure) trimObjectErrorsLocked(now time.Time, config BackpressureConfig) int {
+	if p.errorCount == 0 {
+		return 0
 	}
 	if config.ObjectErrorWindow <= 0 {
-		return p.objectErrors
+		return p.errorCount
 	}
 	cutoff := now.Add(-config.ObjectErrorWindow)
-	start := 0
-	for start < len(p.objectErrors) && p.objectErrors[start].Before(cutoff) {
-		start++
+	for p.errorCount > 0 && p.errorBuf[p.errorHead].Before(cutoff) {
+		p.errorHead = (p.errorHead + 1) % pressureMaxSamples
+		p.errorCount--
 	}
-	if start > 0 {
-		p.objectErrors = append([]time.Time(nil), p.objectErrors[start:]...)
-	}
-	return p.objectErrors
+	return p.errorCount
 }
 
 func IsObjectStorePressureError(err error) bool {
 	return errors.Is(err, ErrObjectStoreUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func percentileDuration(values []time.Duration, quantile float64) time.Duration {
+func percentileDurationInPlace(values []time.Duration, quantile float64) time.Duration {
 	if len(values) == 0 {
 		return 0
 	}
-	copied := append([]time.Duration(nil), values...)
-	sort.Slice(copied, func(i, j int) bool { return copied[i] < copied[j] })
-	index := int(float64(len(copied)-1) * quantile)
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	index := int(float64(len(values)-1) * quantile)
 	if index < 0 {
 		index = 0
 	}
-	if index >= len(copied) {
-		index = len(copied) - 1
+	if index >= len(values) {
+		index = len(values) - 1
 	}
-	return copied[index]
+	return values[index]
 }
 
 func (p *WritePressure) now() time.Time {
@@ -341,22 +406,26 @@ func (p *WritePressure) now() time.Time {
 }
 
 func (p *WritePressure) trimLatenciesLocked(now time.Time, config BackpressureConfig) {
+	if p.latencyCount == 0 {
+		return
+	}
 	window := config.ObjectErrorWindow
 	if window <= 0 {
 		window = 30 * time.Second
 	}
 	cutoff := now.Add(-window)
-	n := 0
-	for n < len(p.latencyTimes) && !p.latencyTimes[n].After(cutoff) {
-		n++
+	trimmed := false
+	for p.latencyCount > 0 && !p.latencyTimeBuf[p.latencyHead].After(cutoff) {
+		p.latencyHead = (p.latencyHead + 1) % pressureMaxSamples
+		p.latencyCount--
+		trimmed = true
 	}
-	if n == 0 {
+	if !trimmed {
 		return
 	}
-	p.latencies = p.latencies[n:]
-	p.latencyTimes = p.latencyTimes[n:]
 	p.latencyEWMA = 0
-	for _, duration := range p.latencies {
+	for i := 0; i < p.latencyCount; i++ {
+		duration := p.latencyBuf[(p.latencyHead+i)%pressureMaxSamples]
 		if p.latencyEWMA == 0 {
 			p.latencyEWMA = duration
 		} else {

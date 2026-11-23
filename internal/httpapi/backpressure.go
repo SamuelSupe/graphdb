@@ -57,6 +57,11 @@ func (s *Server) acquireWriteSlot(w http.ResponseWriter, r *http.Request, tenant
 	if err != nil {
 		acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "rejected"))
 		endHTTPSpan(acquireSpan, err)
+		if r.Context().Err() != nil {
+			s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "canceled", waited)
+			writeRequestError(w, r.Context().Err())
+			return nil, waited, err
+		}
 		s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "rejected", waited)
 		s.writeBackpressure(w, tenantID, &storage.BackpressureError{
 			Reasons: []storage.BackpressureReason{{
@@ -147,6 +152,8 @@ func backpressureErrorContract(reasons []storage.BackpressureReason) (ErrorCode,
 			return ErrorCodeWriteBackpressure, true
 		case "write_admission_queue_timeout":
 			return ErrorCodeWriteAdmissionTimeout, true
+		case "ingest_wal_queue_full":
+			return ErrorCodeIngestQueueFull, true
 		}
 	}
 	return ErrorCodeWriteBackpressure, true

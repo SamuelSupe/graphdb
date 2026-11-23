@@ -13,6 +13,11 @@ func (s *Server) tenantUsage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	now := time.Now().UTC()
 	report, err := s.cachedTenantUsage(r.Context(), tenantID, now)
 	if err != nil {

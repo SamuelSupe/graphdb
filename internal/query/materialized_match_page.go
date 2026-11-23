@@ -36,7 +36,7 @@ func executeMaterializedKindPage(
 	}
 	keep, start := materializedMatchWindow(request, cursor)
 	ids := maxEntityIDHeap{
-		values: make([]string, 0, keep),
+		values: make([]string, 0, boundedInitialCap(keep)),
 		order:  order,
 	}
 	err = budget.measure(

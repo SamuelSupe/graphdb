@@ -38,7 +38,7 @@ func openFileStore(root string, recovery bool) (*FileStore, error) {
 	if err := s.verifySafeParent(filepath.Join(root, ".graphdb.lock")); err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(filepath.Join(root, ".graphdb.lock"), syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	fd, err := syscall.Open(filepath.Join(root, ".graphdb.lock"), syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -83,27 +83,28 @@ func openFileStore(root string, recovery bool) (*FileStore, error) {
 const directoryIOCapacity = math.MaxInt64
 
 type fileRuntime struct {
-	ioGate             *semaphore.Weighted
-	directoryChanges   map[string]chan struct{}
-	ingestAdmissions   map[string]*localViewGate
-	walGenerations     map[string]int64
-	publicationMu      sync.Mutex
-	pendingDirectories map[string]struct{}
-	generation         uint64
-	manifests          map[string]localManifestEntry
-	manifestBytes      int
-	closed             bool
-	restoreErr         error
-	active             sync.WaitGroup
-	views              map[string]*localViewGate
-	lock               *os.File
-	mu                 sync.Mutex
-	etags              map[string]string
-	listeners          map[uint64]func(string)
-	listenerID         uint64
-	closeOnce          sync.Once
-	closeErr           error
-	restoreCleanup     chan string
+	ioGate                   *semaphore.Weighted
+	directoryChanges         map[string]chan struct{}
+	ingestAdmissions         map[string]*localViewGate
+	walGenerations           map[string]int64
+	publicationMu            sync.Mutex
+	pendingDirectories       map[string]struct{}
+	pendingDeleteDirectories map[string]struct{}
+	generation               uint64
+	manifests                map[string]localManifestEntry
+	manifestBytes            int
+	closed                   bool
+	restoreErr               error
+	active                   sync.WaitGroup
+	views                    map[string]*localViewGate
+	lock                     *os.File
+	mu                       sync.Mutex
+	etags                    map[string]string
+	listeners                map[uint64]func(string)
+	listenerID               uint64
+	closeOnce                sync.Once
+	closeErr                 error
+	restoreCleanup           chan string
 }
 
 func (s *FileStore) Close() error {

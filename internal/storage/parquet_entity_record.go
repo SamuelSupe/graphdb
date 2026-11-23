@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
@@ -160,13 +161,13 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 		for i := 0; i < int(batch.NumRows()); i++ {
 			rowRecord := EntityRecord{
 				LayoutVersion: CurrentObjectLayoutVersion,
-				TenantID:      columns.tenantID.Value(i),
-				ID:            columns.id.Value(i),
-				Page:          columns.page.Value(i),
+				TenantID:      strings.Clone(columns.tenantID.Value(i)),
+				ID:            strings.Clone(columns.id.Value(i)),
+				Page:          strings.Clone(columns.page.Value(i)),
 				Ordinal:       int(columns.ordinal.Value(i)),
-				PageHash:      columns.pageHash.Value(i),
-				PageETag:      columns.pageETag.Value(i),
-				ContentHash:   columns.contentHash.Value(i),
+				PageHash:      strings.Clone(columns.pageHash.Value(i)),
+				PageETag:      strings.Clone(columns.pageETag.Value(i)),
+				ContentHash:   strings.Clone(columns.contentHash.Value(i)),
 				Deleted:       columns.deleted.Value(i),
 				Version:       columns.version.Value(i),
 				UpdatedAt:     parquetio.ParseTime(columns.updatedAt.Value(i)),
@@ -179,15 +180,15 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 			if entity == nil && shouldDecodeEntityRecordEntity(rowRecord, columns, i) {
 				created := graph.Entity{
 					ID:         rowRecord.ID,
-					Kind:       columns.kind.Value(i),
-					Source:     columns.source.Value(i),
-					ExternalID: columns.externalID.Value(i),
+					Kind:       strings.Clone(columns.kind.Value(i)),
+					Source:     strings.Clone(columns.source.Value(i)),
+					ExternalID: strings.Clone(columns.externalID.Value(i)),
 					Version:    columns.entityVersion.Value(i),
 					CreatedAt:  parquetio.ParseTime(columns.entityCreatedAt.Value(i)),
 					UpdatedAt:  parquetio.ParseTime(columns.entityUpdatedAt.Value(i)),
 					Confidence: columns.confidence.Value(i),
 					SourceRank: int(columns.sourceRank.Value(i)),
-					SplitFrom:  columns.splitFrom.Value(i),
+					SplitFrom:  strings.Clone(columns.splitFrom.Value(i)),
 				}
 				entity = &created
 			}
@@ -393,25 +394,25 @@ func shouldDecodeEntityRecordEntity(record EntityRecord, columns parquetEntityRe
 
 func entityRecordRowFromColumns(columns parquetEntityRecordColumnSet, row int) entityPageRow {
 	return entityPageRow{
-		Kind:    columns.rowKind.Value(row),
+		Kind:    strings.Clone(columns.rowKind.Value(row)),
 		Ordinal: int(columns.rowOrdinal.Value(row)),
-		Key:     columns.entryKey.Value(row),
+		Key:     strings.Clone(columns.entryKey.Value(row)),
 		Value: parquetValue{
-			Kind:        columns.valueKind.Value(row),
-			StringValue: columns.stringValue.Value(row),
+			Kind:        strings.Clone(columns.valueKind.Value(row)),
+			StringValue: strings.Clone(columns.stringValue.Value(row)),
 			BoolValue:   columns.boolValue.Value(row),
 			FloatValue:  columns.floatValue.Value(row),
 		},
 		FieldSource: graph.FieldSource{
-			Source:     columns.fieldSourceSource.Value(row),
+			Source:     strings.Clone(columns.fieldSourceSource.Value(row)),
 			Priority:   int(columns.fieldSourcePriority.Value(row)),
 			Confidence: columns.fieldSourceConfidence.Value(row),
 			Version:    columns.fieldSourceVersion.Value(row),
 			UpdatedAt:  parquetio.ParseTime(columns.fieldSourceUpdatedAt.Value(row)),
 		},
 		EntitySource: graph.EntitySource{
-			Source:     columns.entitySourceSource.Value(row),
-			ExternalID: columns.entitySourceExternalID.Value(row),
+			Source:     strings.Clone(columns.entitySourceSource.Value(row)),
+			ExternalID: strings.Clone(columns.entitySourceExternalID.Value(row)),
 			Confidence: columns.entitySourceConfidence.Value(row),
 			Priority:   int(columns.entitySourcePriority.Value(row)),
 			ObservedAt: parquetio.ParseTime(columns.entitySourceObservedAt.Value(row)),

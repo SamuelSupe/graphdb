@@ -40,18 +40,28 @@ func (a *Application) ingestKey(tenant, source, collector, batch string, generat
 	return a.ingestPrefix() + fmt.Sprintf("%x.json", sum)
 }
 func (a *Application) accepted(ctx context.Context, key string) (acceptedRequest, error) {
+	record, _, err := a.readAcceptance(ctx, key)
+	return record, err
+}
+
+func (a *Application) readAcceptance(ctx context.Context, key string) (acceptedRequest, int64, error) {
 	var record acceptedRequest
 	data, err := a.Store.Objects.Get(ctx, key)
 	if err != nil {
-		return record, err
+		return record, 0, err
 	}
 	err = json.Unmarshal(data, &record)
-	return record, err
+	return record, int64(len(data)), err
 }
 func (a *Application) saveAccepted(ctx context.Context, key string, record acceptedRequest) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
+	}
+	if a.ShardID != "" && a.Files != nil && a.pending == nil {
+		if err := a.ensurePending(ctx); err != nil {
+			return err
+		}
 	}
 	var pending pendingAcceptance
 	if a.pending != nil && record.State == "accepted" {
@@ -64,7 +74,11 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 		return err
 	}
 	if a.pending != nil {
-		if previous, ok := a.pending[key]; ok {
+		previous, wasPending := a.pending[key]
+		if wasPending != (record.State == "accepted") {
+			a.pendingIndex.update(key, record.State == "accepted")
+		}
+		if wasPending {
 			a.pendingBytes -= previous.objectBytes
 		}
 		delete(a.pending, key)
@@ -72,6 +86,9 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 			a.pending[key] = pending
 			a.pendingBytes += pending.objectBytes
 		}
+	}
+	if record.State != "accepted" {
+		a.notifyIngestChanged()
 	}
 	return nil
 }
@@ -379,17 +396,32 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		return err
 	}
 	key := c.App.ingestKey(acceptance.Tenant, acceptance.Source, acceptance.Collector, acceptance.Batch, acceptance.Generation)
-	ticker := time.NewTicker(20 * time.Millisecond)
+	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	checkBarrier := false
 	for {
-		if err := c.Node.ReadBarrier(ctx); err != nil {
-			return err
+		if checkBarrier {
+			if err := c.Node.ReadBarrier(ctx); err != nil {
+				return err
+			}
+			checkBarrier = false
 		}
+		waitCh := c.App.ingestWaitCh()
 		c.App.mu.RLock()
 		record, err := c.App.accepted(ctx, key)
 		c.App.mu.RUnlock()
 		if err != nil {
-			return err
+			if errors.Is(err, storage.ErrNotFound) {
+				if barrierErr := c.Node.ReadBarrier(ctx); barrierErr != nil {
+					return barrierErr
+				}
+				c.App.mu.RLock()
+				record, err = c.App.accepted(ctx, key)
+				c.App.mu.RUnlock()
+			}
+			if err != nil {
+				return err
+			}
 		}
 		if record.Result != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -400,7 +432,9 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-waitCh:
 		case <-ticker.C:
+			checkBarrier = true
 		}
 	}
 }
@@ -505,6 +539,9 @@ func (c *Cluster) flushReady(ctx context.Context, all bool) error {
 	counts := make(map[string]int)
 	bytes := make(map[string]int64)
 	for _, r := range queue {
+		if r.partitioned {
+			continue
+		}
 		counts[r.tenant]++
 		bytes[r.tenant] += r.requestBytes
 	}
@@ -527,7 +564,7 @@ func (c *Cluster) flushReady(ctx context.Context, all bool) error {
 			count := 0
 			var size int64
 			for _, r := range next {
-				if r.tenant == tenant {
+				if !r.partitioned && r.tenant == tenant {
 					count++
 					size += r.requestBytes
 				}

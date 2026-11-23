@@ -200,6 +200,7 @@ func (s *Server) purgeTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidate(tenantID)
+	s.obs().UnregisterTenant(tenantID)
 	s.auditInfo("tenant_purged", tenantID, map[string]any{"deleted": report.Deleted, "force": force})
 	writeJSON(w, http.StatusOK, report)
 }
@@ -468,6 +469,7 @@ func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int
 		return "", false
 	}
 	if !tenantScopeAllows(w, r, parts[0]) {
+		endHTTPSpan(span, traceError("tenant scope forbidden"))
 		return "", false
 	}
 	setAPITraceTenant(r.Context(), parts[0])

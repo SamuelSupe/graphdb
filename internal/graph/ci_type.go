@@ -2,8 +2,38 @@ package graph
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
+
+func validateFiniteSchemaValue(value any, depth int) error {
+	if depth > fastFieldNormalizeMaxDepth {
+		return fmt.Errorf("schema value nesting depth exceeded")
+	}
+	switch typed := value.(type) {
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return fmt.Errorf("non-finite floating point value")
+		}
+	case float32:
+		if math.IsNaN(float64(typed)) || math.IsInf(float64(typed), 0) {
+			return fmt.Errorf("non-finite floating point value")
+		}
+	case []any:
+		for _, item := range typed {
+			if err := validateFiniteSchemaValue(item, depth+1); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if err := validateFiniteSchemaValue(item, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 const (
 	FieldMergeReplace      = "replace"
@@ -66,10 +96,18 @@ func normalizeNamedFieldSpecs(resourceKind string, resourceName string, specs ma
 		if spec.MergeStrategy == FieldMergeAppendUnique && spec.Type != "array" {
 			return nil, fmt.Errorf("%s %q field %q append_unique merge_strategy requires array type", resourceKind, resourceName, fieldName)
 		}
-		if spec.Default != nil && !valueMatchesType(spec.Default, spec.Type) {
-			return nil, fmt.Errorf("%s %q field %q default does not match type %q", resourceKind, resourceName, fieldName, spec.Type)
+		if spec.Default != nil {
+			if err := validateFiniteSchemaValue(spec.Default, 0); err != nil {
+				return nil, fmt.Errorf("%s %q field %q invalid default: %w", resourceKind, resourceName, fieldName, err)
+			}
+			if !valueMatchesType(spec.Default, spec.Type) {
+				return nil, fmt.Errorf("%s %q field %q default does not match type %q", resourceKind, resourceName, fieldName, spec.Type)
+			}
 		}
 		for _, value := range spec.Enum {
+			if err := validateFiniteSchemaValue(value, 0); err != nil {
+				return nil, fmt.Errorf("%s %q field %q invalid enum value: %w", resourceKind, resourceName, fieldName, err)
+			}
 			if !valueMatchesType(value, spec.Type) {
 				return nil, fmt.Errorf("%s %q field %q enum value does not match type %q", resourceKind, resourceName, fieldName, spec.Type)
 			}

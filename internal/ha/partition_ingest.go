@@ -230,14 +230,25 @@ func (c *Cluster) advancePartitionIngest(ctx context.Context, g partition.Graph)
 }
 
 func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph) (bool, error) {
-	c.App.mu.Lock()
-	key, err := c.App.firstPartitionIngest(ctx, g.Tenant, g.Generation)
-	var record acceptedRequest
-	if err == nil && key != "" {
-		record, err = c.App.accepted(ctx, key)
+	var key string
+	var err error
+	c.App.mu.RLock()
+	if c.App.pending != nil {
+		key, err = c.App.firstPartitionIngest(ctx, g.Tenant, g.Generation)
+		c.App.mu.RUnlock()
+	} else {
+		c.App.mu.RUnlock()
+		c.App.mu.Lock()
+		key, err = c.App.firstPartitionIngest(ctx, g.Tenant, g.Generation)
+		c.App.mu.Unlock()
 	}
-	c.App.mu.Unlock()
 	if err != nil || key == "" {
+		return false, err
+	}
+	c.App.mu.RLock()
+	record, err := c.App.accepted(ctx, key)
+	c.App.mu.RUnlock()
+	if err != nil {
 		return false, err
 	}
 	if err := c.Node.ReadBarrier(ctx); err != nil {

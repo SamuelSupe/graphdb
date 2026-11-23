@@ -2,7 +2,9 @@ package partition
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -98,5 +100,18 @@ func TestTreePersistentBatchUpdatesAndPaging(t *testing.T) {
 	}
 	if _, _, err := tree.Get(ctx, root, got[0]); err == nil {
 		t.Fatal("corrupt root was accepted")
+	}
+}
+
+func TestTreeRejectsMalformedValueWithMatchingPageHash(t *testing.T) {
+	ctx := context.Background()
+	tree := Tree{Objects: storage.NewMemoryStore(), Prefix: "pages"}
+	data := []byte(`{"rows":[{"key":"k","value":{"nested":[1,]}}]}`)
+	root := Root{Hash: fmt.Sprintf("%x", sha256.Sum256(data)), First: "k", Last: "k", Count: 1}
+	if err := tree.Objects.Put(ctx, tree.pageKey(root.Hash), data); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tree.Get(ctx, root, "k"); !errors.Is(err, ErrPartitionCorrupt) {
+		t.Fatalf("malformed leaf returned %v", err)
 	}
 }

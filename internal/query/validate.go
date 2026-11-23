@@ -66,7 +66,12 @@ func validateRequest(request Request) error {
 		if err := validateDirection(step.Direction); err != nil {
 			return err
 		}
-		for _, filter := range append(step.Where, step.EdgeWhere...) {
+		for _, filter := range step.Where {
+			if err := shape.validateFilter(filter); err != nil {
+				return err
+			}
+		}
+		for _, filter := range step.EdgeWhere {
 			if err := shape.validateFilter(filter); err != nil {
 				return err
 			}

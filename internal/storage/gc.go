@@ -79,6 +79,27 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	if !options.listBefore.IsZero() {
 		ctx = context.WithValue(ctx, fileListBeforeKey{}, options.listBefore)
 	}
+	localFiles := s.localFileStore()
+	batchedDeletes := false
+	// Flush delete-directory barriers and prune empty parents AFTER releasing
+	// tenant maintenance and read-view locks (LIFO defer order) so foreground
+	// writes are not stalled behind directory fsyncs and exclusive IO barriers.
+	if localFiles != nil {
+		defer func() {
+			if !batchedDeletes {
+				return
+			}
+			started := time.Now()
+			err = errors.Join(err, localFiles.syncPendingDeleteDirectories())
+			if err == nil {
+				err = localFiles.pruneEmptyObjectParents(ctx, report.Checkpoint.DeletedKeys)
+			}
+			s.recordMaintenance("gc_sync", started)
+			if err != nil {
+				report.Checkpoint.Completed = false
+			}
+		}()
+	}
 	viewStarted := time.Now()
 	releaseViews, viewErr := s.lockGCReadViews(ctx, tenantID)
 	s.recordMaintenance("gc_wait_views", viewStarted)
@@ -119,21 +140,9 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	if err := s.validateGCSnapshotCursor(tenantID, manifest, options.CheckpointCursor); err != nil {
 		return GCReport{}, err
 	}
-	if files := s.localFileStore(); files != nil {
-		ctx = context.WithValue(ctx, fileBatchKey{}, files)
-		// Deletions share a directory barrier within this bounded batch. Flush
-		// even on cancellation, before releasing tenant and read-view locks.
-		defer func() {
-			started := time.Now()
-			err = errors.Join(err, files.syncPendingDirectories())
-			if err == nil {
-				err = files.pruneEmptyObjectParents(ctx, report.Checkpoint.DeletedKeys)
-			}
-			s.recordMaintenance("gc_sync", started)
-			if err != nil {
-				report.Checkpoint.Completed = false
-			}
-		}()
+	if localFiles != nil {
+		ctx = context.WithValue(ctx, gcDeleteBatchKey{}, localFiles)
+		batchedDeletes = true
 	}
 	report = GCReport{TenantID: tenantID, ManifestVersion: manifest.Version}
 	checkpoint := newGCCheckpointRunner(options)

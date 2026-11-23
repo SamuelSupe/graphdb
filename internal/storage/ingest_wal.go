@@ -176,6 +176,7 @@ type ingestWALWriteFile interface {
 
 type IngestWAL struct {
 	checkpointGeneration atomic.Uint64
+	hasCheckpoint        atomic.Bool
 	recoveredLSN         uint64
 	config               IngestWALConfig
 	lockFile             *os.File

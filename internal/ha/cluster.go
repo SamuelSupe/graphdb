@@ -36,6 +36,7 @@ type Cluster struct {
 	FlushMaxRequests   int
 	FlushMaxBytes      int64
 	flushWake          chan struct{}
+	partitionWake      chan struct{}
 	config             config.RaftConfig
 	diskPolicy         storage.DiskSpacePolicy
 	shards             *sharding.Client
@@ -54,7 +55,7 @@ type Cluster struct {
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{flushWake: make(chan struct{}, 1), diskPolicy: cfg.DiskSpacePolicy(), App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{flushWake: make(chan struct{}, 1), partitionWake: make(chan struct{}, 1), diskPolicy: cfg.DiskSpacePolicy(), App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
@@ -153,10 +154,20 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 		return nil, err
 	}
 	response, err := c.Node.Propose(ctx, data)
-	if err == nil && (cmd.Kind == "accept" || cmd.Kind == "partition_accept") {
-		select {
-		case c.flushWake <- struct{}{}:
-		default:
+	if err == nil {
+		switch cmd.Kind {
+		case "accept":
+			select {
+			case c.flushWake <- struct{}{}:
+			default:
+			}
+		case "partition_accept":
+			if c.partitionWake != nil {
+				select {
+				case c.partitionWake <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}
 	return response, err
@@ -436,11 +447,15 @@ func (c *Cluster) Close() error {
 		c.closeErr = c.Node.Close()
 		c.exportMu.Lock()
 		c.exportClosed = true
+		closing := make([]*tenantExport, 0, len(c.exports))
 		for key, transfer := range c.exports {
-			transfer.close()
+			closing = append(closing, transfer)
 			delete(c.exports, key)
 		}
 		c.exportMu.Unlock()
+		for _, transfer := range closing {
+			transfer.close()
+		}
 	})
 	return c.closeErr
 }

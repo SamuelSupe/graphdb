@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrReaderCacheEntryTooLarge = errors.New("reader cache entry exceeds capacity")
@@ -52,6 +53,7 @@ func (c *ReaderCache) storeEntryLocked(tenantID string, entry cacheEntry) error 
 			c.MaxBytes,
 		)
 	}
+	entry.initAccess(entry.lastAccess)
 	c.deleteEntryLocked(tenantID)
 	c.entries[tenantID] = entry
 	c.bytes = addWriteCacheBytes(c.bytes, entry.bytes)
@@ -74,12 +76,15 @@ func (c *ReaderCache) deleteEntryLocked(tenantID string) {
 func (c *ReaderCache) evictCapacityLocked(preferTenantID string) {
 	for len(c.entries) > c.MaxTenants || c.bytes > c.MaxBytes {
 		victim := ""
+		var victimAccess time.Time
 		for tenantID, entry := range c.entries {
 			if tenantID == preferTenantID && len(c.entries) > 1 {
 				continue
 			}
-			if victim == "" || entry.lastAccess.Before(c.entries[victim].lastAccess) {
+			access := entry.lastAccessTime()
+			if victim == "" || access.Before(victimAccess) {
 				victim = tenantID
+				victimAccess = access
 			}
 		}
 		if victim == "" {

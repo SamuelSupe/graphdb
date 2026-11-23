@@ -194,6 +194,13 @@ func (r *Repository) Publish(ctx context.Context, m Manifest, source *io.Section
 		// identical manifest makes that ambiguous outcome safe to resume.
 		previous, readErr := r.ReadManifest(ctx, uri)
 		if readErr != nil || previous != m {
+			if errors.Is(readErr, ErrNotFound) {
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				_, _ = r.client.DeleteObject(cleanup, &s3.DeleteObjectInput{
+					Bucket: aws.String(r.bucket), Key: aws.String(m.SnapshotKey),
+				})
+				cancel()
+			}
 			return Entry{}, err
 		}
 	}
@@ -248,7 +255,7 @@ func (r *Repository) List(ctx context.Context, tenant, cursor string, limit int)
 	var token *string
 	for {
 		out, err := r.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket: aws.String(r.bucket), Prefix: aws.String(prefix), StartAfter: aws.String(start), ContinuationToken: token, MaxKeys: aws.Int32(100),
+			Bucket: aws.String(r.bucket), Prefix: aws.String(prefix), StartAfter: aws.String(start), ContinuationToken: token, MaxKeys: aws.Int32(1000),
 		})
 		if err != nil {
 			return Page{}, err

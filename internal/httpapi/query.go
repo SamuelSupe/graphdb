@@ -107,7 +107,7 @@ func decodeGQLQueryRequest(w http.ResponseWriter, r *http.Request) (query.Reques
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxQueryRequestBytes))
 		if err != nil {
 			endHTTPSpan(span, err)
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeDecodeError(w, r, err)
 			return query.Request{}, false
 		}
 		if span != nil {
@@ -222,7 +222,7 @@ func encodeMaterializedQueryStream(w http.ResponseWriter, r *http.Request, respo
 		return err
 	}
 	for _, result := range response.Results {
-		if err = encodeStreamItem(r.Context(), encoder, result, flush); err != nil {
+		if err = encodeStreamItem(r.Context(), encoder, queryResultJSON(result), flush); err != nil {
 			return err
 		}
 	}
@@ -289,9 +289,20 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 			return true, err
 		}
 		err = normalizeQueryExecutionError(r.Context(), err)
-		_ = encodeStreamItem(r.Context(), encoder, queryStreamError(err), flush)
+		_ = encodeStreamError(w, encoder, queryStreamError(err))
 	}
 	return true, err
+}
+
+func encodeStreamError(w http.ResponseWriter, encoder *json.Encoder, item any) error {
+	if err := encoder.Encode(item); err != nil {
+		return err
+	}
+	controller := http.NewResponseController(w)
+	if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
 }
 
 func encodeStreamItem(ctx context.Context, encoder *json.Encoder, item any, flush func() error) error {

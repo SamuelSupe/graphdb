@@ -65,7 +65,7 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	var ids []string
 	var ok bool
 	if !paged {
-		ids, ok, err = candidateIDsForPlan(request.Kind, plan, budget)
+		ids, ok, err = candidateIDsForPlan(request, plan, budget)
 		if err != nil {
 			return true, err
 		}
@@ -104,6 +104,9 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 }
 
 func canStreamLazyMatch(request Request, options ExecuteOptions) bool {
+	if request.Op == "explain" {
+		return false
+	}
 	target := lazyTarget(request)
 	return target.Op == "match" &&
 		len(target.Sort) == 0 &&
@@ -215,7 +218,7 @@ func streamLazyKindMatch(g *graph.Graph, request Request, cursor cursorState, bu
 	return results, next, nil
 }
 
-func candidateIDsForPlan(kind string, plan Plan, budget *budget) ([]string, bool, error) {
+func candidateIDsForPlan(request Request, plan Plan, budget *budget) ([]string, bool, error) {
 	switch plan.Strategy {
 	case "entity-id":
 		if len(plan.IndexValues) != 1 {
@@ -230,7 +233,12 @@ func candidateIDsForPlan(kind string, plan Plan, budget *budget) ([]string, bool
 		if budget.lookup == nil {
 			return nil, false, nil
 		}
-		return budget.lookup.MatchFieldIndex(budget.ctx, kind, plan.IndexField, plan.IndexValues)
+		return budget.lookup.MatchFieldIndex(budget.ctx, request.Kind, plan.IndexField, plan.IndexValues)
+	case "field-index-scan":
+		if scanner, ok := budget.lookup.(FieldIndexScanLookup); ok {
+			return scanFieldIndexIDs(budget.ctx, scanner, request.Kind, plan.IndexField, requestIndexFilters(request))
+		}
+		return nil, false, nil
 	default:
 		return nil, false, nil
 	}

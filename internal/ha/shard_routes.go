@@ -160,11 +160,27 @@ func (c *Cluster) PrivateHandler() http.Handler {
 		}
 		r = r.WithContext(forwardedContext(r))
 		if strings.HasPrefix(r.URL.Path, "/cluster/") && !strings.HasPrefix(r.URL.Path, "/cluster/data/") && (c.Node.LeaderID() != c.Node.ID() || c.Node.Draining()) {
-			c.forward(w, r, nil, true, r.Method != http.MethodGet && r.Method != http.MethodHead)
+			c.forward(w, r, nil, true, !clusterReadRoute(r))
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func clusterReadRoute(r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return true
+	}
+	if r.Method != http.MethodPost {
+		return false
+	}
+	switch r.URL.Path {
+	case "/cluster/graph/read", "/cluster/graph/read-batch", "/cluster/graph/input", "/cluster/graph/pages",
+		"/cluster/export", "/cluster/export/manifest", "/cluster/export/chunk":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Cluster) checkShardRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, tenant string) (uint64, bool) {

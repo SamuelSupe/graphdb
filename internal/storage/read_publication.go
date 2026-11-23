@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,18 @@ func (s *TenantStore) publishGraph(tenantID string, loaded loadedGraph) {
 // Direct file replacement (including restore) invalidates readers before a
 // newly published graph can be installed. This also fences in-flight cache loads.
 func (s *TenantStore) localFileChanged(key string) {
+	if key == s.tenantRegistryKey() {
+		s.clearRegisteredTenantCache()
+		return
+	}
+	purgePrefix := path.Join(s.Prefix, "control", "tenant-purges") + "/"
+	if s.Prefix == "" {
+		purgePrefix = "control/tenant-purges/"
+	}
+	if strings.HasPrefix(key, purgePrefix) {
+		s.clearPurgeTombstoneCache()
+		return
+	}
 	prefix := s.Prefix + "/tenants/"
 	if s.Prefix == "" {
 		prefix = "tenants/"
@@ -64,6 +77,18 @@ func (s *TenantStore) localFileChanged(key string) {
 		delete(s.queuedTaskCatalogs, tenant)
 		s.taskMu.Unlock()
 	}
+	switch name {
+	case "config/tenant-config.parquet":
+		s.deleteCachedTenantConfig(tenant)
+	case "config/source-policy.parquet":
+		s.deleteCachedSourcePolicy(tenant)
+	case "indexes/catalog.parquet":
+		s.deleteCachedIndexCatalog(tenant)
+	case "indexes/reverse/catalog.parquet":
+		s.deleteCachedReverseIndexCatalog(tenant)
+	case "manifest.parquet":
+		s.deleteWriteCache(tenant)
+	}
 	manifest := name == "manifest.parquet"
 	invalidate := metadata || (strings.HasPrefix(name, "config/") && name != "config/backup-schedule.parquet")
 	if manifest || invalidate || name == "indexes/catalog.parquet" {
@@ -75,6 +100,63 @@ func (s *TenantStore) localFileChanged(key string) {
 		return
 	}
 	s.invalidateReadViews(tenant, manifest)
+}
+
+// ResetCaches drops all in-memory tenant metadata, write, catalog, object-key,
+// and attached reader caches (for example after full-store snapshot restore).
+func (s *TenantStore) ResetCaches() {
+	s.lockMu.Lock()
+	clear(s.writeCache)
+	s.writeCacheOrder = s.writeCacheOrder[:0]
+	s.writeCacheBytes = 0
+	clear(s.writerLeaseCache)
+	clear(s.registeredTenantCache)
+	clear(s.collectorStatusCache)
+	clear(s.readerHeartbeatCache)
+	clear(s.tenantMetadataCache)
+	clear(s.purgeTombstoneCache)
+	clear(s.sourcePolicyCache)
+	clear(s.tenantConfigCache)
+	for tenantID := range s.indexCatalogCache {
+		s.bumpIndexCatalogGenerationLocked(tenantID)
+	}
+	for tenantID := range s.indexCatalogLoads {
+		s.bumpIndexCatalogGenerationLocked(tenantID)
+	}
+	clear(s.indexCatalogCache)
+	for tenantID := range s.reverseIndexCatalogCache {
+		s.bumpReverseIndexCatalogGenerationLocked(tenantID)
+	}
+	for tenantID := range s.reverseIndexCatalogLoads {
+		s.bumpReverseIndexCatalogGenerationLocked(tenantID)
+	}
+	clear(s.reverseIndexCatalogCache)
+	clear(s.compiledScanCatalogCache)
+	s.lockMu.Unlock()
+
+	s.resetObjectKeyCache()
+
+	s.taskMu.Lock()
+	clear(s.queuedTaskCatalogs)
+	s.taskMu.Unlock()
+
+	s.queryMu.Lock()
+	clear(s.queryUnavailable)
+	s.queryMu.Unlock()
+
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.ClearPrefix("")
+	}
+	s.viewGenerations.Range(func(_, value any) bool {
+		pub := value.(*readPublicationState)
+		pub.mu.Lock()
+		pub.generation.Add(1)
+		pub.mu.Unlock()
+		return true
+	})
+	for _, cache := range s.readerCaches() {
+		cache.InvalidateAll()
+	}
 }
 
 func (s *TenantStore) readerCaches() []*ReaderCache {

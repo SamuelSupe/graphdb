@@ -69,11 +69,42 @@ func (a *groupAccumulator) groupForValues(valueFor func(string) any) (*aggregate
 	}
 	key := make(map[string]any, len(a.groupBy))
 	for i, field := range a.groupBy {
-		key[field] = values[i*2+1]
+		key[field] = cloneGroupKeyValue(values[i*2+1])
 	}
 	group := &aggregateGroupState{key: key, acc: newAggregateAccumulator(a.specs)}
 	a.groups[identity] = group
 	return group, nil
+}
+
+func cloneGroupKeyValue(value any) any {
+	switch typed := value.(type) {
+	case nil, bool, string, float64, float32, int, int64, int32, uint, uint64, uint32:
+		return typed
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneGroupKeyValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, v := range typed {
+			out[k] = cloneGroupKeyValue(v)
+		}
+		return out
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return typed
+		}
+		var copied any
+		if err := json.Unmarshal(data, &copied); err != nil {
+			return typed
+		}
+		return copied
+	}
 }
 
 func (a *groupAccumulator) results(having []Filter, havingExpr *FilterExpr) []AggregateGroup {

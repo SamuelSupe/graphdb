@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
@@ -112,12 +113,12 @@ func DecodeCommitItems(ctx context.Context, data []byte) ([]CommitTableItem, err
 			build := builders[key]
 			if build == nil {
 				build = &CommitBuilder{
-					key:         columns.segmentKey.Value(i),
-					contentHash: columns.contentHash.Value(i),
+					key:         strings.Clone(columns.segmentKey.Value(i)),
+					contentHash: strings.Clone(columns.contentHash.Value(i)),
 					commit: graph.Commit{
 						LayoutVersion: CurrentObjectLayoutVersion,
-						TenantID:      columns.commitTenantID.Value(i),
-						ID:            columns.commitID.Value(i),
+						TenantID:      strings.Clone(columns.commitTenantID.Value(i)),
+						ID:            strings.Clone(columns.commitID.Value(i)),
 						Version:       columns.version.Value(i),
 						CreatedAt:     parquetio.ParseTime(columns.createdAt.Value(i)),
 					},

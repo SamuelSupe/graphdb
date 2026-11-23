@@ -44,10 +44,12 @@ func executeLazyKindMaterialized(g *graph.Graph, request Request, plan Plan, cur
 	if bounded && len(request.Sort) == 0 {
 		cursor.Order = matchPageOrder(cursor, EntityPageOrderIdentity)
 	}
-	results := make([]Result, 0, keep)
+	var results []Result
 	var sorted *boundedResults
 	if bounded {
 		sorted = newBoundedResults(request.Sort, keep)
+	} else {
+		results = make([]Result, 0, boundedInitialCap(keep))
 	}
 	err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
 		startScanned := budget.scanned

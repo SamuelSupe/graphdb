@@ -170,7 +170,7 @@ func (g *Graph) sortedFieldIndexIDs(kind, field, value string) []string {
 	if existing, ok := g.fieldIndexOrder[cacheKey]; ok {
 		return existing
 	}
-	if g.fieldIndexOrder == nil {
+	if g.fieldIndexOrder == nil || len(g.fieldIndexOrder) >= 1024 {
 		g.fieldIndexOrder = map[fieldIndexOrderKey][]string{}
 	}
 	g.fieldIndexOrder[cacheKey] = ids

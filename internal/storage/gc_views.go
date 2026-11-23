@@ -54,6 +54,17 @@ func (v *gcView) canDelete(key string) bool {
 	return true
 }
 
+func (v *gcView) stale() bool {
+	if v == nil {
+		return false
+	}
+	r := v.files.runtime
+	r.mu.Lock()
+	stale := v.gate.rootGeneration != v.rootGeneration
+	r.mu.Unlock()
+	return stale
+}
+
 func (s *TenantStore) gcView(tenant string) *gcView {
 	files := s.localFileStore()
 	if files == nil {

@@ -51,12 +51,22 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 	if err != nil {
 		return RecoveryReport{}, err
 	}
-	defer releaseViews()
+	viewsLocked := true
+	defer func() {
+		if viewsLocked {
+			releaseViews()
+		}
+	}()
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
 	if err != nil {
 		return RecoveryReport{}, err
 	}
-	defer unlock()
+	maintenanceLocked := true
+	defer func() {
+		if maintenanceLocked {
+			unlock()
+		}
+	}()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
 		return RecoveryReport{}, err
@@ -88,6 +98,16 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 	report.InvalidKeys = scan.InvalidKeys
 	report.Blocked += len(scan.InvalidKeys)
 	report.UnappliedKeys = append(report.UnappliedKeys, scan.InvalidKeys...)
+	type recoveredIndexStep struct {
+		key         string
+		previous    *graph.Graph
+		next        *graph.Graph
+		mutations   graph.Mutations
+		report      graph.ApplyReport
+		baseVersion int64
+		version     int64
+	}
+	var indexSteps []recoveredIndexStep
 	for _, item := range scan.Items {
 		if item.Commit.Version <= loaded.Manifest.Version {
 			report.Skipped++
@@ -124,14 +144,31 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 		loaded.Meta = meta
 		loaded.Graph = nextGraph
 		loaded.DataHash = dataHash
-		if err := s.updateIndexesAfterCommit(ctx, tenantID, previousGraph, nextGraph, item.Commit.Mutations, applyReport, item.Commit.Version-1, item.Commit.Version, false, false); err != nil {
-			report.IndexWarnings = append(report.IndexWarnings, "incremental index update failed for "+item.Key+": "+err.Error())
-		}
+		indexSteps = append(indexSteps, recoveredIndexStep{
+			key:         item.Key,
+			previous:    previousGraph,
+			next:        nextGraph,
+			mutations:   item.Commit.Mutations,
+			report:      applyReport,
+			baseVersion: item.Commit.Version - 1,
+			version:     item.Commit.Version,
+		})
 		report.Recovered++
 		report.RecoveredKeys = append(report.RecoveredKeys, item.Key)
 	}
 	report.EndVersion = loaded.Manifest.Version
 	s.setWriteCache(tenantID, loaded)
+	// Release maintenance and read-view barriers before running incremental
+	// index updates so admitMaintenance cannot invert the lock hierarchy.
+	unlock()
+	maintenanceLocked = false
+	releaseViews()
+	viewsLocked = false
+	for _, step := range indexSteps {
+		if err := s.updateIndexesAfterCommit(ctx, tenantID, step.previous, step.next, step.mutations, step.report, step.baseVersion, step.version, false, false); err != nil {
+			report.IndexWarnings = append(report.IndexWarnings, "incremental index update failed for "+step.key+": "+err.Error())
+		}
+	}
 	return report, nil
 }
 

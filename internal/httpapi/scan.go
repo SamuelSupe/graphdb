@@ -108,10 +108,26 @@ func (s *Server) streamEntities(w http.ResponseWriter, r *http.Request) {
 		options.Cursor = result.NextCursor
 		result, err = s.listEntitiesPage(r.Context(), tenantID, options, target)
 		if err != nil {
-			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
+			_ = encodeStreamError(w, encoder, readStreamError(err))
 			return
 		}
 	}
+}
+
+func readStreamError(err error) StreamErrorResponse {
+	if freshness, ok := asReaderNotFresh(err); ok {
+		return streamErrorResponse(buildErrorResponse(ErrorCodeReaderNotFresh, err.Error(), true, freshness.detail()))
+	}
+	if errors.Is(err, context.Canceled) {
+		return streamErrorResponse(errorResponseFor(statusClientClosedRequest, err, "", nil))
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return streamErrorResponse(errorResponseFor(http.StatusGatewayTimeout, err, "", nil))
+	}
+	if errors.Is(err, storage.ErrReaderLoadBusy) {
+		return streamErrorResponse(buildErrorResponse(ErrorCodeTooManyRequests, err.Error(), true, nil))
+	}
+	return streamErrorResponse(errorResponseFor(http.StatusBadRequest, err, "", nil))
 }
 
 func (s *Server) streamEntitiesFromCatalog(w http.ResponseWriter, r *http.Request, tenantID string, catalog storage.IndexCatalog, options storage.EntityScanOptions) {
@@ -144,7 +160,7 @@ func (s *Server) streamEntitiesFromCatalog(w http.ResponseWriter, r *http.Reques
 		options.Cursor = result.NextCursor
 		result, err = s.Store.ListEntitiesFromCatalog(r.Context(), tenantID, catalog, options)
 		if err != nil {
-			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
+			_ = encodeStreamError(w, encoder, readStreamError(err))
 			return
 		}
 	}
@@ -247,7 +263,7 @@ func (s *Server) streamEdges(w http.ResponseWriter, r *http.Request) {
 		options.Cursor = result.NextCursor
 		result, err = s.listEdgesPage(r.Context(), tenantID, options, target)
 		if err != nil {
-			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
+			_ = encodeStreamError(w, encoder, readStreamError(err))
 			return
 		}
 	}
@@ -283,7 +299,7 @@ func (s *Server) streamEdgesFromCatalog(w http.ResponseWriter, r *http.Request, 
 		options.Cursor = result.NextCursor
 		result, err = s.Store.ListEdgesFromCatalog(r.Context(), tenantID, catalog, options)
 		if err != nil {
-			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
+			_ = encodeStreamError(w, encoder, readStreamError(err))
 			return
 		}
 	}
@@ -476,7 +492,7 @@ func (s *Server) streamIndexedSnapshot(w http.ResponseWriter, r *http.Request, t
 	for {
 		result, err := s.Store.ListEntitiesFromCatalog(r.Context(), tenantID, catalog, entityOptions)
 		if err != nil {
-			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
+			_ = encodeStreamError(w, encoder, readStreamError(err))
 			return
 		}
 		for _, entity := range result.Entities {
@@ -493,7 +509,7 @@ func (s *Server) streamIndexedSnapshot(w http.ResponseWriter, r *http.Request, t
 	for {
 		result, err := s.Store.ListEdgesFromCatalog(r.Context(), tenantID, catalog, edgeOptions)
 		if err != nil {
-			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
+			_ = encodeStreamError(w, encoder, readStreamError(err))
 			return
 		}
 		for _, edge := range result.Edges {

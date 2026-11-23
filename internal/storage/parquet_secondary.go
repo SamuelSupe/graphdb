@@ -231,7 +231,7 @@ func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.Reade
 			rowTenant := tenantColumn.Value(i)
 			if rowTenant != "" {
 				if index.TenantID == "" || index.TenantID == tenantID {
-					index.TenantID = rowTenant
+					index.TenantID = strings.Clone(rowTenant)
 				} else if index.TenantID != rowTenant {
 					return SecondaryIndex{}, fmt.Errorf("parquet secondary index tenant mismatch")
 				}
@@ -239,7 +239,7 @@ func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.Reade
 			rowKind := kindColumn.Value(i)
 			if rowKind != "" {
 				if index.Kind == "" || index.Kind == kind {
-					index.Kind = rowKind
+					index.Kind = strings.Clone(rowKind)
 				} else if index.Kind != rowKind {
 					return SecondaryIndex{}, fmt.Errorf("parquet secondary index kind mismatch")
 				}
@@ -247,7 +247,7 @@ func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.Reade
 			rowField := fieldColumn.Value(i)
 			if rowField != "" {
 				if index.Field == "" || index.Field == field {
-					index.Field = rowField
+					index.Field = strings.Clone(rowField)
 				} else if index.Field != rowField {
 					return SecondaryIndex{}, fmt.Errorf("parquet secondary index field mismatch")
 				}
@@ -264,8 +264,8 @@ func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.Reade
 			if index.UpdatedAt.IsZero() {
 				index.UpdatedAt = parquetio.ParseTime(updatedAtColumn.Value(i))
 			}
-			value := valueColumn.Value(i)
-			index.Values[value] = append(index.Values[value], entityIDColumn.Value(i))
+			value := strings.Clone(valueColumn.Value(i))
+			index.Values[value] = append(index.Values[value], strings.Clone(entityIDColumn.Value(i)))
 		}
 	}
 	for value := range index.Values {

@@ -36,7 +36,7 @@ func PlanQueryWithStats(g *graph.Graph, request Request, stats PlannerStats) Pla
 		}
 		plan.Steps = append(plan.Steps, PlanStep{Name: "expand-neighbors", Detail: directionDetail(request), Cost: cost})
 		plan.EstimatedRows = cost
-		plan.EstimatedCost = cost + 1
+		plan.EstimatedCost = addIntClamped(cost, 1)
 	case "traverse", "shortest_path":
 		plan.Strategy = "bounded-bfs"
 		plan.Index = "edge_adjacency"
@@ -57,12 +57,12 @@ func PlanQueryWithStats(g *graph.Graph, request Request, stats PlannerStats) Pla
 	if len(request.Sort) > 0 {
 		cost := max(plan.EstimatedRows, 1)
 		plan.Steps = append(plan.Steps, PlanStep{Name: "sort", Cost: cost})
-		plan.EstimatedCost += cost
+		plan.EstimatedCost = addIntClamped(plan.EstimatedCost, cost)
 	}
 	if len(request.Aggregate) > 0 {
 		cost := max(plan.EstimatedRows, 1)
 		plan.Steps = append(plan.Steps, PlanStep{Name: "aggregate", Cost: cost})
-		plan.EstimatedCost += cost
+		plan.EstimatedCost = addIntClamped(plan.EstimatedCost, cost)
 	}
 	if request.CostLimit > 0 && plan.EstimatedCost > request.CostLimit {
 		plan.Warnings = append(plan.Warnings, "estimated cost exceeds cost_limit")
@@ -98,11 +98,24 @@ func planPattern(plan *Plan, g *graph.Graph, request Request, stats PlannerStats
 	}
 	plan.Steps = append(plan.Steps, PlanStep{Name: "bounded-pattern-expand", Detail: fmt.Sprintf("steps=%d", len(request.Path.Steps)), Cost: paths})
 	plan.EstimatedRows = paths
-	plan.EstimatedCost += paths
+	plan.EstimatedCost = addIntClamped(plan.EstimatedCost, paths)
+}
+
+func addIntClamped(a, b int) int {
+	if a < 0 {
+		a = 0
+	}
+	if b <= 0 {
+		return a
+	}
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
 }
 
 func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) {
-	filters := requestFilters(request)
+	filters := requestIndexFilters(request)
 	if id, ok := idEquality(filters); ok {
 		plan.Strategy = "entity-id"
 		plan.Index = "entity_id"

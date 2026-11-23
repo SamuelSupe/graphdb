@@ -134,6 +134,7 @@ func mergeEdgeShardPack(group edgeShardDataPackGroup) EdgeShardData {
 		Version:       first.Version,
 		UpdatedAt:     first.UpdatedAt,
 		hashCanonical: true,
+		reverse:       first.reverse,
 	}
 	for _, shard := range group.Shards {
 		merged.Edges = append(merged.Edges, shard.Edges...)

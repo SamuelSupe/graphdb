@@ -103,6 +103,12 @@ func (s Store) applyDataGC(ctx context.Context, a Action) (any, error) {
 		switch gc.Phase {
 		case "mark":
 			var marked, seen []Row
+			seenTree := s.gcTree(state, "seen")
+			seenTree.cache = &treeReadCache{}
+			marksTree := s.gcTree(state, "marks")
+			marksTree.cache = &treeReadCache{}
+			dataTree := s.Tree(a.Tenant, a.Generation, a.Partition)
+			dataTree.cache = &treeReadCache{}
 			for count := 0; len(gc.Stack) > 0 && count < 16; count++ {
 				last := len(gc.Stack) - 1
 				root := gc.Stack[last]
@@ -110,12 +116,12 @@ func (s Store) applyDataGC(ctx context.Context, a Action) (any, error) {
 				if root.Hash == "" {
 					continue
 				}
-				if _, found, err := s.gcTree(state, "seen").Get(ctx, gc.Seen, root.Hash); err != nil {
+				if _, found, err := seenTree.Get(ctx, gc.Seen, root.Hash); err != nil {
 					return nil, err
 				} else if found {
 					continue
 				}
-				page, err := s.Tree(a.Tenant, a.Generation, a.Partition).load(ctx, root)
+				page, err := dataTree.load(ctx, root)
 				if err != nil {
 					return nil, err
 				}
@@ -124,11 +130,11 @@ func (s Store) applyDataGC(ctx context.Context, a Action) (any, error) {
 				marked = append(marked, row)
 				seen = append(seen, row)
 			}
-			gc.Marked, err = s.gcTree(state, "marks").addHashes(ctx, gc.Marked, uniqueHashRows(marked))
+			gc.Marked, err = marksTree.addHashes(ctx, gc.Marked, uniqueHashRows(marked))
 			if err != nil {
 				return nil, err
 			}
-			gc.Seen, err = s.gcTree(state, "seen").addHashes(ctx, gc.Seen, uniqueHashRows(seen))
+			gc.Seen, err = seenTree.addHashes(ctx, gc.Seen, uniqueHashRows(seen))
 			if err != nil {
 				return nil, err
 			}
@@ -141,13 +147,15 @@ func (s Store) applyDataGC(ctx context.Context, a Action) (any, error) {
 			if err != nil {
 				return nil, err
 			}
+			marksTree := s.gcTree(state, "marks")
+			marksTree.cache = &treeReadCache{}
 			bytes := int64(0)
 			for _, object := range objects {
 				hash := path.Base(object.Key)
 				if !validDigest(hash) {
 					return nil, fmt.Errorf("invalid partition page in GC")
 				}
-				_, marked, err := s.gcTree(state, "marks").Get(ctx, gc.Marked, hash)
+				_, marked, err := marksTree.Get(ctx, gc.Marked, hash)
 				if err != nil {
 					return nil, err
 				}
@@ -171,7 +179,7 @@ func (s Store) applyDataGC(ctx context.Context, a Action) (any, error) {
 			}
 		case "cleanup":
 			prefix := path.Join(s.namespace(a.Tenant, a.Generation), fmt.Sprintf("partitions/%02x/gc/%s", a.Partition, gc.ID)) + "/"
-			objects, _, err := s.objectPage(ctx, prefix, "", 4)
+			objects, next, err := s.objectPage(ctx, prefix, "", 64)
 			if err != nil {
 				return nil, err
 			}
@@ -180,7 +188,7 @@ func (s Store) applyDataGC(ctx context.Context, a Action) (any, error) {
 					return nil, err
 				}
 			}
-			if len(objects) == 0 {
+			if next == "" {
 				state.LastGC = gc.ID
 				state.GC = nil
 			}

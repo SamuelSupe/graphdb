@@ -217,9 +217,14 @@ func (s *entityPageVisitSession) loadAndDecodePage(ctx context.Context, spec Ent
 	duration := time.Since(started)
 	s.stats.parquetDecodes++
 	s.stats.parquetDecodeDuration += duration
+	readable := false
+	if err == nil {
+		loaded.page.logicalContentHash = entityPageContentHash(loaded.page)
+		readable = entityPageReadable(loaded.page, s.tenantID, s.version, spec)
+	}
 	decodeSpan.SetAttributes(
 		attribute.Int("graphdb.index_lookup.decoded_entities", len(loaded.page.Entities)),
-		attribute.Bool("graphdb.index_lookup.page_readable", err == nil && entityPageReadable(loaded.page, s.tenantID, s.version, spec)),
+		attribute.Bool("graphdb.index_lookup.page_readable", readable),
 	)
 	endStorageSpan(decodeSpan, err)
 	return loaded, err

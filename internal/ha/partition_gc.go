@@ -37,77 +37,98 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 			}
 		}()
 	}
-	if g.GC.Phase == "prune" || g.GC.Phase == "collect" {
-		base.Operation = "graph_gc_" + g.GC.Phase
-		base.ExpectedCursor = g.GC.Cursor
-		return remote.Action(ctx, c.graphHome(), base, nil)
-	}
-	var ids []uint8
-	for i := range g.Partitions {
-		pending := !g.GC.Done[i]
-		if g.GC.Phase == "starting" {
-			pending = !g.GC.Started[i]
+	for g.GC != nil {
+		if g.GC.Phase == "prune" || g.GC.Phase == "collect" {
+			action := base
+			action.Operation = "graph_gc_" + g.GC.Phase
+			action.ExpectedCursor = g.GC.Cursor
+			return remote.Action(ctx, c.graphHome(), action, nil)
 		}
-		if pending {
-			ids = append(ids, uint8(i))
-			if len(ids) == 32 {
-				break
+		var ids []uint8
+		for i := range g.Partitions {
+			pending := !g.GC.Done[i]
+			if g.GC.Phase == "starting" {
+				pending = !g.GC.Started[i]
+			}
+			if pending {
+				ids = append(ids, uint8(i))
+				if len(ids) == 32 {
+					break
+				}
 			}
 		}
-	}
-	var roots map[uint8][]partition.Root
-	if g.GC.Phase == "starting" {
-		var err error
-		roots, err = c.App.partitionStore().GCRootPlan(ctx, g, ids)
+		if len(ids) == 0 {
+			return nil
+		}
+		var roots map[uint8][]partition.Root
+		if g.GC.Phase == "starting" {
+			c.App.mu.RLock()
+			roots, err = c.App.partitionStore().GCRootPlan(ctx, g, ids)
+			c.App.mu.RUnlock()
+			if err != nil {
+				return err
+			}
+		}
+		workers, workerCtx := errgroup.WithContext(ctx)
+		if g.GC.Phase == "starting" {
+			workers.SetLimit(8)
+		} else {
+			workers.SetLimit(4)
+		}
+		completed := make([]bool, len(ids))
+		for index, id := range ids {
+			workers.Go(func() error {
+				group, err := g.GroupFor(id)
+				if err != nil {
+					return err
+				}
+				action := base
+				action.Partition = id
+				action.Epoch = g.Partitions[id].Epoch
+				var state partition.DataState
+				if g.GC.Phase == "starting" {
+					action.Roots = roots[id]
+					action.Operation = "data_gc_begin"
+				} else {
+					action.Operation = "data_gc_step"
+					if g.GC.Phase == "cancel" {
+						action.Purpose = "cancel"
+					}
+				}
+				if err := remote.Action(workerCtx, group, action, &state); err != nil {
+					return err
+				}
+				completed[index] = g.GC.Phase == "starting" || state.GC == nil
+				return nil
+			})
+		}
+		workerErr := workers.Wait()
+		commit := base
+		commit.Operation = "graph_gc_done"
+		if g.GC.Phase == "starting" {
+			commit.Operation = "graph_gc_started"
+		}
+		for index, id := range ids {
+			if completed[index] {
+				commit.Participants = append(commit.Participants, id)
+			}
+		}
+		var commitErr error
+		if len(commit.Participants) > 0 && ctx.Err() == nil {
+			commitErr = remote.Action(ctx, c.graphHome(), commit, nil)
+		}
+		if workerErr != nil || commitErr != nil {
+			return errors.Join(workerErr, commitErr)
+		}
+		if g.GC.Phase != "starting" {
+			return nil
+		}
+		g, err = c.App.graphDescriptor(ctx, g.Tenant)
 		if err != nil {
 			return err
 		}
 	}
-	workers, workerCtx := errgroup.WithContext(ctx)
-	workers.SetLimit(4)
-	completed := make([]bool, len(ids))
-	for index, id := range ids {
-		workers.Go(func() error {
-			group, err := g.GroupFor(id)
-			if err != nil {
-				return err
-			}
-			action := base
-			action.Partition = id
-			action.Epoch = g.Partitions[id].Epoch
-			var state partition.DataState
-			if g.GC.Phase == "starting" {
-				action.Roots = roots[id]
-				action.Operation = "data_gc_begin"
-			} else {
-				action.Operation = "data_gc_step"
-				if g.GC.Phase == "cancel" {
-					action.Purpose = "cancel"
-				}
-			}
-			if err := remote.Action(workerCtx, group, action, &state); err != nil {
-				return err
-			}
-			completed[index] = g.GC.Phase == "starting" || state.GC == nil
-			return nil
-		})
-	}
-	if err := workers.Wait(); err != nil {
-		return err
-	}
-	base.Operation = "graph_gc_done"
-	if g.GC.Phase == "starting" {
-		base.Operation = "graph_gc_started"
-	}
-	for index, id := range ids {
-		if completed[index] {
-			base.Participants = append(base.Participants, id)
-		}
-	}
-	if len(base.Participants) == 0 {
-		return nil
-	}
-	return remote.Action(ctx, c.graphHome(), base, nil)
+	return nil
 }
 
 func (c *Cluster) registerPartitionGC(mux *http.ServeMux) {

@@ -7,7 +7,10 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
-const maxGraphQLSelections = 256
+const (
+	maxGraphQLSelections    = 256
+	maxGraphQLResultAliases = 16
+)
 
 type graphQLSelectionWalk struct {
 	visited int
@@ -41,10 +44,17 @@ func collectGraphQLResultFields(
 ) ([]graphQLResultField, error) {
 	fields := make([]graphQLResultField, 0, len(selections))
 	seen := map[string]struct{}{}
+	resultAliases := 0
 	err := walkGraphQLSelections(document, selections, variables, func(field *ast.Field) error {
 		name := responseName(field)
 		if _, ok := seen[name]; ok {
 			return nil
+		}
+		if field.Name == "results" {
+			resultAliases++
+			if resultAliases > maxGraphQLResultAliases {
+				return fmt.Errorf("%w: graphql query selects results at most %d times", ErrInvalid, maxGraphQLResultAliases)
+			}
 		}
 		seen[name] = struct{}{}
 		fields = append(fields, graphQLResultField{Name: field.Name, ResponseName: name})

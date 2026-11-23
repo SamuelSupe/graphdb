@@ -19,20 +19,34 @@ type boundedEntityHeap struct {
 	keys  []any
 }
 
-const maxCachedEntitySortKeys = 4096
+const (
+	maxCachedEntitySortKeys = 4096
+	maxInitialPageCap       = 1024
+)
+
+func boundedInitialCap(keep int) int {
+	if keep <= 0 {
+		return 0
+	}
+	if keep > maxInitialPageCap {
+		return maxInitialPageCap
+	}
+	return keep
+}
 
 func newBoundedEntities(specs []SortSpec, keep int) *boundedEntities {
 	if keep < 0 {
 		keep = 0
 	}
+	initCap := boundedInitialCap(keep)
 	var keys []any
 	if len(specs) > 0 && keep <= maxCachedEntitySortKeys {
-		keys = make([]any, 0, keep)
+		keys = make([]any, 0, initCap)
 	}
 	return &boundedEntities{
 		keep: keep,
 		heap: boundedEntityHeap{
-			items: make([]graph.Entity, 0, keep),
+			items: make([]graph.Entity, 0, initCap),
 			specs: specs,
 			keys:  keys,
 		},

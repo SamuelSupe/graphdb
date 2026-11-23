@@ -98,8 +98,16 @@ func (m *ShardedMap[V]) Set(key string, value V) {
 
 func (m *ShardedMap[V]) Delete(key string) {
 	if _, exists := m.Get(key); exists {
-		delete(m.writable(key), key)
+		values := m.writable(key)
+		delete(values, key)
 		m.size--
+		if len(values) == 0 {
+			if m.buckets != nil {
+				m.buckets[logicalHashShard(key)] = nil
+			} else if m.small != nil {
+				m.small = nil
+			}
+		}
 	}
 }
 

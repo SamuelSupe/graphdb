@@ -68,9 +68,10 @@ func (s *TenantStore) buildAdjacencyRoots(ctx context.Context, tenant string, ve
 
 func (s *TenantStore) updateEdgeAdjacency(ctx context.Context, tenant string, old EdgeShard, next *EdgeShard, before, after *graph.Graph, ids map[string]bool, version int64, reverse bool) error {
 	if old.AdjacencyRoot == nil {
-		return nil
-	}
-	if old.AdjacencyRoot.Count != old.EdgeCount {
+		if old.EdgeCount > 0 || !s.WriteIndexAdjacencyPages || !s.WriteIndexRangePages {
+			return nil
+		}
+	} else if old.AdjacencyRoot.Count != old.EdgeCount {
 		return fmt.Errorf("%w: root count mismatch", errAdjacencyIndex)
 	}
 	var changes []adjacencyChange
@@ -80,7 +81,7 @@ func (s *TenantStore) updateEdgeAdjacency(ctx context.Context, tenant string, ol
 		if reverse {
 			endpoint = e.To
 		}
-		return adjacencyKey{endpoint, id}, ok && e.Type == old.RelationType && indexShardIDMatches(endpoint, old.Shard)
+		return adjacencyKey{endpoint, id}, ok && e.Type == next.RelationType && indexShardIDMatches(endpoint, next.Shard)
 	}
 	for id := range ids {
 		a, aok := keyFor(before, id)
@@ -88,14 +89,14 @@ func (s *TenantStore) updateEdgeAdjacency(ctx context.Context, tenant string, ol
 		if aok && bok && a == b {
 			continue
 		}
-		if aok {
+		if aok && old.AdjacencyRoot != nil {
 			changes = append(changes, adjacencyChange{key: a, remove: true})
 		}
 		if bok {
 			changes = append(changes, adjacencyChange{key: b})
 		}
 	}
-	scope := fmt.Sprintf("%t/%s/%s", reverse, old.RelationType, old.Shard)
+	scope := fmt.Sprintf("%t/%s/%s", reverse, next.RelationType, next.Shard)
 	root, err := s.updateAdjacency(ctx, tenant, s.adjacencyPrefix(tenant, version, scope), old.AdjacencyRoot, changes)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errAdjacencyIndex, err)

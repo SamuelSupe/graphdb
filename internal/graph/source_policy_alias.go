@@ -134,8 +134,8 @@ func aliasFieldConflict(entity Entity, canonical string, alias string, existing 
 		ExistingPriority: entity.SourceRank,
 		IncomingSource:   entity.Source,
 		IncomingPriority: entity.SourceRank,
-		ExistingValue:    existing,
-		IncomingValue:    incoming,
+		ExistingValue:    copyAny(existing),
+		IncomingValue:    copyAny(incoming),
 		Message:          message,
 	}
 }

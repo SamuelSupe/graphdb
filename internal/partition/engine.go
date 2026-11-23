@@ -347,16 +347,23 @@ func (e Engine) finish(ctx context.Context, g Graph, txn Transaction) (Transacti
 	if txn.State == "committed" {
 		operation = "finalize"
 	}
-	for _, id := range txn.Participants {
-		group, err := g.GroupFor(id)
-		if err != nil {
-			return txn, err
+	if len(txn.Participants) > 0 {
+		workers, finishCtx := errgroup.WithContext(ctx)
+		workers.SetLimit(8)
+		for _, id := range txn.Participants {
+			workers.Go(func() error {
+				group, err := g.GroupFor(id)
+				if err != nil {
+					return err
+				}
+				a := Action{Operation: operation, Tenant: e.Tenant, Generation: g.Generation, Partition: id, Epoch: g.Partitions[id].Epoch, Txn: txn.ID, Sequence: txn.Sequence}
+				if prepared, ok := txn.Prepared[id]; ok {
+					a.Prepared = &prepared
+				}
+				return e.Remote.Action(finishCtx, group, a, nil)
+			})
 		}
-		a := Action{Operation: operation, Tenant: e.Tenant, Generation: g.Generation, Partition: id, Epoch: g.Partitions[id].Epoch, Txn: txn.ID, Sequence: txn.Sequence}
-		if prepared, ok := txn.Prepared[id]; ok {
-			a.Prepared = &prepared
-		}
-		if err := e.Remote.Action(ctx, group, a, nil); err != nil {
+		if err := workers.Wait(); err != nil {
 			return txn, err
 		}
 	}

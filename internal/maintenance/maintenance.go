@@ -595,7 +595,7 @@ func (s *Runner) markGC(tenantID string, now time.Time, checkpoint storage.GCChe
 		return
 	}
 	delete(state.gcCursor, tenantID)
-	if checkpoint.DeferredFiles > 0 {
+	if checkpoint.DeferredFiles > 0 && checkpoint.Deleted > 0 {
 		delete(state.lastGC, tenantID)
 		return
 	}

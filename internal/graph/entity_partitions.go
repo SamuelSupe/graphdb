@@ -26,6 +26,13 @@ func entityPartition(id string) byte {
 	return sum[0] % entityPartitionCount
 }
 
+func (g *Graph) inheritedEntityPartitions() *entityPartitions {
+	g.entityPartitionsMu.Lock()
+	parts := g.entityPartitions
+	g.entityPartitionsMu.Unlock()
+	return parts
+}
+
 func (g *Graph) shareEntityPartitions() *entityPartitions {
 	g.entityPartitionsMu.Lock()
 	defer g.entityPartitionsMu.Unlock()

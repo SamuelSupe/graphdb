@@ -13,11 +13,12 @@ type cachedReverseIndexCatalog struct {
 }
 
 type reverseIndexCatalogLoad struct {
-	done     chan struct{}
-	catalog  ReverseIndexCatalog
-	meta     ObjectMeta
-	err      error
-	canceled bool
+	done       chan struct{}
+	generation uint64
+	catalog    ReverseIndexCatalog
+	meta       ObjectMeta
+	err        error
+	canceled   bool
 }
 
 func (s *TenantStore) getCachedReverseIndexCatalogLocked(
@@ -57,19 +58,43 @@ func (s *TenantStore) loadReverseIndexCatalog(
 				return ReverseIndexCatalog{}, ObjectMeta{}, ctx.Err()
 			}
 		}
-		load := &reverseIndexCatalogLoad{done: make(chan struct{})}
+		load := &reverseIndexCatalogLoad{
+			done:       make(chan struct{}),
+			generation: s.reverseIndexCatalogGeneration[tenantID],
+		}
+		if s.reverseIndexCatalogLoads == nil {
+			s.reverseIndexCatalogLoads = map[string]*reverseIndexCatalogLoad{}
+		}
 		s.reverseIndexCatalogLoads[tenantID] = load
 		s.lockMu.Unlock()
 
-		catalog, meta, err := s.getReverseIndexCatalogWithMeta(
-			ctx, tenantID,
-		)
-		s.finishReverseIndexCatalogLoad(
-			tenantID, load, catalog, meta, err,
-			loadCanceledByContext(ctx, err),
-		)
-		return copyReverseIndexCatalog(load.catalog), load.meta, load.err
+		return s.runReverseIndexCatalogLoad(ctx, tenantID, load)
 	}
+}
+
+func (s *TenantStore) runReverseIndexCatalogLoad(
+	ctx context.Context,
+	tenantID string,
+	load *reverseIndexCatalogLoad,
+) (ReverseIndexCatalog, ObjectMeta, error) {
+	finished := false
+	defer func() {
+		if !finished {
+			s.finishReverseIndexCatalogLoad(
+				tenantID, load, ReverseIndexCatalog{}, ObjectMeta{},
+				errors.New("reverse index catalog load aborted"), false,
+			)
+		}
+	}()
+	catalog, meta, err := s.getReverseIndexCatalogWithMeta(
+		ctx, tenantID,
+	)
+	s.finishReverseIndexCatalogLoad(
+		tenantID, load, catalog, meta, err,
+		loadCanceledByContext(ctx, err),
+	)
+	finished = true
+	return copyReverseIndexCatalog(load.catalog), load.meta, load.err
 }
 
 func (s *TenantStore) finishReverseIndexCatalogLoad(
@@ -81,34 +106,39 @@ func (s *TenantStore) finishReverseIndexCatalogLoad(
 	canceled bool,
 ) {
 	s.lockMu.Lock()
+	stale := s.reverseIndexCatalogGeneration[tenantID] != load.generation
 	if cached, cachedMeta, ok := s.getCachedReverseIndexCatalogLocked(
 		tenantID, time.Now(),
 	); ok {
 		catalog, meta = cached, cachedMeta
 		_, _, err = reverseIndexCatalogCacheResult(cached, cachedMeta)
-	} else if err == nil {
-		s.setReverseIndexCatalogCacheEntryLocked(
-			tenantID,
-			cachedReverseIndexCatalog{
-				catalog: copyReverseIndexCatalog(catalog),
-				meta:    meta,
-				checked: time.Now(),
-			},
-		)
-	} else if errors.Is(err, ErrNotFound) {
-		s.setReverseIndexCatalogCacheEntryLocked(
-			tenantID,
-			cachedReverseIndexCatalog{
-				meta:    meta,
-				checked: time.Now(),
-			},
-		)
+	} else if !stale {
+		if err == nil {
+			s.setReverseIndexCatalogCacheEntryLocked(
+				tenantID,
+				cachedReverseIndexCatalog{
+					catalog: copyReverseIndexCatalog(catalog),
+					meta:    meta,
+					checked: time.Now(),
+				},
+			)
+		} else if errors.Is(err, ErrNotFound) {
+			s.setReverseIndexCatalogCacheEntryLocked(
+				tenantID,
+				cachedReverseIndexCatalog{
+					meta:    meta,
+					checked: time.Now(),
+				},
+			)
+		}
 	}
 	load.catalog = copyReverseIndexCatalog(catalog)
 	load.meta = meta
 	load.err = err
 	load.canceled = canceled
-	delete(s.reverseIndexCatalogLoads, tenantID)
+	if s.reverseIndexCatalogLoads[tenantID] == load {
+		delete(s.reverseIndexCatalogLoads, tenantID)
+	}
 	close(load.done)
 	s.lockMu.Unlock()
 }
@@ -141,6 +171,7 @@ func (s *TenantStore) setReverseIndexCatalogCacheEntry(
 ) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	s.bumpReverseIndexCatalogGenerationLocked(tenantID)
 	s.setReverseIndexCatalogCacheEntryLocked(tenantID, entry)
 }
 

@@ -34,7 +34,7 @@ func (s *TenantStore) queuedTasksForStart(ctx context.Context, tenant, kind stri
 	s.taskMu.Unlock()
 	if !loaded {
 		tasks := map[string]Task{}
-		collector := taskListCollector{options: TaskListOptions{Type: kind, Status: TaskStatusQueued, Limit: 1}}
+		collector := taskListCollector{options: TaskListOptions{Type: kind, Status: TaskStatusQueued, Limit: 4}}
 		overflow := false
 		if err := s.scanStoredTasks(ctx, tenant, func(task Task) {
 			if task.Status == TaskStatusQueued {
@@ -79,7 +79,7 @@ func (s *TenantStore) queuedTasksForStart(ctx context.Context, tenant, kind stri
 		s.taskMu.Unlock()
 	}
 	s.taskMu.Lock()
-	collector := taskListCollector{options: TaskListOptions{Type: kind, Status: TaskStatusQueued, Limit: 1}}
+	collector := taskListCollector{options: TaskListOptions{Type: kind, Status: TaskStatusQueued, Limit: 4}}
 	for _, task := range catalog.tasks {
 		collector.add(task)
 	}
@@ -98,17 +98,17 @@ func queuedTaskHeader(task Task) Task {
 }
 
 func (s *TenantStore) loadQueuedTaskCandidate(ctx context.Context, tenant string, candidates []Task) ([]Task, error) {
-	if len(candidates) == 0 {
-		return nil, nil
+	for _, candidate := range candidates {
+		task, err := s.GetTask(ctx, tenant, candidate.ID)
+		if errors.Is(err, ErrNotFound) || (err == nil && (task.Status != TaskStatusQueued || task.Type != candidate.Type)) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []Task{task}, nil
 	}
-	task, err := s.GetTask(ctx, tenant, candidates[0].ID)
-	if errors.Is(err, ErrNotFound) || (err == nil && (task.Status != TaskStatusQueued || task.Type != candidates[0].Type)) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return []Task{task}, nil
+	return nil, nil
 }
 func (s *TenantStore) taskObjectChanged(tenant, name string) {
 	s.taskMu.Lock()

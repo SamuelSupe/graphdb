@@ -45,6 +45,11 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 		release()
 		return nil, err
 	}
+	if err := os.WriteFile(filepath.Join(dir, objectViewMarker), []byte("1\n"), 0600); err != nil {
+		_ = os.RemoveAll(dir)
+		release()
+		return nil, err
+	}
 	source := &ReplicationSnapshotSource{root: dir, checkpoint: checkpoint, budget: budget, release: release}
 	var total int64
 	preparedParents := make(map[string]bool)

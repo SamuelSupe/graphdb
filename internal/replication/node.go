@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -102,6 +104,8 @@ type Node struct {
 	senders                 map[uint64]peerSender
 	controlSenders          map[uint64]peerSender
 	client                  transportClient
+	controlClient           transportClient
+	receiveSnapshotSlots    chan struct{}
 	application             chan applicationBatch
 	snapshotRequests        chan snapshotRequest
 	snapshotProbes          chan snapshotProbe
@@ -251,6 +255,13 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, err
 	}
 	n.client = newTransportClient()
+	controlTimeout := min(5*time.Second, max(time.Second, cfg.Tick*time.Duration(cfg.ElectionTicks)/2))
+	n.controlClient = transportClient{&http.Client{
+		Timeout:       controlTimeout,
+		Transport:     n.client.Transport,
+		CheckRedirect: n.client.CheckRedirect,
+	}}
+	n.receiveSnapshotSlots = make(chan struct{}, 2)
 	rc := &raft.Config{ID: cfg.ID, ElectionTick: cfg.ElectionTicks, HeartbeatTick: 1, Storage: disk, Applied: applied, MaxSizePerMsg: 1 << 20, MaxCommittedSizePerReady: 4 << 20, MaxInflightMsgs: 64, MaxUncommittedEntriesSize: 64 << 20, CheckQuorum: true, PreVote: true, DisableProposalForwarding: true, ReadOnlyOption: raft.ReadOnlySafe, StepDownOnRemoval: true}
 	if existing || !cfg.Bootstrap {
 		n.raft = raft.RestartNode(rc)
@@ -384,10 +395,20 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	for {
+		select {
+		case result := <-ch:
+			return result.data, result.err
+		default:
+		}
 		n.mu.Lock()
 		changed := n.changed
 		n.mu.Unlock()
 		if err := n.available(true); err != nil {
+			select {
+			case result := <-ch:
+				return result.data, result.err
+			default:
+			}
 			return nil, fmt.Errorf("%w: %v", ErrOutcomeUnknown, err)
 		}
 		select {
@@ -395,8 +416,18 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 			return result.data, result.err
 		case <-changed:
 		case <-ctx.Done():
+			select {
+			case result := <-ch:
+				return result.data, result.err
+			default:
+			}
 			return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, ctx.Err())
 		case <-n.ctx.Done():
+			select {
+			case result := <-ch:
+				return result.data, result.err
+			default:
+			}
 			return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, n.available(false))
 		}
 	}
@@ -472,6 +503,16 @@ func (n *Node) readIndex(ctx context.Context) (uint64, error) {
 		}
 	}
 	return index, nil
+}
+
+func (n *Node) Healthy() error {
+	return n.available(false)
+}
+
+func (n *Node) Peers() map[uint64]string {
+	n.peerMu.RLock()
+	defer n.peerMu.RUnlock()
+	return maps.Clone(n.peers)
 }
 
 func (n *Node) available(leader bool) error {

@@ -85,65 +85,70 @@ type TenantStore struct {
 
 	Prefix string
 
-	objectProbeMu            sync.Mutex
-	objectProbeActive        *objectStoreProbeCall
-	lockMu                   sync.Mutex
-	tenantLocks              map[string]*tenantLock
-	tenantRegistryMu         sync.Mutex
-	writeCache               map[string]loadedGraph
-	writeCacheOrder          []string
-	writeCacheBytes          int64
-	writerLeaseCache         map[string]cachedWriterLease
-	registeredTenantCache    map[string]struct{}
-	collectorStatusCache     map[string]cachedCollectorStatus
-	readerHeartbeatCache     map[string]cachedReaderHeartbeat
-	objectKeyCache           map[string]struct{}
-	tenantMetadataCache      map[string]cachedTenantMetadata
-	metadataRepairMu         sync.Mutex
-	metadataRepairs          map[string]bool
-	metadataRepairQueue      chan string
-	MetadataRecoveryLogger   IngestLogger
-	purgeTombstoneCache      map[string]cachedTenantPurgeTombstone
-	sourcePolicyCache        map[string]cachedSourcePolicy
-	tenantConfigCache        map[string]cachedTenantConfig
-	indexCatalogCache        map[string]cachedIndexCatalog
-	indexCatalogLoads        map[string]*indexCatalogLoad
-	indexUpdateMu            sync.Mutex
-	indexUpdateTails         map[string]chan struct{}
-	localIndexMaintenance    map[string]int
-	localMaintenanceWait     map[string]*localMaintenanceCompletion
-	indexUnreservedTails     map[string]chan struct{}
-	pendingIngestIndexes     map[string]*commitIndexUpdate
-	maintenance              *maintenanceResources
-	activeIngestIndexUpdates int
-	reverseIndexCatalogCache map[string]cachedReverseIndexCatalog
-	reverseIndexCatalogLoads map[string]*reverseIndexCatalogLoad
-	compiledScanCatalogCache map[string]*compiledScanCatalog
-	indexCache               *indexObjectCache
-	entityPageCache          *entityPageCache
-	edgeLookupCache          *edgeLookupCache
-	adjacencyCache           *decodedLookupCache[adjacencyNode]
-	fieldLookupCache         *decodedLookupCache[map[string][]string]
-	taskMu                   sync.Mutex
-	queuedTaskCatalogs       map[string]*queuedTaskCatalog
-	taskCancels              map[string]context.CancelFunc
-	taskActive               map[string]Task
-	taskWorkers              sync.WaitGroup
-	backgroundCtx            context.Context
-	stopBackground           context.CancelFunc
-	taskClosing              bool
-	taskShutdownOnce         sync.Once
-	taskShutdownDone         chan struct{}
-	taskQueueSlots           chan struct{}
-	taskExecutionSlots       chan struct{}
-	taskBackupSlots          chan struct{}
-	taskResidentSlots        chan struct{}
-	taskTenantSlots          []chan struct{}
-	InstanceID               string
-	ReaderID                 string
-	LifecycleCacheTTL        time.Duration
-	TaskPersistenceTimeout   time.Duration
-	MaxRetries               int
+	objectProbeMu                 sync.Mutex
+	objectProbeActive             *objectStoreProbeCall
+	lockMu                        sync.Mutex
+	tenantLocks                   map[string]*tenantLock
+	tenantRegistryMu              sync.Mutex
+	writeCache                    map[string]loadedGraph
+	writeCacheOrder               []string
+	writeCacheBytes               int64
+	writerLeaseCache              map[string]cachedWriterLease
+	registeredTenantCache         map[string]struct{}
+	collectorStatusCache          map[string]cachedCollectorStatus
+	readerHeartbeatCache          map[string]cachedReaderHeartbeat
+	objectKeyMu                   sync.Mutex
+	objectKeyCache                map[string]struct{}
+	objectKeyPrefixes             map[string]map[string]struct{}
+	objectKeyIndexed              int
+	tenantMetadataCache           map[string]cachedTenantMetadata
+	metadataRepairMu              sync.Mutex
+	metadataRepairs               map[string]bool
+	metadataRepairQueue           chan string
+	MetadataRecoveryLogger        IngestLogger
+	purgeTombstoneCache           map[string]cachedTenantPurgeTombstone
+	sourcePolicyCache             map[string]cachedSourcePolicy
+	tenantConfigCache             map[string]cachedTenantConfig
+	indexCatalogCache             map[string]cachedIndexCatalog
+	indexCatalogLoads             map[string]*indexCatalogLoad
+	indexCatalogGeneration        map[string]uint64
+	indexUpdateMu                 sync.Mutex
+	indexUpdateTails              map[string]chan struct{}
+	localIndexMaintenance         map[string]int
+	localMaintenanceWait          map[string]*localMaintenanceCompletion
+	indexUnreservedTails          map[string]chan struct{}
+	pendingIngestIndexes          map[string]*commitIndexUpdate
+	maintenance                   *maintenanceResources
+	activeIngestIndexUpdates      int
+	reverseIndexCatalogCache      map[string]cachedReverseIndexCatalog
+	reverseIndexCatalogLoads      map[string]*reverseIndexCatalogLoad
+	reverseIndexCatalogGeneration map[string]uint64
+	compiledScanCatalogCache      map[string]*compiledScanCatalog
+	indexCache                    *indexObjectCache
+	entityPageCache               *entityPageCache
+	edgeLookupCache               *edgeLookupCache
+	adjacencyCache                *decodedLookupCache[adjacencyNode]
+	fieldLookupCache              *decodedLookupCache[map[string][]string]
+	taskMu                        sync.Mutex
+	queuedTaskCatalogs            map[string]*queuedTaskCatalog
+	taskCancels                   map[string]context.CancelFunc
+	taskActive                    map[string]Task
+	taskWorkers                   sync.WaitGroup
+	backgroundCtx                 context.Context
+	stopBackground                context.CancelFunc
+	taskClosing                   bool
+	taskShutdownOnce              sync.Once
+	taskShutdownDone              chan struct{}
+	taskQueueSlots                chan struct{}
+	taskExecutionSlots            chan struct{}
+	taskBackupSlots               chan struct{}
+	taskResidentSlots             chan struct{}
+	taskTenantSlots               []chan struct{}
+	InstanceID                    string
+	ReaderID                      string
+	LifecycleCacheTTL             time.Duration
+	TaskPersistenceTimeout        time.Duration
+	MaxRetries                    int
 
 	MaxWriteCacheTenants   int
 	MaxMaintenanceBytes    int64
@@ -180,44 +185,47 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 	backgroundCtx, stopBackground := context.WithCancel(context.Background())
 	store := &TenantStore{
 		backgroundCtx: backgroundCtx, stopBackground: stopBackground,
-		Objects:                  objects,
-		files:                    exclusiveFileStore(objects),
-		Prefix:                   cleanPrefix(prefix),
-		tenantLocks:              map[string]*tenantLock{},
-		writeCache:               map[string]loadedGraph{},
-		writerLeaseCache:         map[string]cachedWriterLease{},
-		registeredTenantCache:    map[string]struct{}{},
-		collectorStatusCache:     map[string]cachedCollectorStatus{},
-		readerHeartbeatCache:     map[string]cachedReaderHeartbeat{},
-		objectKeyCache:           map[string]struct{}{},
-		tenantMetadataCache:      map[string]cachedTenantMetadata{},
-		purgeTombstoneCache:      map[string]cachedTenantPurgeTombstone{},
-		sourcePolicyCache:        map[string]cachedSourcePolicy{},
-		tenantConfigCache:        map[string]cachedTenantConfig{},
-		indexCatalogCache:        map[string]cachedIndexCatalog{},
-		indexCatalogLoads:        map[string]*indexCatalogLoad{},
-		indexUpdateTails:         map[string]chan struct{}{},
-		indexUnreservedTails:     map[string]chan struct{}{},
-		reverseIndexCatalogCache: map[string]cachedReverseIndexCatalog{},
-		reverseIndexCatalogLoads: map[string]*reverseIndexCatalogLoad{},
-		compiledScanCatalogCache: map[string]*compiledScanCatalog{},
-		indexCache:               newIndexObjectCache(4096),
-		entityPageCache:          newEntityPageCache(2048),
-		edgeLookupCache:          newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
-		adjacencyCache:           newDecodedLookupCache(256, 16<<20, adjacencyNodeBytes),
-		fieldLookupCache:         newDecodedLookupCache(2048, 64<<20, estimateFieldLookupBytes),
-		taskCancels:              map[string]context.CancelFunc{},
-		taskActive:               map[string]Task{},
-		taskQueueSlots:           make(chan struct{}, defaultTaskQueueLimit),
-		taskExecutionSlots:       make(chan struct{}, defaultTaskExecutionLimit),
-		taskBackupSlots:          make(chan struct{}, 2),
-		taskResidentSlots:        make(chan struct{}, defaultTaskExecutionLimit),
-		taskTenantSlots:          newTaskTenantSlots(defaultTaskTenantStripes),
-		InstanceID:               instanceID,
-		ReaderID:                 instanceID,
-		LifecycleCacheTTL:        time.Second,
-		TaskPersistenceTimeout:   10 * time.Second,
-		MaxRetries:               3,
+		Objects:                       objects,
+		files:                         exclusiveFileStore(objects),
+		Prefix:                        cleanPrefix(prefix),
+		tenantLocks:                   map[string]*tenantLock{},
+		writeCache:                    map[string]loadedGraph{},
+		writerLeaseCache:              map[string]cachedWriterLease{},
+		registeredTenantCache:         map[string]struct{}{},
+		collectorStatusCache:          map[string]cachedCollectorStatus{},
+		readerHeartbeatCache:          map[string]cachedReaderHeartbeat{},
+		objectKeyCache:                map[string]struct{}{},
+		objectKeyPrefixes:             map[string]map[string]struct{}{},
+		tenantMetadataCache:           map[string]cachedTenantMetadata{},
+		purgeTombstoneCache:           map[string]cachedTenantPurgeTombstone{},
+		sourcePolicyCache:             map[string]cachedSourcePolicy{},
+		tenantConfigCache:             map[string]cachedTenantConfig{},
+		indexCatalogCache:             map[string]cachedIndexCatalog{},
+		indexCatalogLoads:             map[string]*indexCatalogLoad{},
+		indexCatalogGeneration:        map[string]uint64{},
+		indexUpdateTails:              map[string]chan struct{}{},
+		indexUnreservedTails:          map[string]chan struct{}{},
+		reverseIndexCatalogCache:      map[string]cachedReverseIndexCatalog{},
+		reverseIndexCatalogLoads:      map[string]*reverseIndexCatalogLoad{},
+		reverseIndexCatalogGeneration: map[string]uint64{},
+		compiledScanCatalogCache:      map[string]*compiledScanCatalog{},
+		indexCache:                    newIndexObjectCache(4096),
+		entityPageCache:               newEntityPageCache(2048),
+		edgeLookupCache:               newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
+		adjacencyCache:                newDecodedLookupCache(256, 16<<20, adjacencyNodeBytes),
+		fieldLookupCache:              newDecodedLookupCache(2048, 64<<20, estimateFieldLookupBytes),
+		taskCancels:                   map[string]context.CancelFunc{},
+		taskActive:                    map[string]Task{},
+		taskQueueSlots:                make(chan struct{}, defaultTaskQueueLimit),
+		taskExecutionSlots:            make(chan struct{}, defaultTaskExecutionLimit),
+		taskBackupSlots:               make(chan struct{}, 2),
+		taskResidentSlots:             make(chan struct{}, defaultTaskExecutionLimit),
+		taskTenantSlots:               newTaskTenantSlots(defaultTaskTenantStripes),
+		InstanceID:                    instanceID,
+		ReaderID:                      instanceID,
+		LifecycleCacheTTL:             time.Second,
+		TaskPersistenceTimeout:        10 * time.Second,
+		MaxRetries:                    3,
 
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
@@ -299,7 +307,12 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Manifest{}, err
 	}
-	loaded, err := s.loadForWriteLocked(ctx, tenantID)
+	readCtx, releaseView, err := s.ReadViewContext(ctx, tenantID)
+	if err != nil {
+		return Manifest{}, err
+	}
+	loaded, err := s.loadForWriteLocked(readCtx, tenantID)
+	releaseView()
 	if err != nil {
 		return Manifest{}, err
 	}

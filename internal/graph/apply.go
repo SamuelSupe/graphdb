@@ -140,6 +140,7 @@ func (g *Graph) ApplyCommitBatchStorageCopyWithOptions(commits []Commit, options
 		}
 		reports = append(reports, report)
 	}
+	next.cow = nil
 	return next, reports, nil
 }
 
@@ -175,6 +176,7 @@ func (g *Graph) applyCommitToCopy(clone *Graph, commit Commit, options ApplyOpti
 		return nil, ApplyReport{}, err
 	}
 	report.Suppressed = append(policyReport.Suppressed, report.Suppressed...)
+	clone.cow = nil
 	return clone, report, nil
 }
 
@@ -360,13 +362,13 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		}
 	}
 	for _, split := range commit.Mutations.SplitEntities {
-		tracker.touchSplit(split)
 		if err := g.applySplit(
 			split,
 			commit.Version,
 			now,
 			uniqueValidator,
 			fieldSpecsByKind,
+			tracker,
 			affected,
 			affectedEdges,
 		); err != nil {

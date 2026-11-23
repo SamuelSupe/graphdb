@@ -150,14 +150,17 @@ func (s *Server) indexHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deep := strings.EqualFold(r.URL.Query().Get("deep"), "true")
+	ctx := r.Context()
 	if deep {
-		release, acquired := s.enterMaintenance(w, tenantID)
+		var release func()
+		var acquired bool
+		ctx, release, acquired = s.enterMaintenanceContext(w, ctx, tenantID)
 		if !acquired {
 			return
 		}
 		defer release()
 	}
-	health, err := s.Store.IndexHealthWithOptions(r.Context(), tenantID, storage.IndexHealthOptions{Deep: deep})
+	health, err := s.Store.IndexHealthWithOptions(ctx, tenantID, storage.IndexHealthOptions{Deep: deep})
 	if err != nil {
 		writeStorageError(w, err)
 		return

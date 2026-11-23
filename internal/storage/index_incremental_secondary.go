@@ -31,6 +31,10 @@ func (s *TenantStore) buildIncrementalSecondaryIndexes(ctx context.Context, tena
 		objects := append([]IndexObject(nil), spec.Objects...)
 		shardedObjects, sharded := secondaryIndexShardObjectMap(spec.Objects)
 		postings, hasPostings := indexObjectByRole(spec.Objects, "postings")
+		if !sharded && hasPostings && spec.EntryCount == 0 && postings.RowCount == 0 {
+			objects = removeSecondaryIndexObjectGroup(objects, postings)
+			hasPostings = false
+		}
 		groups := map[string]*incrementalSecondaryGroup{}
 
 		loadGroup := func(value string) (*incrementalSecondaryGroup, error) {

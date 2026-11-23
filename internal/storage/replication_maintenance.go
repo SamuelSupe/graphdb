@@ -90,6 +90,11 @@ func (s *TenantStore) CaptureReplicatedMaintenance(ctx context.Context, task Tas
 		release()
 		return nil, err
 	}
+	if err := os.WriteFile(filepath.Join(root, objectViewMarker), []byte("1\n"), 0600); err != nil {
+		_ = os.RemoveAll(root)
+		release()
+		return nil, err
+	}
 	source := &ReplicatedMaintenanceSource{root: root, store: s, task: task, token: token, release: release, originals: map[string]os.FileInfo{}}
 	if task.Type != TaskTypeGC {
 		if cached, ok := s.getWriteCache(task.TenantID); ok {
@@ -300,6 +305,9 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 		return task, err
 	}
 	defer os.RemoveAll(staging)
+	if err := os.WriteFile(filepath.Join(staging, objectViewMarker), []byte("1\n"), 0600); err != nil {
+		return task, err
+	}
 	keys := []string{}
 	seen := map[string]bool{}
 	for _, key := range prepared.Deleted {

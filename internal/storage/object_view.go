@@ -92,7 +92,7 @@ func removeAbandonedObjectViews(root string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".snapshot-view-") {
+		if !entry.IsDir() || !isAbandonedObjectViewDir(entry.Name()) {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
@@ -118,4 +118,13 @@ func removeAbandonedObjectViews(root string) error {
 		}
 	}
 	return nil
+}
+
+func isAbandonedObjectViewDir(name string) bool {
+	for _, prefix := range []string{".snapshot-view-", ".graphdb-replication-snapshot-", ".maintenance-view-", ".maintenance-publish-"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }

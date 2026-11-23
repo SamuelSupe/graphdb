@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
@@ -170,13 +171,13 @@ func decodeParquetIndexCatalogReader(ctx context.Context, source parquet.ReaderA
 		for i := 0; i < int(batch.NumRows()); i++ {
 			rowCatalog := IndexCatalog{
 				LayoutVersion: int(columns.layoutVersion.Value(i)),
-				TenantID:      columns.tenantID.Value(i),
+				TenantID:      strings.Clone(columns.tenantID.Value(i)),
 				Version:       columns.version.Value(i),
 				UpdatedAt:     parquetio.ParseTime(columns.updatedAt.Value(i)),
 			}
 			if rows == 0 {
 				catalog = rowCatalog
-				expectedHash = columns.catalogHash.Value(i)
+				expectedHash = strings.Clone(columns.catalogHash.Value(i))
 				indexCount = columns.indexCount.Value(i)
 				edgeShardCount = columns.edgeShardCount.Value(i)
 				entityPageCount = columns.entityPageCount.Value(i)
@@ -373,6 +374,9 @@ func indexCatalogRowFromObject(kind string, parent int, child int, object IndexO
 }
 
 func applyIndexCatalogRow(catalog *IndexCatalog, row indexCatalogRow) error {
+	if row.ParentOrdinal < 0 || row.ChildOrdinal < 0 {
+		return fmt.Errorf("invalid negative index catalog ordinal")
+	}
 	switch row.Kind {
 	case indexCatalogRowMetadata:
 		return nil
@@ -578,29 +582,29 @@ func parquetIndexCatalogColumns(batch arrow.RecordBatch) (parquetIndexCatalogCol
 
 func indexCatalogRowFromColumns(columns parquetIndexCatalogColumnSet, row int) indexCatalogRow {
 	return indexCatalogRow{
-		Kind:           columns.rowKind.Value(row),
+		Kind:           strings.Clone(columns.rowKind.Value(row)),
 		ParentOrdinal:  int(columns.parentOrdinal.Value(row)),
 		ChildOrdinal:   int(columns.childOrdinal.Value(row)),
-		Name:           columns.name.Value(row),
-		EntityKind:     columns.kind.Value(row),
-		Field:          columns.field.Value(row),
-		RelationType:   columns.relationType.Value(row),
-		Shard:          columns.shard.Value(row),
-		IndexType:      columns.indexType.Value(row),
-		Status:         columns.status.Value(row),
-		Format:         columns.format.Value(row),
-		Codec:          columns.codec.Value(row),
-		Role:           columns.role.Value(row),
-		ObjectKey:      columns.objectKey.Value(row),
+		Name:           strings.Clone(columns.name.Value(row)),
+		EntityKind:     strings.Clone(columns.kind.Value(row)),
+		Field:          strings.Clone(columns.field.Value(row)),
+		RelationType:   strings.Clone(columns.relationType.Value(row)),
+		Shard:          strings.Clone(columns.shard.Value(row)),
+		IndexType:      strings.Clone(columns.indexType.Value(row)),
+		Status:         strings.Clone(columns.status.Value(row)),
+		Format:         strings.Clone(columns.format.Value(row)),
+		Codec:          strings.Clone(columns.codec.Value(row)),
+		Role:           strings.Clone(columns.role.Value(row)),
+		ObjectKey:      strings.Clone(columns.objectKey.Value(row)),
 		RowCount:       int(columns.rowCount.Value(row)),
 		EntryCount:     int(columns.entryCount.Value(row)),
 		DistinctValues: int(columns.distinctValues.Value(row)),
 		EdgeCount:      int(columns.edgeCount.Value(row)),
 		EntityCount:    int(columns.entityCount.Value(row)),
-		StatValue:      columns.statValue.Value(row),
+		StatValue:      strings.Clone(columns.statValue.Value(row)),
 		StatCount:      int(columns.statCount.Value(row)),
-		ContentHash:    columns.objectContentHash.Value(row),
-		SchemaHash:     columns.schemaHash.Value(row),
+		ContentHash:    strings.Clone(columns.objectContentHash.Value(row)),
+		SchemaHash:     strings.Clone(columns.schemaHash.Value(row)),
 		UpdatedAt:      parquetio.ParseTime(columns.specUpdatedAt.Value(row)),
 	}
 }

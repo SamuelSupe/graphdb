@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"io"
 	"mime"
 	"net/http"
@@ -35,12 +36,19 @@ func (s *Server) startImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxWriteRequestBytes)
-	data, err := io.ReadAll(r.Body)
+	var buf bytes.Buffer
+	if r.ContentLength > 0 && r.ContentLength <= maxWriteRequestBytes {
+		buf.Grow(int(r.ContentLength))
+	}
+	_, err = io.Copy(&buf, r.Body)
 	if err != nil {
 		writeDecodeError(w, r, err)
 		return
 	}
-	task, err := s.Store.StartImport(r.Context(), tenantID, data, storage.ImportOptions{
+	data := buf.Bytes()
+	writeCtx, cancel := s.writeExecutionContext(r.Context())
+	defer cancel()
+	task, err := s.Store.StartImport(writeCtx, tenantID, data, storage.ImportOptions{
 		Format: format, Source: r.URL.Query().Get("source"), CollectorID: r.URL.Query().Get("collector_id"),
 		BatchSize: batchSize, OnError: r.URL.Query().Get("on_error"),
 	})

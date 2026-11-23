@@ -297,27 +297,34 @@ func (n *Node) Drain(ctx context.Context) (err error) {
 			break
 		}
 	}
-	return n.transferLeadership(ctx, target)
+	return n.transferLeadership(ctx, target, true)
 }
 
-func (n *Node) transferLeadership(ctx context.Context, target uint64) error {
+func (n *Node) transferLeadership(ctx context.Context, target uint64, allowAnyVoter bool) error {
 	leader := n.LeaderID()
 	if target == 0 || target == leader {
 		return fmt.Errorf("target must be a different voting replica")
 	}
 	status := n.raft.Status()
-	if _, voter := status.Config.Voters.IDs()[target]; !voter {
+	voters := status.Config.Voters.IDs()
+	if _, voter := voters[target]; !voter {
 		return fmt.Errorf("target is not a voter")
 	}
 	n.raft.TransferLeadership(ctx, leader, target)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	lastTransfer := time.Now()
+	retryInterval := max(200*time.Millisecond, n.cfg.Tick*time.Duration(max(n.cfg.ElectionTicks/2, 1)))
 	for {
-		if n.LeaderID() == target {
-			peer, err := n.peerStatus(ctx, target)
-			if err == nil && peer.Ready && peer.LeaderID == target && peer.Applied >= peer.Commit {
+		current := n.LeaderID()
+		if current != 0 && current != n.cfg.ID && (current == target || (allowAnyVoter && func() bool { _, ok := voters[current]; return ok }())) {
+			peer, err := n.peerStatus(ctx, current)
+			if err == nil && peer.Ready && peer.LeaderID == current && peer.Applied >= peer.Commit {
 				return nil
 			}
+		} else if current == n.cfg.ID && time.Since(lastTransfer) >= retryInterval {
+			n.raft.TransferLeadership(ctx, current, target)
+			lastTransfer = time.Now()
 		}
 		select {
 		case <-ticker.C:
@@ -401,14 +408,46 @@ func (n *Node) rollingHandlers(mux *http.ServeMux) {
 			http.Error(w, "invalid leadership transfer", http.StatusBadRequest)
 			return
 		}
-		report := n.UpgradeStatus(r.Context())
+		if !n.maintenanceMu.TryLock() {
+			http.Error(w, "another local maintenance operation is running", http.StatusConflict)
+			return
+		}
+		defer n.maintenanceMu.Unlock()
+		n.mu.Lock()
+		n.handoff = true
+		n.mu.Unlock()
+		defer func() {
+			n.mu.Lock()
+			n.handoff = false
+			close(n.changed)
+			n.changed = make(chan struct{})
+			n.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		for {
+			n.mu.Lock()
+			active, changed := n.activeProposals, n.changed
+			n.mu.Unlock()
+			if active == 0 {
+				break
+			}
+			select {
+			case <-changed:
+			case <-ctx.Done():
+				http.Error(w, ctx.Err().Error(), http.StatusConflict)
+				return
+			case <-n.ctx.Done():
+				http.Error(w, ErrUnavailable.Error(), http.StatusConflict)
+				return
+			}
+		}
+		report := n.UpgradeStatus(ctx)
 		if !report.Safe {
 			http.Error(w, report.Reason, http.StatusConflict)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		if err := n.transferLeadership(ctx, request.Target); err != nil {
+		if err := n.transferLeadership(ctx, request.Target, false); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -437,7 +476,7 @@ func (n *Node) handoffDrainedLeadership() {
 			// Ready is a leader-only flag; a healthy transfer target is still
 			// a follower. Require it to have applied this leader's commit.
 			if err == nil && peer.LeaderID == n.cfg.ID && peer.Applied >= status.Commit && !peer.Draining && peer.Error == "" && peer.SnapshotError == "" {
-				_ = n.transferLeadership(ctx, id)
+				_ = n.transferLeadership(ctx, id, true)
 				return
 			}
 		}

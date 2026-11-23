@@ -163,6 +163,9 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 		return err
 	}
 	defer os.RemoveAll(staging)
+	if err := os.WriteFile(filepath.Join(staging, objectViewMarker), []byte("1\n"), 0600); err != nil {
+		return err
+	}
 	objects := make(map[string]string)
 	var checkpoint ReplicationCheckpoint
 	var total int64
@@ -259,14 +262,13 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 		if err != nil {
 			return nil, err
 		}
+		toDelete := make([]string, 0)
 		for _, object := range existing {
 			if fileStoreInternalPath(object.Key) {
 				continue
 			}
 			if _, keep := objects[object.Key]; !keep {
-				if err := s.Delete(applyCtx, object.Key); err != nil {
-					return nil, err
-				}
+				toDelete = append(toDelete, object.Key)
 			}
 		}
 		keys := make([]string, 0, len(objects))
@@ -274,6 +276,19 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
+		journalKeys := make([]string, 0, len(toDelete)+len(keys))
+		journalKeys = append(journalKeys, toDelete...)
+		journalKeys = append(journalKeys, keys...)
+		sort.Strings(journalKeys)
+		applyCtx = context.WithValue(applyCtx, preparedFileParentsKey{}, &preparedFileParents{files: s, checked: map[string]bool{}})
+		if err := s.journalObjects(applyCtx, journalKeys); err != nil {
+			return nil, err
+		}
+		for _, key := range toDelete {
+			if err := s.Delete(applyCtx, key); err != nil {
+				return nil, err
+			}
+		}
 		for _, key := range keys {
 			file, err := os.Open(objects[key])
 			if err != nil {
@@ -285,7 +300,7 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 				return nil, err
 			}
 		}
-		return checkpoint.Response, nil
+		return checkpoint.Response, s.SetReplicationIngestQueue(applyCtx, checkpoint.IngestQueue)
 	})
 	return err
 }

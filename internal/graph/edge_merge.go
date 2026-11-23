@@ -59,8 +59,8 @@ func edgeConflict(edgeID string, incomingID string, field string, existing Field
 		ExistingPriority: existing.Priority,
 		IncomingSource:   incoming.Source,
 		IncomingPriority: incoming.Priority,
-		ExistingValue:    existingValue,
-		IncomingValue:    incomingValue,
+		ExistingValue:    copyAny(existingValue),
+		IncomingValue:    copyAny(incomingValue),
 		Message:          message,
 	}
 }

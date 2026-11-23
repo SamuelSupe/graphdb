@@ -267,23 +267,33 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 	}
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
-		minimum := uint64(ProtocolVersion)
+		var existing uint64
+		hasMinimum := false
 		if data := meta.Get([]byte("minimum-protocol")); len(data) == 8 {
-			minimum = binary.BigEndian.Uint64(data)
+			existing = binary.BigEndian.Uint64(data)
+			hasMinimum = true
+		}
+		minimum := existing
+		if !hasMinimum {
+			minimum = uint64(ProtocolVersion)
 		}
 		if envelope != nil {
 			minimum = max(minimum, uint64(envelope.Protocol))
 		}
 		for _, entry := range ready.Entries {
 			if entry.Type == raftpb.EntryNormal && len(entry.Data) > 0 {
-				var proposal proposal
-				if json.Unmarshal(entry.Data, &proposal) == nil {
-					minimum = max(minimum, uint64(max(0, proposal.Protocol)))
+				var header struct {
+					Protocol int `json:"protocol"`
+				}
+				if json.Unmarshal(entry.Data, &header) == nil {
+					minimum = max(minimum, uint64(max(0, header.Protocol)))
 				}
 			}
 		}
-		if err := meta.Put([]byte("minimum-protocol"), indexKey(minimum)); err != nil {
-			return err
+		if !hasMinimum || minimum > existing {
+			if err := meta.Put([]byte("minimum-protocol"), indexKey(minimum)); err != nil {
+				return err
+			}
 		}
 		entries := tx.Bucket([]byte("entries"))
 		if !raft.IsEmptySnap(ready.Snapshot) {
@@ -381,13 +391,20 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 		return err
 	}
 	err = s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
 		envelope, decodeErr := decodeSnapshot(snapshot.Data)
 		if decodeErr == nil && envelope.Protocol > ProtocolVersion {
-			if err := tx.Bucket([]byte("meta")).Put([]byte("minimum-protocol"), indexKey(uint64(envelope.Protocol))); err != nil {
-				return err
+			var existing uint64
+			if raw := meta.Get([]byte("minimum-protocol")); len(raw) == 8 {
+				existing = binary.BigEndian.Uint64(raw)
+			}
+			if uint64(envelope.Protocol) > existing {
+				if err := meta.Put([]byte("minimum-protocol"), indexKey(uint64(envelope.Protocol))); err != nil {
+					return err
+				}
 			}
 		}
-		if err := tx.Bucket([]byte("meta")).Put([]byte("snapshot"), data); err != nil {
+		if err := meta.Put([]byte("snapshot"), data); err != nil {
 			return err
 		}
 		cursor := tx.Bucket([]byte("entries")).Cursor()

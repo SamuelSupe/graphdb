@@ -48,7 +48,13 @@ func (c *ReaderCache) startStoreLoad(
 	})
 	c.setLoadCancel(load, cancel, true)
 	go func() {
-		defer releaseStoreLoad()
+		finished := false
+		defer func() {
+			releaseStoreLoad()
+			if !finished {
+				c.finishLoad(tenantID, load, errors.New("reader cache store load aborted"))
+			}
+		}()
 		loaded, err := c.loadStoreAtLeastFromEntry(
 			loadCtx, tenantID, minVersion,
 			cached, cachedOK, manifest, manifestMeta,
@@ -58,6 +64,7 @@ func (c *ReaderCache) startStoreLoad(
 		// rejected by admission for work that has already stopped.
 		releaseStoreLoad()
 		if err != nil {
+			finished = true
 			if c.finishLoad(tenantID, load, err) != nil {
 				c.recordCache(tenantID, "miss_error")
 			}
@@ -68,6 +75,7 @@ func (c *ReaderCache) startStoreLoad(
 		entry, ok := c.entries[tenantID]
 		if ok && cacheEntryNewerThanLoaded(entry, loaded) && entry.manifest.Version >= minVersion {
 			c.mu.Unlock()
+			finished = true
 			c.recordCache(tenantID, "hit_newer")
 			c.recordVisible(tenantID, entry.manifest.Version)
 			c.finishLoad(tenantID, load, nil)
@@ -75,6 +83,7 @@ func (c *ReaderCache) startStoreLoad(
 		}
 		if c.Store.readGeneration(tenantID) != startGen {
 			c.mu.Unlock()
+			finished = true
 			c.finishLoad(tenantID, load, nil)
 			return
 		}
@@ -86,6 +95,7 @@ func (c *ReaderCache) startStoreLoad(
 		}
 		if err := c.storeEntryLocked(tenantID, next); err != nil {
 			c.mu.Unlock()
+			finished = true
 			if errors.Is(err, ErrReaderCacheEntryTooLarge) {
 				c.recordCache(tenantID, "miss_uncached")
 				c.recordVisible(tenantID, loaded.Manifest.Version)
@@ -97,6 +107,7 @@ func (c *ReaderCache) startStoreLoad(
 			return
 		}
 		c.mu.Unlock()
+		finished = true
 		c.recordVisible(tenantID, loaded.Manifest.Version)
 		c.finishLoad(tenantID, load, nil)
 	}()

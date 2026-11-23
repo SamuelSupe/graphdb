@@ -75,11 +75,11 @@ func visitIndexedPathNeighborEdge(
 	direction string,
 	visit func(graph.Neighbor) (bool, error),
 ) (bool, error) {
-	if !requestEdgeMatches(request, edge) {
-		return true, nil
-	}
 	if err := budget.add(1); err != nil {
 		return false, err
+	}
+	if !requestEdgeMatches(request, edge) {
+		return true, nil
 	}
 	entity, ok, err := materializeEntity(
 		g, directedNeighborID(edge, direction), request, budget,

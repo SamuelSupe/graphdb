@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,9 +18,19 @@ import (
 
 const replicationDirectory = ".graphdb-replication"
 
+// ReplicationIngestQueue identifies pending receipts at this applied position.
+// A nil hint means the writer did not index the queue. Spilled queues use
+// journaled membership objects instead of growing every Raft checkpoint.
+type ReplicationIngestQueue struct {
+	Count   int      `json:"count"`
+	Keys    []string `json:"keys,omitempty"`
+	Spilled bool     `json:"spilled,omitempty"`
+}
+
 type ReplicationCheckpoint struct {
-	Index    uint64 `json:"index"`
-	Response []byte `json:"response,omitempty"`
+	IngestQueue *ReplicationIngestQueue `json:"ingest_queue,omitempty"`
+	Index       uint64                  `json:"index"`
+	Response    []byte                  `json:"response,omitempty"`
 }
 
 // ReplicationRejectedError carries a deterministic application rejection. Only
@@ -33,6 +44,7 @@ func (*ReplicationRejectedError) Error() string {
 }
 
 type replicationJournal struct {
+	ingestQueue *ReplicationIngestQueue
 	db          *bolt.DB
 	files       *FileStore
 	mu          sync.Mutex
@@ -75,19 +87,26 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	if err != nil {
 		return nil, err
 	}
-	db, err := bolt.Open(filepath.Join(dir, "pending.db"), 0600, &bolt.Options{Timeout: time.Second})
+	pendingPath := filepath.Join(dir, "pending.db")
+	if _, statErr := os.Lstat(pendingPath); statErr == nil {
+		return nil, fmt.Errorf("replication journal %s still exists from an unrecovered application", pendingPath)
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	db, err := bolt.Open(pendingPath, 0600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
 		return nil, err
 	}
 	// Coalesce concurrent before-images without delaying serial applications.
 	db.MaxBatchSize = 8
 	db.MaxBatchDelay = 100 * time.Microsecond
-	journal := &replicationJournal{db: db, files: s}
+	journal := &replicationJournal{db: db, files: s, ingestQueue: checkpoint.IngestQueue}
 	// bbolt initializes new databases durably. Create the objects bucket with
 	// the first before-image instead of syncing a separate empty transaction.
 	if err := syncDir(dir); err != nil {
-		db.Close()
-		return nil, err
+		closeErr := db.Close()
+		rollbackErr := s.recoverReplicationOrFence()
+		return nil, errors.Join(err, closeErr, rollbackErr)
 	}
 	ctx = context.WithValue(ReplicatedContext(ctx, id, at), replicationJournalKey{}, journal)
 	response, applyErr := apply(ctx)
@@ -98,25 +117,25 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	journal.mu.Unlock()
 	if applyErr != nil || failure != nil {
 		closeErr := db.Close()
-		rollbackErr := errors.Join(closeErr, s.recoverReplication())
+		rollbackErr := errors.Join(closeErr, s.recoverReplicationOrFence())
 		if rejected, ok := applyErr.(*ReplicationRejectedError); ok && failure == nil && rollbackErr == nil {
 			return nil, rejected
 		}
 		return nil, errors.Join(applyErr, failure, rollbackErr)
 	}
-	if err := s.syncPendingDirectories(); err != nil {
-		db.Close()
-		return nil, err
+	barrierErr := s.syncPendingDirectories()
+	if barrierErr == nil {
+		barrierErr = journal.syncFiles()
 	}
-	if err := journal.syncFiles(); err != nil {
-		db.Close()
-		return nil, err
+	if barrierErr == nil {
+		barrierErr = journal.syncDirectories()
 	}
-	if err := journal.syncDirectories(); err != nil {
-		db.Close()
-		return nil, err
+	if barrierErr != nil {
+		closeErr := db.Close()
+		rollbackErr := s.recoverReplicationOrFence()
+		return nil, errors.Join(barrierErr, closeErr, rollbackErr)
 	}
-	checkpoint = ReplicationCheckpoint{Index: index, Response: response}
+	checkpoint = ReplicationCheckpoint{Index: index, Response: response, IngestQueue: journal.ingestQueue}
 	data, err := json.Marshal(checkpoint)
 	if err == nil {
 		err = db.Update(func(tx *bolt.Tx) error {
@@ -129,12 +148,52 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	}
 	err = errors.Join(err, db.Close())
 	if err != nil {
+		rollbackErr := s.recoverReplicationOrFence()
+		return nil, errors.Join(err, rollbackErr)
+	}
+	if err := writeFileAtomic(filepath.Join(dir, "checkpoint.json"), data); err != nil {
+		s.fenceReplicationFailure(err)
 		return nil, err
 	}
-	if err := s.recoverReplication(); err != nil {
+	if err := os.Remove(pendingPath); err != nil && !os.IsNotExist(err) {
+		s.fenceReplicationFailure(err)
+		return nil, err
+	}
+	if err := syncDir(dir); err != nil {
+		s.fenceReplicationFailure(err)
 		return nil, err
 	}
 	return response, nil
+}
+
+func (s *FileStore) recoverReplicationOrFence() error {
+	err := s.recoverReplication()
+	if err != nil {
+		s.fenceReplicationFailure(err)
+	}
+	return err
+}
+
+func (s *FileStore) fenceReplicationFailure(err error) {
+	if err == nil || s.runtime == nil {
+		return
+	}
+	s.runtime.mu.Lock()
+	if s.runtime.restoreErr == nil {
+		s.runtime.restoreErr = fmt.Errorf("replication journal recovery incomplete: %w", err)
+	}
+	s.runtime.mu.Unlock()
+}
+
+// SetReplicationIngestQueue publishes the hint with the same commit marker
+// as the receipt changes. The application owns this journal exclusively.
+func (s *FileStore) SetReplicationIngestQueue(ctx context.Context, hint *ReplicationIngestQueue) error {
+	journal := s.replicationJournal(ctx)
+	if journal == nil {
+		return fmt.Errorf("ingest queue checkpoint requires a replicated application")
+	}
+	journal.ingestQueue = hint
+	return nil
 }
 
 func (s *FileStore) replicationJournal(ctx context.Context) *replicationJournal {
@@ -199,11 +258,8 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filename)
-	before := []byte{0}
-	if err == nil {
-		before = append([]byte{1}, data...)
-	} else if !os.IsNotExist(err) {
+	before, err := readBeforeImage(filename)
+	if err != nil {
 		return err
 	}
 	// Callers hold the object lock or the directory replacement gate until
@@ -268,11 +324,8 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 			} else if err != nil && !os.IsNotExist(err) {
 				return err
 			}
-			data, err := os.ReadFile(filename)
-			value := []byte{0}
-			if err == nil {
-				value = append([]byte{1}, data...)
-			} else if !os.IsNotExist(err) {
+			value, err := readBeforeImage(filename)
+			if err != nil {
 				return err
 			}
 			before[key] = value
@@ -299,6 +352,42 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 		}
 	}
 	return nil
+}
+
+func readBeforeImage(filename string) ([]byte, error) {
+	file, err := os.Open(filename)
+	if os.IsNotExist(err) {
+		return []byte{0}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size < 0 {
+		size = 0
+	}
+	buf := make([]byte, 1, size+1)
+	buf[0] = 1
+	for {
+		if len(buf) == cap(buf) {
+			grown := make([]byte, len(buf), max(cap(buf)*2, len(buf)+512))
+			copy(grown, buf)
+			buf = grown
+		}
+		n, readErr := file.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return buf, nil
+			}
+			return nil, readErr
+		}
+	}
 }
 
 func (s *FileStore) journalDirectory(ctx context.Context, targetKey, incoming string) error {

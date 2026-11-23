@@ -258,10 +258,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 			s.trySaveTaskFinal(ctx, task)
 		}
 	}()
-	if ctx.Err() != nil {
-		return
-	}
-	if s.taskCancelRequested(ctx, task) || ctx.Err() != nil {
+	if ctx.Err() != nil || s.taskCancelRequested(ctx, task) || ctx.Err() != nil {
 		return
 	}
 	task.Status = "running"

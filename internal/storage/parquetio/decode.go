@@ -105,12 +105,12 @@ func AcquireDecode(ctx context.Context) (func(), error) {
 		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*DecodeTraceStats); stats != nil {
 			stats.recordAdmission(time.Since(waitStarted))
 		}
-		return func() {
+		return sync.OnceFunc(func() {
 			<-limit
 			if data != nil {
 				<-data
 			}
-		}, nil
+		}), nil
 	case <-ctx.Done():
 		if data != nil {
 			<-data

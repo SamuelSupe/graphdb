@@ -156,7 +156,7 @@ func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string,
 	if err != nil {
 		return meta, err
 	}
-	checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := s.writerFenceStillCurrent(checkCtx, tenantID, fence); err != nil {
 		if !errors.Is(err, ErrLeaseHeld) {
@@ -206,7 +206,7 @@ func (s *TenantStore) putTenantGenerationConditional(ctx context.Context, tenant
 	if err != nil {
 		return meta, err
 	}
-	checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := s.tenantGenerationStillCurrent(checkCtx, tenantID, generation); err != nil {
 		if !errors.Is(err, ErrTenantDeleted) {

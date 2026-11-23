@@ -24,6 +24,7 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 	}
 	_, checkpointErr := os.Stat(filepath.Join(w.config.Dir, ingestWALCheckpointFile))
 	state.checkpointRequired = checkpointErr == nil
+	w.hasCheckpoint.Store(state.checkpointRequired)
 	err := state.openCurrent()
 	if err == nil {
 		err = state.initializeDurableTail()
@@ -313,7 +314,7 @@ func (s *ingestWALWriterState) failRequests(requests []ingestWALAppendRequest, e
 }
 
 func (s *ingestWALWriterState) rotate() error {
-	if err := s.syncAndClose(); err != nil {
+	if err := s.syncAndCloseSegment(); err != nil {
 		return err
 	}
 	if err := s.createSegment(s.nextLSN); err != nil {
@@ -382,13 +383,7 @@ func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
 	return errors.Join(removeErr, syncErr)
 }
 
-func (s *ingestWALWriterState) syncAndClose() (err error) {
-	defer func() {
-		if s.tailFile != nil {
-			err = errors.Join(err, s.tailFile.Close())
-			s.tailFile = nil
-		}
-	}()
+func (s *ingestWALWriterState) syncAndCloseSegment() error {
 	if s.file == nil {
 		return nil
 	}
@@ -399,6 +394,16 @@ func (s *ingestWALWriterState) syncAndClose() (err error) {
 	closeErr := s.file.Close()
 	s.file = nil
 	return errors.Join(syncErr, closeErr)
+}
+
+func (s *ingestWALWriterState) syncAndClose() (err error) {
+	defer func() {
+		if s.tailFile != nil {
+			err = errors.Join(err, s.tailFile.Close())
+			s.tailFile = nil
+		}
+	}()
+	return s.syncAndCloseSegment()
 }
 
 func (s *ingestWALWriterState) failPending(err error) {

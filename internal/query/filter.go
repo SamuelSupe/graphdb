@@ -21,6 +21,31 @@ func requestFilters(request Request) []Filter {
 	return filters
 }
 
+func requestIndexFilters(request Request) []Filter {
+	filters := requestFilters(request)
+	if request.WhereExpr != nil {
+		filters = appendTopLevelAndFilters(filters, request.WhereExpr)
+	}
+	return filters
+}
+
+func appendTopLevelAndFilters(filters []Filter, expr *FilterExpr) []Filter {
+	if expr == nil {
+		return filters
+	}
+	op := strings.ToLower(strings.TrimSpace(expr.Op))
+	if expr.Field != "" {
+		filters = append(filters, Filter{Field: expr.Field, Op: expr.Op, Value: expr.Value})
+		return filters
+	}
+	if op == "and" {
+		for i := range expr.Children {
+			filters = appendTopLevelAndFilters(filters, &expr.Children[i])
+		}
+	}
+	return filters
+}
+
 func requestEntityMatches(request *Request, entity *graph.Entity) bool {
 	if request.Kind != "" && entity.Kind != request.Kind {
 		return false
@@ -174,6 +199,22 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 	case "prefix":
 		return strings.HasPrefix(fmt.Sprint(actual), fmt.Sprint(filter.Value))
 	case "contains":
+		if values, ok := actual.([]any); ok {
+			for _, value := range values {
+				if valuesEqual(value, filter.Value) {
+					return true
+				}
+			}
+			return false
+		}
+		if values, ok := actual.([]string); ok {
+			for _, value := range values {
+				if valuesEqual(value, filter.Value) {
+					return true
+				}
+			}
+			return false
+		}
 		if values, ok := reflectSlice(actual); ok {
 			for _, value := range values {
 				if valuesEqual(value, filter.Value) {

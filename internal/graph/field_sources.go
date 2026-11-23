@@ -61,8 +61,8 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, fie
 				ExistingPriority: existingOwner.Priority,
 				IncomingSource:   fieldOwner.Source,
 				IncomingPriority: fieldOwner.Priority,
-				ExistingValue:    current,
-				IncomingValue:    value,
+				ExistingValue:    copyAny(current),
+				IncomingValue:    copyAny(value),
 				Message:          "incoming empty field value was ignored because upsert does not clear existing values",
 			})
 			continue
@@ -84,8 +84,8 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, fie
 			ExistingPriority: existingOwner.Priority,
 			IncomingSource:   fieldOwner.Source,
 			IncomingPriority: fieldOwner.Priority,
-			ExistingValue:    current,
-			IncomingValue:    value,
+			ExistingValue:    copyAny(current),
+			IncomingValue:    copyAny(value),
 			Message:          "incoming field value was ignored because source priority is lower",
 		})
 	}

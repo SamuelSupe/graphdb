@@ -39,27 +39,26 @@ func (a *QueryAdmission) Acquire(ctx context.Context, tenantID string) (func(), 
 	}
 	a.waiting.Add(1)
 	defer a.waiting.Add(-1)
-	ctx, cancel := a.withQueueTimeout(ctx)
+	parentCtx := ctx
+	waitCtx, cancel := a.withQueueTimeout(ctx)
+	defer cancel()
 	tenant := a.retainTenant(tenantID)
-	if err := acquireSlot(ctx, tenantSlot(tenant)); err != nil {
+	if err := acquireSlot(parentCtx, waitCtx, tenantSlot(tenant)); err != nil {
 		a.releaseTenant(tenantID, tenant)
-		cancel()
 		return nil, err
 	}
-	if err := acquireSlot(ctx, a.global); err != nil {
+	if err := acquireSlot(parentCtx, waitCtx, a.global); err != nil {
 		releaseSlot(tenantSlot(tenant))
 		a.releaseTenant(tenantID, tenant)
-		cancel()
 		return nil, err
 	}
 	a.active.Add(1)
-	return func() {
+	return sync.OnceFunc(func() {
 		a.active.Add(-1)
 		releaseSlot(a.global)
 		releaseSlot(tenantSlot(tenant))
 		a.releaseTenant(tenantID, tenant)
-		cancel()
-	}, nil
+	}), nil
 }
 
 func (a *QueryAdmission) withQueueTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -107,11 +106,14 @@ func tenantSlot(tenant *tenantAdmission) chan struct{} {
 	return tenant.slot
 }
 
-func acquireSlot(ctx context.Context, slot chan struct{}) error {
+func acquireSlot(parentCtx, waitCtx context.Context, slot chan struct{}) error {
 	if slot == nil {
 		return nil
 	}
-	if ctx.Err() != nil {
+	if err := parentCtx.Err(); err != nil {
+		return err
+	}
+	if waitCtx.Err() != nil {
 		return fmt.Errorf(
 			"%w: query admission queue timeout",
 			query.ErrLimitExceeded,
@@ -119,7 +121,11 @@ func acquireSlot(ctx context.Context, slot chan struct{}) error {
 	}
 	select {
 	case slot <- struct{}{}:
-		if ctx.Err() != nil {
+		if err := parentCtx.Err(); err != nil {
+			releaseSlot(slot)
+			return err
+		}
+		if waitCtx.Err() != nil {
 			releaseSlot(slot)
 			return fmt.Errorf(
 				"%w: query admission queue timeout",
@@ -127,7 +133,10 @@ func acquireSlot(ctx context.Context, slot chan struct{}) error {
 			)
 		}
 		return nil
-	case <-ctx.Done():
+	case <-waitCtx.Done():
+		if err := parentCtx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("%w: query admission queue timeout", query.ErrLimitExceeded)
 	}
 }

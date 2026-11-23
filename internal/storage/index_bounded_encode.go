@@ -35,15 +35,14 @@ func (s *TenantStore) rangeEncodeContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, rangeEncodeBudgetKey{}, s.maintenance.encodes)
 }
 
-func rangeEncodedBytes(ctx context.Context, encode func() ([]byte, error)) (int64, error) {
+func rangeEncodedData(ctx context.Context, encode func() ([]byte, error)) ([]byte, error) {
 	if slots, ok := ctx.Value(rangeEncodeBudgetKey{}).(chan struct{}); ok {
 		if !acquireTaskSlot(ctx, slots) {
-			return 0, ctx.Err()
+			return nil, ctx.Err()
 		}
 		defer releaseTaskSlot(slots)
 	}
-	data, err := encode()
-	return int64(len(data)), err
+	return encode()
 }
 
 // Probe the actual encoding before publication. Splitting by payload first
@@ -66,6 +65,7 @@ func prepareBoundedEntityPages(ctx context.Context, tenantID string, pages []Ent
 			}
 		}
 		page.logicalContentHash = ""
+		page.encodedParquet = nil
 		split := func() error {
 			middle := balancedRangeBoundary(len(page.Entities), func(i int) int64 {
 				return estimateEntityPageBytes(EntityPageData{Entities: []graph.Entity{page.Entities[i]}}) / 5
@@ -82,10 +82,11 @@ func prepareBoundedEntityPages(ctx context.Context, tenantID string, pages []Ent
 		if len(page.Entities) > 1 && estimateEntityPageBytes(page)/5 > 2*indexPageMaxBytes {
 			return split()
 		}
-		bytes, err := rangeEncodedBytes(ctx, func() ([]byte, error) { return marshalParquetEntityPage(ctx, page) })
+		data, err := rangeEncodedData(ctx, func() ([]byte, error) { return marshalParquetEntityPage(ctx, page) })
 		if err != nil {
 			return err
 		}
+		bytes := int64(len(data))
 		if len(page.Entities) > 1 && bytes > indexPageMaxBytes {
 			return split()
 		}
@@ -96,6 +97,7 @@ func prepareBoundedEntityPages(ctx context.Context, tenantID string, pages []Ent
 		routing.Bytes = bytes
 		page.pageRole = encodeRangeRole(routing)
 		page.logicalContentHash = entityPageContentHash(page)
+		page.encodedParquet = data
 		result = append(result, page)
 		return nil
 	}
@@ -122,6 +124,7 @@ func prepareBoundedEdgeShards(ctx context.Context, tenantID string, shards []Edg
 			}
 		}
 		shard.logicalContentHash = ""
+		shard.encodedParquet = nil
 		split := func() error {
 			middle := balancedRangeBoundary(len(shard.Edges), func(i int) int64 { return estimateEdgeLookupBytes(map[string][]graph.Edge{"": shard.Edges[i : i+1]}) })
 			right := shard
@@ -137,10 +140,11 @@ func prepareBoundedEdgeShards(ctx context.Context, tenantID string, shards []Edg
 		if len(shard.Edges) > 1 && payload > 2*indexPageMaxBytes {
 			return split()
 		}
-		bytes, err := rangeEncodedBytes(ctx, func() ([]byte, error) { return marshalParquetEdgeShard(ctx, shard) })
+		data, err := rangeEncodedData(ctx, func() ([]byte, error) { return marshalParquetEdgeShard(ctx, shard) })
 		if err != nil {
 			return err
 		}
+		bytes := int64(len(data))
 		if len(shard.Edges) > 1 && bytes > indexPageMaxBytes {
 			return split()
 		}
@@ -151,6 +155,7 @@ func prepareBoundedEdgeShards(ctx context.Context, tenantID string, shards []Edg
 		routing.Bytes = bytes
 		shard.pageRole = encodeRangeRole(routing)
 		shard.logicalContentHash = edgeShardContentHash(shard)
+		shard.encodedParquet = data
 		result = append(result, shard)
 		return nil
 	}

@@ -129,7 +129,7 @@ func (g *Graph) sortedFieldValues(kind, field string) fieldValueOrder {
 	if existing, ok := g.fieldValueOrder[key]; ok {
 		return existing
 	}
-	if g.fieldValueOrder == nil {
+	if g.fieldValueOrder == nil || len(g.fieldValueOrder) >= 256 {
 		g.fieldValueOrder = make(map[fieldValueOrderKey]fieldValueOrder)
 	}
 	g.fieldValueOrder[key] = order

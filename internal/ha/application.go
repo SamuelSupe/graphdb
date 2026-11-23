@@ -70,6 +70,9 @@ type Application struct {
 	activeReads         map[*applicationRead]struct{}
 	pending             map[string]pendingAcceptance
 	pendingBytes        int64
+	pendingIndex        pendingReceiptIndex
+	ingestNotifyMu      sync.Mutex
+	ingestNotify        chan struct{}
 	queueObservation    atomic.Pointer[queueObservation]
 	catalogObservation  atomic.Pointer[catalogObservation]
 	catalogPending      *catalogObservation
@@ -104,12 +107,17 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pending = nil
+	a.resetPending()
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
 	a.graphCache = nil
-	return a.Files.InstallReplicationSnapshotValidated(ctx, index, bytes.NewReader(data), a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	err := a.Files.InstallReplicationSnapshotValidated(ctx, index, bytes.NewReader(data), a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	if err == nil && a.Store != nil {
+		a.Store.ResetCaches()
+	}
+	a.notifyIngestChanged()
+	return err
 }
 
 func (a *Application) CaptureSnapshot(ctx context.Context) (replication.SnapshotSource, error) {
@@ -155,12 +163,17 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pending = nil
+	a.resetPending()
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
 	a.graphCache = nil
-	return a.Files.InstallReplicationSnapshotValidated(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	err := a.Files.InstallReplicationSnapshotValidated(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	if err == nil && a.Store != nil {
+		a.Store.ResetCaches()
+	}
+	a.notifyIngestChanged()
+	return err
 }
 
 func (a *Application) snapshotTenantPrefix() string {
@@ -248,12 +261,21 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		a.lockReaders()
 		defer a.readers.Unlock()
 	}
+	allHTTP := true
+	for _, cmd := range commands {
+		if cmd.Kind != "http" {
+			allHTTP = false
+			break
+		}
+	}
 	a.mu.Lock()
 	a.catalogPending = nil
 	a.catalogStatePending = nil
 	defer func() {
 		if err != nil {
-			a.pending = nil
+			if _, rejected := err.(*storage.ReplicationRejectedError); !rejected || !allHTTP {
+				a.resetPending()
+			}
 			a.catalogObservation.Store(nil)
 			a.catalogState.Store(nil)
 		} else if a.catalogPending != nil {
@@ -283,8 +305,8 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		if cmd.Prefix != "" && cmd.Prefix != a.snapshotTenantPrefix() {
 			return nil, fmt.Errorf("replicated data prefix %q differs from configured prefix %q", cmd.Prefix, a.snapshotTenantPrefix())
 		}
-		if cmd.Kind == "sharding" {
-			a.pending = nil
+		if cmd.Kind == "sharding" && a.ShardID != "" && shardingMutatesReceipts(cmd.Body) {
+			a.resetPending()
 		}
 	}
 	var checkpoint storage.ReplicationCheckpoint
@@ -323,6 +345,19 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 			}
 			responses[i] = response
 		}
+		if a.ShardID != "" {
+			if commands[0].Kind == "sharding" && shardingMutatesReceipts(commands[0].Body) {
+				// Transfers replace receipt objects outside saveAccepted.
+				a.resetPending()
+				if err := a.Files.SetReplicationIngestQueue(applyCtx, nil); err != nil {
+					return nil, err
+				}
+			} else if a.pending != nil {
+				if err := a.checkpointPending(applyCtx); err != nil {
+					return nil, err
+				}
+			}
+		}
 		return responses[last], nil
 	})
 	if err != nil {
@@ -330,6 +365,40 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 	}
 	responses[last] = data
 	return responses, nil
+}
+
+func shardingMutatesReceipts(body []byte) bool {
+	var action struct {
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(body, &action) != nil {
+		return true
+	}
+	switch action.Operation {
+	case "install", "retire", "discard":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Application) ingestWaitCh() <-chan struct{} {
+	a.ingestNotifyMu.Lock()
+	if a.ingestNotify == nil {
+		a.ingestNotify = make(chan struct{})
+	}
+	ch := a.ingestNotify
+	a.ingestNotifyMu.Unlock()
+	return ch
+}
+
+func (a *Application) notifyIngestChanged() {
+	a.ingestNotifyMu.Lock()
+	if a.ingestNotify != nil {
+		close(a.ingestNotify)
+		a.ingestNotify = make(chan struct{})
+	}
+	a.ingestNotifyMu.Unlock()
 }
 
 func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd command) ([]byte, error) {

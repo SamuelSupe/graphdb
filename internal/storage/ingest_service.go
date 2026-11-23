@@ -308,20 +308,19 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 		_ = wal.Close()
 		return nil, err
 	}
-	if err := service.prune(context.Background()); err != nil {
-		recordIngestRecovery(config, "error", recovery.records, len(recovered), 0, recoveryStarted, err)
-		endStorageSpan(recoverySpan, err)
-		cancel()
-		_ = wal.Close()
-		return nil, fmt.Errorf("prune recovered ingest WAL: %w", err)
+	if recovery.records > len(recovered) {
+		if err := service.prune(context.Background()); err != nil {
+			recordIngestRecovery(config, "error", recovery.records, len(recovered), 0, recoveryStarted, err)
+			endStorageSpan(recoverySpan, err)
+			cancel()
+			_ = wal.Close()
+			return nil, fmt.Errorf("prune recovered ingest WAL: %w", err)
+		}
 	}
-	go service.schedule()
+	go service.schedule(recovered...)
 	for range config.FlushWorkers {
 		service.workers.Add(1)
 		go service.runWorker()
-	}
-	for _, pending := range recovered {
-		service.enqueueCh <- pending
 	}
 	prepared := 0
 	for _, pending := range recovered {

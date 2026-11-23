@@ -11,6 +11,8 @@ import (
 
 type fileBatchKey struct{}
 
+type gcDeleteBatchKey struct{}
+
 type fileBatchBytesKey struct{}
 
 // Budgets are checked between complete files. At most four in-flight files may
@@ -68,8 +70,25 @@ func (s *FileStore) syncPendingDirectories() error {
 	r := s.runtime
 	r.publicationMu.Lock()
 	defer r.publicationMu.Unlock()
-	dirs := make([]string, 0, len(r.pendingDirectories))
-	for dir := range r.pendingDirectories {
+	return syncPendingDirectorySet(r.pendingDirectories)
+}
+
+func (s *FileStore) syncPendingDeleteDirectories() error {
+	if s.runtime == nil {
+		return nil
+	}
+	r := s.runtime
+	r.publicationMu.Lock()
+	defer r.publicationMu.Unlock()
+	return syncPendingDirectorySet(r.pendingDeleteDirectories)
+}
+
+func syncPendingDirectorySet(pending map[string]struct{}) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	dirs := make([]string, 0, len(pending))
+	for dir := range pending {
 		dirs = append(dirs, dir)
 	}
 	sort.Strings(dirs)
@@ -78,7 +97,7 @@ func (s *FileStore) syncPendingDirectories() error {
 		if err := syncDir(dir); err != nil {
 			result = errors.Join(result, err)
 		} else {
-			delete(r.pendingDirectories, dir)
+			delete(pending, dir)
 		}
 	}
 	return result

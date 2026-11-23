@@ -28,6 +28,11 @@ func (s *Server) enterRead(w http.ResponseWriter, r *http.Request, tenantID stri
 			)
 		}
 		endHTTPSpan(span, err)
+		if r.Context().Err() != nil {
+			s.obs().Metrics.RecordReadAdmissionQueue(tenantID, "canceled", waited)
+			writeRequestError(w, r.Context().Err())
+			return nil, false
+		}
 		s.obs().Metrics.RecordReadAdmissionQueue(tenantID, "rejected", waited)
 		writeErrorDetail(w, http.StatusTooManyRequests, ErrorCodeTooManyRequests, "read admission queue timeout", true, nil)
 		return nil, false

@@ -84,14 +84,15 @@ func (c *indexDiskCache) loadExisting() {
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].modified.Before(candidates[j].modified) })
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	for _, item := range candidates {
 		entry := &indexDiskEntry{id: item.id, size: item.size, modified: item.modified}
 		entry.elem = c.lru.PushFront(item.id)
 		c.entries[item.id] = entry
 		c.bytes += item.size
 	}
-	c.evictLocked()
+	evicted := c.evictLocked()
+	c.mu.Unlock()
+	c.removeFileList(evicted)
 }
 
 func (c *indexDiskCache) get(cacheKey string, objectKey string) (cachedIndexObject, bool, error) {
@@ -100,6 +101,7 @@ func (c *indexDiskCache) get(cacheKey string, objectKey string) (cachedIndexObje
 	if tracked := c.entries[id]; tracked != nil && c.ttl > 0 && time.Since(tracked.modified) >= c.ttl {
 		c.removeLocked(id)
 		c.mu.Unlock()
+		c.removeFiles(id)
 		return cachedIndexObject{}, false, nil
 	}
 	c.mu.Unlock()
@@ -111,6 +113,7 @@ func (c *indexDiskCache) get(cacheKey string, objectKey string) (cachedIndexObje
 	dataInfo, dataErr := os.Stat(filepath.Join(c.dir, id))
 	metaInfo, metaErr := os.Stat(filepath.Join(c.dir, id+".meta"))
 	c.mu.Lock()
+	var evicted []string
 	if tracked := c.entries[id]; tracked != nil {
 		c.lru.MoveToFront(tracked.elem)
 	} else if dataErr == nil && metaErr == nil {
@@ -118,9 +121,10 @@ func (c *indexDiskCache) get(cacheKey string, objectKey string) (cachedIndexObje
 		tracked.elem = c.lru.PushFront(id)
 		c.entries[id] = tracked
 		c.bytes += tracked.size
-		c.evictLocked()
+		evicted = c.evictLocked()
 	}
 	c.mu.Unlock()
+	c.removeFileList(evicted)
 	return entry, true, nil
 }
 
@@ -151,8 +155,9 @@ func (c *indexDiskCache) put(cacheKey string, entry cachedIndexObject) error {
 		c.entries[id] = tracked
 		c.bytes += size
 	}
-	c.evictLocked()
+	evicted := c.evictLocked()
 	c.mu.Unlock()
+	c.removeFileList(evicted)
 	return nil
 }
 
@@ -164,6 +169,7 @@ func (c *indexDiskCache) has(cacheKey string) bool {
 		if c.ttl > 0 && time.Since(entry.modified) >= c.ttl {
 			c.removeLocked(id)
 			c.mu.Unlock()
+			c.removeFiles(id)
 			return false
 		}
 		c.lru.MoveToFront(entry.elem)
@@ -180,16 +186,21 @@ func (c *indexDiskCache) dropID(id string) {
 	c.mu.Lock()
 	c.removeLocked(id)
 	c.mu.Unlock()
+	c.removeFiles(id)
 }
 
-func (c *indexDiskCache) evictLocked() {
+func (c *indexDiskCache) evictLocked() []string {
+	var evicted []string
 	for len(c.entries) > c.maxEntries || (c.maxBytes > 0 && c.bytes > c.maxBytes) {
 		elem := c.lru.Back()
 		if elem == nil {
-			return
+			return evicted
 		}
-		c.removeLocked(elem.Value.(string))
+		id := elem.Value.(string)
+		c.removeLocked(id)
+		evicted = append(evicted, id)
 	}
+	return evicted
 }
 
 func (c *indexDiskCache) removeLocked(id string) {
@@ -199,7 +210,12 @@ func (c *indexDiskCache) removeLocked(id string) {
 		c.lru.Remove(entry.elem)
 		delete(c.entries, id)
 	}
-	c.removeFiles(id)
+}
+
+func (c *indexDiskCache) removeFileList(ids []string) {
+	for _, id := range ids {
+		c.removeFiles(id)
+	}
 }
 
 func (c *indexDiskCache) removeFiles(id string) {

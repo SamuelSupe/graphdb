@@ -48,6 +48,7 @@ type routeSpec struct {
 	mutation              bool
 	runtimeOnly           bool
 	bypassTenantLifecycle bool
+	skipReadView          bool
 }
 
 func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
@@ -56,7 +57,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
 		if !route.bypassTenantLifecycle {
 			handler = s.tenantLifecycleGate(route.mutation, handler)
 		}
-		if !route.mutation && !route.runtimeOnly {
+		if !route.mutation && !route.runtimeOnly && !route.skipReadView {
 			handler = s.pinLocalReadView(handler)
 		}
 		if s.Cluster != nil {
@@ -73,23 +74,25 @@ func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
 }
 
 func (s *Server) prepareHandler() {
-	s.maintenanceRuntime()
-	if s.QueryRegistry == nil {
-		s.QueryRegistry = NewRunningQueryRegistry()
-	}
-	if s.Observability == nil {
-		s.Observability = observability.New(io.Discard, 500*time.Millisecond)
-	}
-	if s.usageCache == nil {
-		s.usageCache = newTenantUsageCache(s.tenantUsageCacheTTL())
-	}
+	s.prepareOnce.Do(func() {
+		s.maintenanceRuntime()
+		if s.QueryRegistry == nil {
+			s.QueryRegistry = NewRunningQueryRegistry()
+		}
+		if s.Observability == nil {
+			s.Observability = observability.New(io.Discard, 500*time.Millisecond)
+		}
+		if s.usageCache == nil {
+			s.usageCache = newTenantUsageCache(s.tenantUsageCacheTTL())
+		}
+	})
 }
 
 func (s *Server) registerCommonRoutes(mux *http.ServeMux) {
 	s.registerRoutes(mux,
-		routeSpec{pattern: "GET /v1/health", handler: s.health},
-		routeSpec{pattern: "GET /v1/readiness", handler: s.readiness},
-		routeSpec{pattern: "GET /openapi.yaml", handler: s.openAPI},
+		routeSpec{pattern: "GET /v1/health", handler: s.health, bypassTenantLifecycle: true, skipReadView: true},
+		routeSpec{pattern: "GET /v1/readiness", handler: s.readiness, bypassTenantLifecycle: true, skipReadView: true},
+		routeSpec{pattern: "GET /openapi.yaml", handler: s.openAPI, bypassTenantLifecycle: true, skipReadView: true},
 	)
 }
 
