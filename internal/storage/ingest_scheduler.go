@@ -57,7 +57,7 @@ func (h *ingestDeadlineHeap) Pop() any {
 	return queue
 }
 
-func (s *IngestService) schedule() {
+func (s *IngestService) schedule(recovered ...*ingestPending) {
 	defer close(s.schedulerOK)
 	defer close(s.readyCh)
 	queues := map[string]*ingestTenantQueue{}
@@ -153,6 +153,10 @@ func (s *IngestService) schedule() {
 			heap.Push(&deadlines, queue)
 		}
 		return nil
+	}
+
+	for _, pending := range recovered {
+		admit(pending)
 	}
 
 	for {

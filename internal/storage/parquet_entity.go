@@ -89,9 +89,18 @@ func (s *TenantStore) putParquetEntityPageObject(ctx context.Context, key string
 			return meta, err
 		}
 	}
-	data, err := marshalParquetEntityPage(ctx, page)
-	if err != nil {
-		return ObjectMeta{}, err
+	var data []byte
+	var err error
+	if len(page.encodedParquet) > 0 {
+		if err = objectContextErr(ctx); err != nil {
+			return ObjectMeta{}, err
+		}
+		data = page.encodedParquet
+	} else {
+		data, err = marshalParquetEntityPage(ctx, page)
+		if err != nil {
+			return ObjectMeta{}, err
+		}
 	}
 	meta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
 	if err == nil {
@@ -146,6 +155,9 @@ func (s *TenantStore) existingParquetEntityPageMeta(ctx context.Context, key str
 }
 
 func (s *TenantStore) existingParquetEntityPagePackMeta(ctx context.Context, key string, tenantID string, pages []EntityPageData) (ObjectMeta, bool, error) {
+	if len(pages) == 0 {
+		return ObjectMeta{}, false, nil
+	}
 	mayExist, err := s.objectKeyMayExist(ctx, key)
 	if err != nil || !mayExist {
 		return ObjectMeta{}, false, err
@@ -157,10 +169,23 @@ func (s *TenantStore) existingParquetEntityPagePackMeta(ctx context.Context, key
 	if err != nil {
 		return ObjectMeta{}, false, err
 	}
+	decoded, err := decodeParquetEntityPage(ctx, data, tenantID, "", pages[0].Version)
+	if err != nil {
+		return meta, false, nil
+	}
+	byShard := make(map[string][]graph.Entity, len(pages))
+	for _, entity := range decoded.Entities {
+		sid := entityShardID(entity.ID)
+		byShard[sid] = append(byShard[sid], entity)
+	}
 	for _, page := range pages {
-		existing, err := decodeParquetEntityPage(ctx, data, tenantID, page.Shard, page.Version)
-		if err != nil {
-			return meta, false, nil
+		existing := EntityPageData{
+			LayoutVersion: decoded.LayoutVersion,
+			TenantID:      decoded.TenantID,
+			Shard:         page.Shard,
+			Entities:      byShard[page.Shard],
+			Version:       decoded.Version,
+			UpdatedAt:     decoded.UpdatedAt,
 		}
 		if entityPageContentHash(existing) != entityPageContentHash(page) {
 			return meta, false, nil

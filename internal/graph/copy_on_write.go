@@ -80,6 +80,7 @@ func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
 		logicalHashCache:        logicalHashCache,
+		entityPartitions:        g.inheritedEntityPartitions(),
 		cow: &copyOnWriteState{
 			outNodes:      map[string]struct{}{},
 			inNodes:       map[string]struct{}{},

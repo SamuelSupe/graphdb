@@ -113,6 +113,9 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 			a.pendingBytes += pending.objectBytes
 		}
 	}
+	if record.State != "accepted" {
+		a.notifyIngestChanged()
+	}
 	return nil
 }
 
@@ -443,12 +446,17 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		return err
 	}
 	key := c.App.ingestKey(acceptance.Tenant, acceptance.Source, acceptance.Collector, acceptance.Batch, acceptance.Generation)
-	ticker := time.NewTicker(20 * time.Millisecond)
+	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	checkBarrier := false
 	for {
-		if err := c.Node.ReadBarrier(ctx); err != nil {
-			return err
+		if checkBarrier {
+			if err := c.Node.ReadBarrier(ctx); err != nil {
+				return err
+			}
+			checkBarrier = false
 		}
+		waitCh := c.App.ingestWaitCh()
 		c.App.mu.RLock()
 		record, err := c.App.accepted(ctx, key)
 		c.App.mu.RUnlock()
@@ -457,7 +465,17 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 			return nil
 		}
 		if err != nil {
-			return err
+			if errors.Is(err, storage.ErrNotFound) {
+				if barrierErr := c.Node.ReadBarrier(ctx); barrierErr != nil {
+					return barrierErr
+				}
+				c.App.mu.RLock()
+				record, err = c.App.accepted(ctx, key)
+				c.App.mu.RUnlock()
+			}
+			if err != nil {
+				return err
+			}
 		}
 		if record.Result != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -468,7 +486,9 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-waitCh:
 		case <-ticker.C:
+			checkBarrier = true
 		}
 	}
 }

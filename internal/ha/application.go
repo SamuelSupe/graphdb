@@ -77,6 +77,8 @@ type Application struct {
 	pending             map[string]pendingAcceptance
 	pendingBytes        int64
 	pendingIndex        pendingReceiptIndex
+	ingestNotifyMu      sync.Mutex
+	ingestNotify        chan struct{}
 	queueObservation    atomic.Pointer[queueObservation]
 	catalogObservation  atomic.Pointer[catalogObservation]
 	catalogPending      *catalogObservation
@@ -116,7 +118,12 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
 	a.graphCache = nil
-	return a.Files.InstallReplicationSnapshotValidated(ctx, index, bytes.NewReader(data), a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	err := a.Files.InstallReplicationSnapshotValidated(ctx, index, bytes.NewReader(data), a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	if err == nil && a.Store != nil {
+		a.Store.ResetCaches()
+	}
+	a.notifyIngestChanged()
+	return err
 }
 
 func (a *Application) CaptureSnapshot(ctx context.Context) (replication.SnapshotSource, error) {
@@ -167,7 +174,12 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
 	a.graphCache = nil
-	return a.Files.InstallReplicationSnapshotValidated(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	err := a.Files.InstallReplicationSnapshotValidated(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
+	if err == nil && a.Store != nil {
+		a.Store.ResetCaches()
+	}
+	a.notifyIngestChanged()
+	return err
 }
 
 func (a *Application) snapshotTenantPrefix() string {
@@ -281,9 +293,18 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 	a.mu.Lock()
 	a.catalogPending = nil
 	a.catalogStatePending = nil
+	allHTTP := true
+	for _, cmd := range commands {
+		if cmd.Kind != "http" {
+			allHTTP = false
+			break
+		}
+	}
 	defer func() {
 		if err != nil {
-			a.resetPending()
+			if _, rejected := err.(*storage.ReplicationRejectedError); !rejected || !allHTTP {
+				a.resetPending()
+			}
 			a.catalogObservation.Store(nil)
 			a.catalogState.Store(nil)
 		} else if a.catalogPending != nil {
@@ -313,6 +334,7 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		if cmd.Prefix != "" && cmd.Prefix != a.snapshotTenantPrefix() {
 			return nil, fmt.Errorf("replicated data prefix %q differs from configured prefix %q", cmd.Prefix, a.snapshotTenantPrefix())
 		}
+
 	}
 	var checkpoint storage.ReplicationCheckpoint
 	if len(entries) > 1 {
@@ -361,7 +383,47 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		return nil, err
 	}
 	responses[last] = data
+	for _, cmd := range commands {
+		if cmd.Kind == "sharding" && a.ShardID != "" && shardingMutatesReceipts(cmd.Body) {
+			a.notifyIngestChanged()
+			break
+		}
+	}
 	return responses, nil
+}
+
+func shardingMutatesReceipts(body []byte) bool {
+	var action struct {
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(body, &action) != nil {
+		return true
+	}
+	switch action.Operation {
+	case "install", "retire", "discard":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Application) ingestWaitCh() <-chan struct{} {
+	a.ingestNotifyMu.Lock()
+	if a.ingestNotify == nil {
+		a.ingestNotify = make(chan struct{})
+	}
+	ch := a.ingestNotify
+	a.ingestNotifyMu.Unlock()
+	return ch
+}
+
+func (a *Application) notifyIngestChanged() {
+	a.ingestNotifyMu.Lock()
+	if a.ingestNotify != nil {
+		close(a.ingestNotify)
+		a.ingestNotify = make(chan struct{})
+	}
+	a.ingestNotifyMu.Unlock()
 }
 
 func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd command) ([]byte, error) {

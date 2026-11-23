@@ -433,13 +433,14 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 		return err
 	}
 	err = s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
 		envelope, decodeErr := decodeSnapshot(snapshot.Data)
 		if decodeErr == nil && envelope.Protocol > ProtocolVersion {
-			if err := raiseMinimumProtocol(tx.Bucket([]byte("meta")), uint64(envelope.Protocol)); err != nil {
+			if err := raiseMinimumProtocol(meta, uint64(envelope.Protocol)); err != nil {
 				return err
 			}
 		}
-		if err := persistSnapshot(tx.Bucket([]byte("meta")), snapshot.Metadata.Index, data); err != nil {
+		if err := persistSnapshot(meta, snapshot.Metadata.Index, data); err != nil {
 			return err
 		}
 		cursor := tx.Bucket([]byte("entries")).Cursor()

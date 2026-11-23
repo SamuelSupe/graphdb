@@ -68,11 +68,7 @@ func (c *ReaderCache) ListEntitiesFromReadView(ctx context.Context, tenantID str
 		}
 	}
 	page := entityScanPage("", manifest.Version, items, options, len(items) > limit, "")
-	entities := page.Entities
-	for i := range entities {
-		entities[i] = graph.CopyEntity(entities[i])
-	}
-	return EntityScanResult{TenantID: tenantID, Version: manifest.Version, Entities: entities, NextCursor: page.NextCursor}, ctx.Err()
+	return EntityScanResult{TenantID: tenantID, Version: manifest.Version, Entities: page.Entities, NextCursor: page.NextCursor}, ctx.Err()
 }
 
 func (c *ReaderCache) readViewEntityScanOrder(ctx context.Context, tenantID string, g *graph.Graph) ([]scanCandidate, error) {
@@ -108,6 +104,21 @@ func (c *ReaderCache) readViewEntityScanOrder(ctx context.Context, tenantID stri
 	c.entries[tenantID] = entry
 	c.mu.Unlock()
 
+	completed := false
+	defer func() {
+		if !completed {
+			order.err = errors.New("entity scan order build aborted")
+			c.mu.Lock()
+			if current, ok := c.entries[tenantID]; ok && current.entityScanOrder == order {
+				current.entityScanOrder = nil
+				current.bytes -= bytes
+				c.bytes -= bytes
+				c.entries[tenantID] = current
+			}
+			c.mu.Unlock()
+			close(order.done)
+		}
+	}()
 	items := make([]scanCandidate, 0, g.Entities.Len())
 	for key, entity := range g.Entities.All() {
 		if len(items)&255 == 0 {
@@ -133,6 +144,7 @@ func (c *ReaderCache) readViewEntityScanOrder(ctx context.Context, tenantID stri
 		}
 		c.mu.Unlock()
 	}
+	completed = true
 	close(order.done)
 	return order.items, order.err
 }

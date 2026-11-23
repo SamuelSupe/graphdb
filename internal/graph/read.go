@@ -85,10 +85,17 @@ func (g *Graph) KindCount(kind string) int {
 }
 
 func (g *Graph) matchCandidates(kind string, filters Fields) []Entity {
-	if kind == "" || len(filters) == 0 {
+	if kind == "" {
 		return g.allEntities()
 	}
 	var best *ShardedMap[struct{}]
+	if g.kindEntityIDs.Len() > 0 {
+		kindIDs := g.kindEntityIDs.At(kind)
+		if kindIDs == nil {
+			return nil
+		}
+		best = kindIDs
+	}
 	for field, value := range filters {
 		key, ok := ScalarIndexKey(value)
 		if !ok {

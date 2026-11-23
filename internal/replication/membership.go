@@ -125,6 +125,16 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for {
+		select {
+		case outcome := <-ch:
+			if outcome.err != nil {
+				http.Error(w, outcome.err.Error(), http.StatusConflict)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		default:
+		}
 		n.mu.Lock()
 		changed := n.changed
 		n.mu.Unlock()
@@ -137,6 +147,16 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		case <-changed:
+			select {
+			case outcome := <-ch:
+				if outcome.err != nil {
+					http.Error(w, outcome.err.Error(), http.StatusConflict)
+				} else {
+					w.WriteHeader(http.StatusNoContent)
+				}
+				return
+			default:
+			}
 			if err := n.available(true); err != nil {
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)
 				return

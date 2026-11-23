@@ -2,7 +2,14 @@ package graph
 
 func copyCIType(ciType CIType) CIType {
 	ciType.Extends = append([]string(nil), ciType.Extends...)
-	ciType.IdentityKeys = append([]IdentityKey(nil), ciType.IdentityKeys...)
+	if ciType.IdentityKeys != nil {
+		keys := make([]IdentityKey, len(ciType.IdentityKeys))
+		for i, key := range ciType.IdentityKeys {
+			key.Fields = append([]string(nil), key.Fields...)
+			keys[i] = key
+		}
+		ciType.IdentityKeys = keys
+	}
 	fields := make(map[string]FieldSpec, len(ciType.Fields))
 	for name, spec := range ciType.Fields {
 		spec.Enum = copyAnySlice(spec.Enum)

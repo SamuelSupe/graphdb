@@ -72,6 +72,10 @@ func (s *Server) getBackupAutomation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) resetBackupAutomation(w http.ResponseWriter, r *http.Request) {
+	if !s.writeAllowed() {
+		writeError(w, http.StatusMethodNotAllowed, "backup automation reset is disabled in reader mode")
+		return
+	}
 	tenant, ok := tenantFromRequest(w, r)
 	if !ok {
 		return

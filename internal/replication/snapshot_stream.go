@@ -258,6 +258,15 @@ func (n *Node) receiveSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "incompatible snapshot format", http.StatusUpgradeRequired)
 		return
 	}
+	if n.receiveSnapshotSlots != nil {
+		select {
+		case n.receiveSnapshotSlots <- struct{}{}:
+			defer func() { <-n.receiveSnapshotSlots }()
+		default:
+			http.Error(w, "snapshot receive concurrency limit reached", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, n.cfg.MaxSnapshotBytes+(32<<20)+snapshotMetadataLimit+4)
 	var prefix [4]byte
 	if _, err := io.ReadFull(r.Body, prefix[:]); err != nil {

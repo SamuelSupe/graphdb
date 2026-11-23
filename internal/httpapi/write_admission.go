@@ -38,27 +38,26 @@ func (a *WriteAdmission) Acquire(ctx context.Context, tenantID string) (func(), 
 	}
 	a.waiting.Add(1)
 	defer a.waiting.Add(-1)
-	ctx, cancel := a.withQueueTimeout(ctx)
+	parentCtx := ctx
+	waitCtx, cancel := a.withQueueTimeout(ctx)
+	defer cancel()
 	tenant := a.retainTenant(tenantID)
-	if err := acquireWriteSlot(ctx, writeTenantSlot(tenant)); err != nil {
+	if err := acquireWriteSlot(parentCtx, waitCtx, writeTenantSlot(tenant)); err != nil {
 		a.releaseTenant(tenantID, tenant)
-		cancel()
 		return nil, time.Since(start), err
 	}
-	if err := acquireWriteSlot(ctx, a.global); err != nil {
+	if err := acquireWriteSlot(parentCtx, waitCtx, a.global); err != nil {
 		releaseSlot(writeTenantSlot(tenant))
 		a.releaseTenant(tenantID, tenant)
-		cancel()
 		return nil, time.Since(start), err
 	}
 	a.active.Add(1)
-	return func() {
+	return sync.OnceFunc(func() {
 		a.active.Add(-1)
 		releaseSlot(a.global)
 		releaseSlot(writeTenantSlot(tenant))
 		a.releaseTenant(tenantID, tenant)
-		cancel()
-	}, time.Since(start), nil
+	}), time.Since(start), nil
 }
 
 func (a *WriteAdmission) withQueueTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -106,21 +105,31 @@ func writeTenantSlot(tenant *writeTenantAdmission) chan struct{} {
 	return tenant.slot
 }
 
-func acquireWriteSlot(ctx context.Context, slot chan struct{}) error {
+func acquireWriteSlot(parentCtx, waitCtx context.Context, slot chan struct{}) error {
 	if slot == nil {
 		return nil
 	}
-	if ctx.Err() != nil {
+	if err := parentCtx.Err(); err != nil {
+		return err
+	}
+	if waitCtx.Err() != nil {
 		return fmt.Errorf("write admission queue timeout")
 	}
 	select {
 	case slot <- struct{}{}:
-		if ctx.Err() != nil {
+		if err := parentCtx.Err(); err != nil {
+			releaseSlot(slot)
+			return err
+		}
+		if waitCtx.Err() != nil {
 			releaseSlot(slot)
 			return fmt.Errorf("write admission queue timeout")
 		}
 		return nil
-	case <-ctx.Done():
+	case <-waitCtx.Done():
+		if err := parentCtx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("write admission queue timeout")
 	}
 }

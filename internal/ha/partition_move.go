@@ -64,7 +64,9 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) (
 		if err := data(m.Target, "data_move_reserve", m.Epoch, nil); err != nil {
 			return err
 		}
+		c.App.mu.RLock()
 		roots, err := c.App.partitionStore().MoveRoots(ctx, g, m.Partition, m.CaptureAt)
+		c.App.mu.RUnlock()
 		if err != nil {
 			return err
 		}

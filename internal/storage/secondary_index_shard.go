@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -222,6 +223,9 @@ func splitStringSecondaryIndexShard(shard secondaryIndexShard, prefixBytes int) 
 		byID[shardID] = next
 	}
 	if len(byID) < 2 {
+		if prefixBytes < secondaryIndexStringShardMaxBytes {
+			return splitStringSecondaryIndexShard(shard, prefixBytes+1)
+		}
 		return []secondaryIndexShard{shard}
 	}
 	ids := make([]string, 0, len(byID))
@@ -272,7 +276,18 @@ func stringShardPrefixBytes(value string, prefixBytes int) string {
 	if prefixBytes <= 0 || len(value) <= prefixBytes {
 		return value
 	}
-	return value[:prefixBytes]
+	end := 0
+	for i := range value {
+		if i > prefixBytes {
+			break
+		}
+		end = i
+	}
+	if end == 0 {
+		_, size := utf8.DecodeRuneInString(value)
+		return value[:size]
+	}
+	return value[:end]
 }
 
 func numericShardPrefix(value string) string {

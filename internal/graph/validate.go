@@ -2,8 +2,13 @@ package graph
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
+
+func invalidConfidence(v float64) bool {
+	return math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1
+}
 
 func normalizeEntity(entity Entity) (Entity, error) {
 	entity.ID = strings.TrimSpace(entity.ID)
@@ -28,7 +33,7 @@ func normalizeEntity(entity Entity) (Entity, error) {
 		return Entity{}, fmt.Errorf("entity %q identity_keys: %w", entity.ID, err)
 	}
 	entity.Identity = identity
-	if entity.Confidence < 0 || entity.Confidence > 1 {
+	if invalidConfidence(entity.Confidence) {
 		return Entity{}, fmt.Errorf("entity %q confidence must be between 0 and 1", entity.ID)
 	}
 	entity.FieldSources = normalizeFieldSources(entity.FieldSources)
@@ -56,7 +61,7 @@ func normalizeEdge(edge Edge) (Edge, error) {
 		return Edge{}, fmt.Errorf("edge %q fields: %w", edge.ID, err)
 	}
 	edge.Fields = fields
-	if edge.Confidence < 0 || edge.Confidence > 1 {
+	if invalidConfidence(edge.Confidence) {
 		return Edge{}, fmt.Errorf("edge %q confidence must be between 0 and 1", edge.ID)
 	}
 	edge.FieldSources = normalizeFieldSources(edge.FieldSources)
@@ -84,7 +89,7 @@ func normalizeSources(entity Entity) []EntitySource {
 		if source.Source == "" || source.ExternalID == "" {
 			continue
 		}
-		if source.Confidence < 0 || source.Confidence > 1 {
+		if invalidConfidence(source.Confidence) {
 			source.Confidence = 0
 		}
 		key := source.Source + "\x00" + source.ExternalID
@@ -132,7 +137,7 @@ func normalizeFieldSources(sources map[string]FieldSource) map[string]FieldSourc
 			continue
 		}
 		source.Source = strings.TrimSpace(source.Source)
-		if source.Confidence < 0 || source.Confidence > 1 {
+		if invalidConfidence(source.Confidence) {
 			source.Confidence = 0
 		}
 		out[field] = source

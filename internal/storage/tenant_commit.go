@@ -673,7 +673,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		if err == nil || commitPublished || !commitMeta.Exists || commitMeta.ETag == "" {
 			return
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		current, _, manifestErr := s.getManifest(cleanupCtx, tenantID)
 		if manifestErr != nil || current.Version >= commit.Version {

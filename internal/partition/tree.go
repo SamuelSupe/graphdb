@@ -75,48 +75,9 @@ func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 			return page, nil
 		}
 	}
-	data, err := t.Objects.Get(ctx, t.pageKey(root.Hash))
-	if errors.Is(err, storage.ErrNotFound) {
-		return treePage{}, fmt.Errorf("%w: required fragment page %s is missing", ErrPartitionCorrupt, root.Hash)
-	}
+	p, data, err := t.loadWithData(ctx, root)
 	if err != nil {
-		return treePage{}, err
-	}
-	if fmt.Sprintf("%x", sha256.Sum256(data)) != root.Hash {
-		return treePage{}, fmt.Errorf("%w: fragment page checksum mismatch", ErrPartitionCorrupt)
-	}
-	var p treePage
-	if err := json.Unmarshal(data, &p); err != nil {
-		return p, fmt.Errorf("%w: malformed fragment page: %v", ErrPartitionCorrupt, err)
-	}
-	var count int64
-	first, last := "", ""
-	if len(p.Children) > 0 && len(p.Rows) > 0 || len(p.Children) > pageEntries || len(p.Rows) > pageEntries {
-		return p, fmt.Errorf("%w: invalid fragment page shape", ErrPartitionCorrupt)
-	}
-	// Unmarshal validated each raw JSON value while decoding the page.
-	for i, row := range p.Rows {
-		if row.Key == "" || len(row.Value) == 0 || i > 0 && last >= row.Key {
-			return p, fmt.Errorf("%w: invalid fragment row ordering", ErrPartitionCorrupt)
-		}
-		if i == 0 {
-			first = row.Key
-		}
-		last = row.Key
-		count++
-	}
-	for i, child := range p.Children {
-		if !validDigest(child.Hash) || child.Count <= 0 || child.First == "" || child.First > child.Last || i > 0 && last >= child.First {
-			return p, fmt.Errorf("%w: invalid fragment child ordering", ErrPartitionCorrupt)
-		}
-		if i == 0 {
-			first = child.First
-		}
-		last = child.Last
-		count += child.Count
-	}
-	if first != root.First || last != root.Last || count != root.Count {
-		return p, fmt.Errorf("%w: fragment root metadata mismatch", ErrPartitionCorrupt)
+		return p, err
 	}
 	if t.cache != nil {
 		// Encoded bytes bound retained strings/raw values; the extra terms cover
@@ -131,6 +92,59 @@ func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 		}
 	}
 	return p, nil
+}
+
+func (t Tree) loadWithData(ctx context.Context, root Root) (treePage, []byte, error) {
+	if !validDigest(root.Hash) || root.Count <= 0 || root.First == "" || root.First > root.Last {
+		return treePage{}, nil, fmt.Errorf("%w: invalid fragment root", ErrPartitionCorrupt)
+	}
+	if err := ctx.Err(); err != nil {
+		return treePage{}, nil, err
+	}
+	data, err := t.Objects.Get(ctx, t.pageKey(root.Hash))
+	if errors.Is(err, storage.ErrNotFound) {
+		return treePage{}, nil, fmt.Errorf("%w: required fragment page %s is missing", ErrPartitionCorrupt, root.Hash)
+	}
+	if err != nil {
+		return treePage{}, nil, err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(data)) != root.Hash {
+		return treePage{}, nil, fmt.Errorf("%w: fragment page checksum mismatch", ErrPartitionCorrupt)
+	}
+	var p treePage
+	if err := json.Unmarshal(data, &p); err != nil {
+		return p, nil, fmt.Errorf("%w: malformed fragment page: %v", ErrPartitionCorrupt, err)
+	}
+	var count int64
+	first, last := "", ""
+	if len(p.Children) > 0 && len(p.Rows) > 0 || len(p.Children) > pageEntries || len(p.Rows) > pageEntries {
+		return p, nil, fmt.Errorf("%w: invalid fragment page shape", ErrPartitionCorrupt)
+	}
+	// Unmarshal validated each raw JSON value while decoding the page.
+	for i, row := range p.Rows {
+		if row.Key == "" || len(row.Value) == 0 || i > 0 && last >= row.Key {
+			return p, nil, fmt.Errorf("%w: invalid fragment row ordering", ErrPartitionCorrupt)
+		}
+		if i == 0 {
+			first = row.Key
+		}
+		last = row.Key
+		count++
+	}
+	for i, child := range p.Children {
+		if !validDigest(child.Hash) || child.Count <= 0 || child.First == "" || child.First > child.Last || i > 0 && last >= child.First {
+			return p, nil, fmt.Errorf("%w: invalid fragment child ordering", ErrPartitionCorrupt)
+		}
+		if i == 0 {
+			first = child.First
+		}
+		last = child.Last
+		count += child.Count
+	}
+	if first != root.First || last != root.Last || count != root.Count {
+		return p, nil, fmt.Errorf("%w: fragment root metadata mismatch", ErrPartitionCorrupt)
+	}
+	return p, data, nil
 }
 
 func (t Tree) save(ctx context.Context, p treePage) (Root, error) {

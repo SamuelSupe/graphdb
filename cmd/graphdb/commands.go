@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -69,7 +70,8 @@ func run(args []string) (err error) {
 	if command.kind == commandReceiptCheck {
 		return runReceiptCheck(cfg, args[1:])
 	}
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	var runtime *bootstrap.StorageRuntime
 	if command.kind == commandServe {
 		runtime, err = bootstrap.NewStorageRuntime(ctx, cfg)
@@ -79,12 +81,11 @@ func run(args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	if command.kind == commandServe {
+		return serveContext(ctx, cfg, runtime)
+	}
 	defer func() { err = errors.Join(err, runtime.Close()) }()
 	store := runtime.Store
-
-	if command.kind == commandServe {
-		return serve(cfg, runtime)
-	}
 	if command.handler == nil {
 		return fmt.Errorf("command %q is not executable", command.name)
 	}
@@ -141,13 +142,17 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 	}
 	store.SetObservers(obs.Metrics, obs.Metrics)
 
-	obs.StartIndexHealthMonitor(ctx, cfg.IndexHealthInterval, func(checkCtx context.Context, tenantID string) (string, int, error) {
-		health, err := store.IndexHealthWithOptions(checkCtx, tenantID, storage.IndexHealthOptions{})
-		if err != nil {
-			return "error", 1, err
-		}
-		return health.Status, len(health.Issues), nil
-	})
+	if cfg.IndexHealthInterval > 0 {
+		store.StartBackground(ctx, func(bgCtx context.Context) {
+			obs.RunIndexHealthMonitor(bgCtx, cfg.IndexHealthInterval, func(checkCtx context.Context, tenantID string) (string, int, error) {
+				health, err := store.IndexHealthWithOptions(checkCtx, tenantID, storage.IndexHealthOptions{})
+				if err != nil {
+					return "error", 1, err
+				}
+				return health.Status, len(health.Issues), nil
+			})
+		})
+	}
 	cache.Observer = obs.Metrics
 	cache.Start(ctx)
 	admission := httpapi.NewQueryAdmission(cfg.QueryMaxConcurrent, cfg.QueryMaxPerTenant, cfg.QueryQueueTimeout)
@@ -173,6 +178,17 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		MaintenanceGC:         cfg.MaintenanceGC,
 	}
 	var cluster *ha.Cluster
+	var clusterCloseOnce sync.Once
+	var clusterCloseErr error
+	closeCluster := func() error {
+		if cluster == nil {
+			return nil
+		}
+		clusterCloseOnce.Do(func() {
+			clusterCloseErr = cluster.Close()
+		})
+		return clusterCloseErr
+	}
 	if cfg.Raft.Enabled {
 		cluster = ha.New(cfg, store, runtime.Files)
 		api.Cluster = cluster
@@ -180,23 +196,24 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		if err := cluster.Start(ctx, cfg.Raft); err != nil {
 			return err
 		}
-		defer cluster.Close()
+		defer func() { _ = closeCluster() }()
 	} else {
 		api.StartMaintenanceLoop(ctx, cfg.MaintenanceInterval)
 	}
-	var servers []*http.Server
+	var publicServers []*http.Server
 	if cfg.AdminAddr != "" {
-		servers = []*http.Server{
+		publicServers = []*http.Server{
 			newDataHTTPServer(cfg, api),
 			newAdminHTTPServer(cfg, api),
 		}
 	} else {
-		servers = []*http.Server{newHTTPServer(cfg, api)}
+		publicServers = []*http.Server{newHTTPServer(cfg, api)}
 	}
+	var privateServers []*http.Server
 	if cluster != nil {
 		private := newHTTPServerWithHandler(cfg.Raft.Addr, cluster.PrivateHandler())
 		private.ReadTimeout = 10 * time.Minute
-		servers = append(servers, private)
+		privateServers = append(privateServers, private)
 	}
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
@@ -205,12 +222,12 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		"ingest_mode":  cfg.IngestMode,
 		"otlp_enabled": cfg.OTLPEndpoint != "",
 	})
-	serverErr := runHTTPServers(ctx, servers, httpShutdownTimeout)
+	serverErr := runStagedHTTPServers(ctx, publicServers, privateServers, httpShutdownTimeout, func() error {
+		stop()
+		return closeCluster()
+	})
 	stop()
-	var clusterErr error
-	if cluster != nil {
-		clusterErr = cluster.Close()
-	}
+	clusterErr := closeCluster()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), max(backgroundTaskShutdownTimeout, cfg.IngestShutdownTimeout))
 	defer cancel()
 	return errors.Join(serverErr, clusterErr, runtime.Shutdown(shutdownCtx))
@@ -244,11 +261,21 @@ func runHTTPServer(ctx context.Context, server *http.Server, shutdownTimeout tim
 }
 
 func runHTTPServers(ctx context.Context, servers []*http.Server, shutdownTimeout time.Duration) error {
-	if len(servers) == 0 {
+	return runStagedHTTPServers(ctx, servers, nil, shutdownTimeout, nil)
+}
+
+func runStagedHTTPServers(ctx context.Context, publicServers, privateServers []*http.Server, shutdownTimeout time.Duration, beforePrivateShutdown func() error) error {
+	total := len(publicServers) + len(privateServers)
+	if total == 0 {
 		return nil
 	}
-	errCh := make(chan error, len(servers))
-	for _, server := range servers {
+	errCh := make(chan error, total)
+	for _, server := range publicServers {
+		go func(server *http.Server) {
+			errCh <- server.ListenAndServe()
+		}(server)
+	}
+	for _, server := range privateServers {
 		go func(server *http.Server) {
 			errCh <- server.ListenAndServe()
 		}(server)
@@ -264,16 +291,12 @@ func runHTTPServers(ctx context.Context, servers []*http.Server, shutdownTimeout
 	case <-ctx.Done():
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	for _, server := range servers {
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			// Shutdown leaves active request contexts alive on timeout. Close
-			// their connections so canceled reads release their file views.
-			firstErr = errors.Join(firstErr, err, server.Close())
-		}
+	firstErr = errors.Join(firstErr, shutdownHTTPServerGroup(publicServers, shutdownTimeout))
+	if beforePrivateShutdown != nil {
+		firstErr = errors.Join(firstErr, beforePrivateShutdown())
 	}
-	for received < len(servers) {
+	firstErr = errors.Join(firstErr, shutdownHTTPServerGroup(privateServers, shutdownTimeout))
+	for received < total {
 		err := <-errCh
 		received++
 		if err != nil && !errors.Is(err, http.ErrServerClosed) && firstErr == nil {
@@ -281,6 +304,29 @@ func runHTTPServers(ctx context.Context, servers []*http.Server, shutdownTimeout
 		}
 	}
 	return firstErr
+}
+
+func shutdownHTTPServerGroup(servers []*http.Server, shutdownTimeout time.Duration) error {
+	if len(servers) == 0 {
+		return nil
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	errs := make([]error, len(servers))
+	var wg sync.WaitGroup
+	for i, server := range servers {
+		wg.Add(1)
+		go func(idx int, srv *http.Server) {
+			defer wg.Done()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				// Shutdown leaves active request contexts alive on timeout. Close
+				// their connections so canceled reads release their file views.
+				errs[idx] = errors.Join(err, srv.Close())
+			}
+		}(i, server)
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 func printVersion() {

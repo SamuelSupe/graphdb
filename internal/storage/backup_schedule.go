@@ -132,6 +132,13 @@ func (s *TenantStore) ScheduleObjectBackup(ctx context.Context, tenant string, n
 	if err := ValidateTenantID(tenant); err != nil {
 		return BackupAutomationStatus{}, err
 	}
+	// Fast read-only preflight avoids acquiring the foreground tenant write
+	// lock on every maintenance tick when automatic backup is disabled.
+	if config, _, err := s.GetTenantConfig(ctx, tenant); err == nil && !*backupPolicy(config.Backup).Enabled {
+		if state, err := s.BackupAutomationStatus(ctx, tenant); err == nil && state.TaskID == "" {
+			return state, nil
+		}
+	}
 	unlock, err := s.lockTenantForeground(ctx, tenant)
 	if err != nil {
 		return BackupAutomationStatus{}, err

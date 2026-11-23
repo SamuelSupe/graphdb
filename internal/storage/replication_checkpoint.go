@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -155,8 +156,9 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	}
 	finishOpen(err)
 	if err != nil {
-		db.Close()
-		return nil, err
+		closeErr := db.Close()
+		s.fenceReplicationFailure(err)
+		return nil, errors.Join(err, closeErr)
 	}
 	applyCtx := context.WithValue(ReplicatedContext(ctx, id, at), replicationJournalKey{}, journal)
 	response, applyErr := apply(applyCtx)
@@ -167,15 +169,14 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	journal.mu.Unlock()
 	if applyErr != nil || failure != nil {
 		closeErr := db.Close()
-		rollbackErr := errors.Join(closeErr, s.recoverReplication())
+		rollbackErr := errors.Join(closeErr, s.recoverReplicationOrFence())
 		if rejected, ok := applyErr.(*ReplicationRejectedError); ok && failure == nil && rollbackErr == nil {
 			return nil, rejected
 		}
 		return nil, errors.Join(applyErr, failure, rollbackErr)
 	}
 	if err := s.syncReplicationObjects(ctx, journal); err != nil {
-		db.Close()
-		return nil, err
+		return nil, errors.Join(err, db.Close(), s.recoverReplicationOrFence())
 	}
 	finishCheckpoint := replicationOperation(ctx, "replication_checkpoint")
 	checkpoint = ReplicationCheckpoint{Index: index, Response: response, IngestQueue: journal.ingestQueue}
@@ -203,6 +204,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	err = errors.Join(err, db.Close())
 	if err != nil {
 		finishCheckpoint(err)
+		s.fenceReplicationFailure(err)
 		return nil, err
 	}
 	// Publish the applied position only after all local unlinks are durable.
@@ -210,6 +212,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	// can reuse one of its content-addressed pages.
 	if err := s.reclaimReplicatedPages(applyCtx, journal); err != nil {
 		finishCheckpoint(err)
+		s.fenceReplicationFailure(err)
 		return nil, err
 	}
 	err = writeFileAtomic(filepath.Join(dir, "checkpoint.json"), data)
@@ -340,11 +343,8 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filename)
-	before := []byte{0}
-	if err == nil {
-		before = append([]byte{1}, data...)
-	} else if !os.IsNotExist(err) {
+	before, err := readBeforeImage(filename)
+	if err != nil {
 		return err
 	}
 	// Callers hold the object lock or the directory replacement gate until
@@ -427,19 +427,13 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 			if err := s.verifySafeMutationParent(ctx, filename); err != nil && !errors.Is(err, ErrNotFound) {
 				return err
 			}
-			value := []byte{0}
-			info, err := os.Lstat(filename)
-			if err == nil {
-				if !info.Mode().IsRegular() {
-					return fmt.Errorf("non-regular replication object %s", filename)
-				}
-				data, err := os.ReadFile(filename)
-				if err == nil {
-					value = append([]byte{1}, data...)
-				} else if !os.IsNotExist(err) {
-					return err
-				}
-			} else if !os.IsNotExist(err) {
+			if info, err := os.Lstat(filename); err == nil && !info.Mode().IsRegular() {
+				return fmt.Errorf("non-regular replication object %s", filename)
+			} else if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			value, err := readBeforeImage(filename)
+			if err != nil {
 				return err
 			}
 			before[key] = value
@@ -646,4 +640,59 @@ func (s *FileStore) checkReplicatedWrite(ctx context.Context) error {
 		return ErrReplicationWriteRequired
 	}
 	return nil
+}
+
+func (s *FileStore) recoverReplicationOrFence() error {
+	err := s.recoverReplication()
+	if err != nil {
+		s.fenceReplicationFailure(err)
+	}
+	return err
+}
+
+func (s *FileStore) fenceReplicationFailure(err error) {
+	if err == nil || s.runtime == nil {
+		return
+	}
+	s.runtime.mu.Lock()
+	if s.runtime.restoreErr == nil {
+		s.runtime.restoreErr = fmt.Errorf("replication journal recovery incomplete: %w", err)
+	}
+	s.runtime.mu.Unlock()
+}
+
+func readBeforeImage(filename string) ([]byte, error) {
+	file, err := os.Open(filename)
+	if os.IsNotExist(err) {
+		return []byte{0}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size < 0 {
+		size = 0
+	}
+	buf := make([]byte, 1, size+1)
+	buf[0] = 1
+	for {
+		if len(buf) == cap(buf) {
+			grown := make([]byte, len(buf), max(cap(buf)*2, len(buf)+512))
+			copy(grown, buf)
+			buf = grown
+		}
+		n, readErr := file.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return buf, nil
+			}
+			return nil, readErr
+		}
+	}
 }

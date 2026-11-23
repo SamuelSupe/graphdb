@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
@@ -93,9 +94,18 @@ func (s *TenantStore) putParquetEdgeShardObject(ctx context.Context, key string,
 			return err
 		}
 	}
-	data, err := marshalParquetEdgeShard(ctx, shard)
-	if err != nil {
-		return err
+	var data []byte
+	var err error
+	if len(shard.encodedParquet) > 0 {
+		if err = objectContextErr(ctx); err != nil {
+			return err
+		}
+		data = shard.encodedParquet
+	} else {
+		data, err = marshalParquetEdgeShard(ctx, shard)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true}); err == nil {
 		s.markObjectKeyCached(key)
@@ -143,6 +153,9 @@ func (s *TenantStore) parquetEdgeShardUnchanged(ctx context.Context, key string,
 }
 
 func (s *TenantStore) existingParquetEdgeShardPackMeta(ctx context.Context, key string, tenantID string, shards []EdgeShardData) (ObjectMeta, bool, error) {
+	if len(shards) == 0 {
+		return ObjectMeta{}, false, nil
+	}
 	mayExist, err := s.objectKeyMayExist(ctx, key)
 	if err != nil || !mayExist {
 		return ObjectMeta{}, false, err
@@ -154,10 +167,27 @@ func (s *TenantStore) existingParquetEdgeShardPackMeta(ctx context.Context, key 
 	if err != nil {
 		return ObjectMeta{}, false, err
 	}
+	decoded, err := decodeParquetEdgeShard(ctx, data, tenantID, shards[0].RelationType, "", shards[0].Version)
+	if err != nil {
+		return meta, false, nil
+	}
+	byShard := make(map[string][]graph.Edge, len(shards))
+	for _, edge := range decoded.Edges {
+		sid := edgeShardID(edge.From)
+		if shards[0].reverse {
+			sid = edgeShardID(edge.To)
+		}
+		byShard[sid] = append(byShard[sid], edge)
+	}
 	for _, shard := range shards {
-		existing, err := decodeParquetEdgeShard(ctx, data, tenantID, shard.RelationType, shard.Shard, shard.Version)
-		if err != nil {
-			return meta, false, nil
+		existing := EdgeShardData{
+			LayoutVersion: decoded.LayoutVersion,
+			TenantID:      decoded.TenantID,
+			RelationType:  shard.RelationType,
+			Shard:         shard.Shard,
+			Edges:         byShard[shard.Shard],
+			Version:       decoded.Version,
+			UpdatedAt:     decoded.UpdatedAt,
 		}
 		if edgeShardContentHash(existing) != edgeShardContentHash(shard) {
 			return meta, false, nil
@@ -172,17 +202,48 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 	defer builder.Release()
 	shardUpdatedAt := parquetio.FormatTime(shard.UpdatedAt)
 
+	type rowPosition struct {
+		index int
+		shard string
+	}
 	edges := append([]graph.Edge(nil), shard.Edges...)
-	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
-	for _, edge := range edges {
-		rowShard := shard.Shard
-		if isIndexPackID(shard.Shard) {
+	var order []rowPosition
+	if isIndexPackID(shard.Shard) {
+		order = make([]rowPosition, len(edges))
+		for i, edge := range edges {
+			rs := edgeShardID(edge.From)
 			if shard.reverse {
-				rowShard = edgeShardID(edge.To)
-			} else {
-				rowShard = edgeShardID(edge.From)
+				rs = edgeShardID(edge.To)
+			}
+			order[i] = rowPosition{index: i, shard: rs}
+		}
+		sort.Slice(order, func(i, j int) bool {
+			if order[i].shard != order[j].shard {
+				return order[i].shard < order[j].shard
+			}
+			return edges[order[i].index].ID < edges[order[j].index].ID
+		})
+	} else {
+		sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
+	}
+	var shardRowEnds []int64
+	lastShard := ""
+	for i := range edges {
+		if i&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
 		}
+		edge := edges[i]
+		rowShard := shard.Shard
+		if order != nil {
+			edge = edges[order[i].index]
+			rowShard = order[i].shard
+		}
+		if i > 0 && rowShard != lastShard {
+			shardRowEnds = append(shardRowEnds, int64(builder.Field(0).Len()))
+		}
+		lastShard = rowShard
 		rows, err := codec.EdgeRows(edge)
 		if err != nil {
 			return nil, err
@@ -228,17 +289,46 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 	}
 	record := builder.NewRecordBatch()
 	defer record.Release()
-	table := array.NewTableFromRecords(schema, []arrow.RecordBatch{record})
-	defer table.Release()
 
 	var buf bytes.Buffer
-	rowGroupSize := table.NumRows()
-	if rowGroupSize < 1 {
-		rowGroupSize = 1
-	}
 	writerProps := parquetio.DataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
+	writer, err := pqarrow.NewFileWriter(schema, &buf, writerProps, arrowProps)
+	if err != nil {
+		return nil, err
+	}
+	defer writer.Close()
+	if order != nil && record.NumRows() > 0 {
+		shardRowEnds = append(shardRowEnds, record.NumRows())
+		rowGroupSize := int64(parquetEntityPageRowGroupSize)
+		previousEnd := int64(0)
+		for _, end := range shardRowEnds {
+			if end-previousEnd < 512 {
+				shardRowEnds = []int64{record.NumRows()}
+				rowGroupSize = 512
+				break
+			}
+			previousEnd = end
+		}
+		start := int64(0)
+		for _, end := range shardRowEnds {
+			for start < end {
+				stop := min(start+rowGroupSize, end)
+				slice := record.NewSlice(start, stop)
+				err := writer.Write(slice)
+				slice.Release()
+				if err != nil {
+					return nil, err
+				}
+				start = stop
+			}
+		}
+	} else {
+		if err := writer.Write(record); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
@@ -296,7 +386,7 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 			rowTenant := columns.tenantID.Value(i)
 			if rowTenant != "" {
 				if shard.TenantID == "" || shard.TenantID == tenantID {
-					shard.TenantID = rowTenant
+					shard.TenantID = strings.Clone(rowTenant)
 				} else if shard.TenantID != rowTenant {
 					return EdgeShardData{}, fmt.Errorf("parquet edge shard tenant mismatch")
 				}
@@ -307,7 +397,7 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 			}
 			if rowRelationType != "" {
 				if shard.RelationType == "" || shard.RelationType == relationType {
-					shard.RelationType = rowRelationType
+					shard.RelationType = strings.Clone(rowRelationType)
 				} else if shard.RelationType != rowRelationType {
 					return EdgeShardData{}, fmt.Errorf("parquet edge shard relation type mismatch")
 				}
@@ -319,10 +409,10 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 			if rowShard != "" && !isIndexPackID(shardID) {
 				if shardID == "" {
 					if shard.Shard == "" {
-						shard.Shard = rowShard
+						shard.Shard = strings.Clone(rowShard)
 					}
 				} else if shard.Shard == "" || shard.Shard == shardID {
-					shard.Shard = rowShard
+					shard.Shard = strings.Clone(rowShard)
 				} else if shard.Shard != rowShard {
 					return EdgeShardData{}, fmt.Errorf("parquet edge shard id mismatch")
 				}
@@ -345,12 +435,12 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 					edgeType = rowRelationType
 				}
 				created := graph.Edge{
-					ID:         columns.edgeID.Value(i),
-					Type:       edgeType,
-					From:       columns.from.Value(i),
-					To:         columns.to.Value(i),
-					Source:     columns.source.Value(i),
-					ExternalID: columns.externalID.Value(i),
+					ID:         strings.Clone(columns.edgeID.Value(i)),
+					Type:       strings.Clone(edgeType),
+					From:       strings.Clone(columns.from.Value(i)),
+					To:         strings.Clone(columns.to.Value(i)),
+					Source:     strings.Clone(columns.source.Value(i)),
+					ExternalID: strings.Clone(columns.externalID.Value(i)),
 					Version:    columns.edgeVersion.Value(i),
 					CreatedAt:  parquetio.ParseTime(columns.edgeCreatedAt.Value(i)),
 					UpdatedAt:  parquetio.ParseTime(columns.edgeUpdatedAt.Value(i)),
@@ -522,26 +612,26 @@ func parquetEdgeShardColumns(record arrow.RecordBatch) (parquetEdgeShardColumnSe
 
 func edgeShardRowFromColumns(columns parquetEdgeShardColumnSet, row int) edgeShardRow {
 	return edgeShardRow{
-		Kind:    columns.rowKind.Value(row),
+		Kind:    strings.Clone(columns.rowKind.Value(row)),
 		Ordinal: int(columns.ordinal.Value(row)),
-		Key:     columns.entryKey.Value(row),
+		Key:     strings.Clone(columns.entryKey.Value(row)),
 		Value: parquetValue{
-			Kind:        columns.valueKind.Value(row),
-			StringValue: columns.stringValue.Value(row),
+			Kind:        strings.Clone(columns.valueKind.Value(row)),
+			StringValue: strings.Clone(columns.stringValue.Value(row)),
 			BoolValue:   columns.boolValue.Value(row),
 			FloatValue:  columns.floatValue.Value(row),
 		},
 		FieldSource: graph.FieldSource{
-			Source:     columns.fieldSourceSource.Value(row),
+			Source:     strings.Clone(columns.fieldSourceSource.Value(row)),
 			Priority:   int(columns.fieldSourcePriority.Value(row)),
 			Confidence: columns.fieldSourceConfidence.Value(row),
 			Version:    columns.fieldSourceVersion.Value(row),
 			UpdatedAt:  parquetio.ParseTime(columns.fieldSourceUpdatedAt.Value(row)),
 		},
 		EdgeSource: graph.EdgeSource{
-			Source:     columns.edgeSourceSource.Value(row),
-			ExternalID: columns.edgeSourceExternalID.Value(row),
-			EdgeID:     columns.edgeSourceEdgeID.Value(row),
+			Source:     strings.Clone(columns.edgeSourceSource.Value(row)),
+			ExternalID: strings.Clone(columns.edgeSourceExternalID.Value(row)),
+			EdgeID:     strings.Clone(columns.edgeSourceEdgeID.Value(row)),
 			Confidence: columns.edgeSourceConfidence.Value(row),
 			Priority:   int(columns.edgeSourcePriority.Value(row)),
 			ObservedAt: parquetio.ParseTime(columns.edgeSourceObservedAt.Value(row)),

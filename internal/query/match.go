@@ -333,7 +333,7 @@ func matchCandidatesForPlan(g *graph.Graph, request Request, plan Plan, budget *
 	case "field-index-scan":
 		if budget.lookup != nil {
 			if scanner, ok := budget.lookup.(FieldIndexScanLookup); ok {
-				ids, ok, err := scanFieldIndexIDs(budget.ctx, scanner, request.Kind, plan.IndexField, requestFilters(request))
+				ids, ok, err := scanFieldIndexIDs(budget.ctx, scanner, request.Kind, plan.IndexField, requestIndexFilters(request))
 				if err != nil {
 					return nil, err
 				}
@@ -350,7 +350,7 @@ func matchCandidatesForPlan(g *graph.Graph, request Request, plan Plan, budget *
 			g,
 			request.Kind,
 			plan.IndexField,
-			requestFilters(request),
+			requestIndexFilters(request),
 		)
 		if err != nil {
 			return nil, err

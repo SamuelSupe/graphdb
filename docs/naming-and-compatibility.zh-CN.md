@@ -2,7 +2,7 @@
 
 [English](naming-and-compatibility.md)
 
-当前发行版本为 **2.6.2**。发布及下载核验见[发布验收](release-checklist.md#262-qualification)。每个本地数据目录只由一个进程占用；
+当前发行版本为 **2.6.3**。发布及下载核验见[发布验收](release-checklist.md#263-qualification)。每个本地数据目录只由一个进程占用；
 默认单机，亦可启用独立副本的 Raft 和租户分片；S3 兼容对象存储仅用于可选快照备份与按需恢复。不支持远端在线存储、PostgreSQL
 协调、独立 reader/writer、多实例共享目录或网络文件系统。
 
@@ -10,8 +10,8 @@
 
 | 标识 | 当前契约 |
 | --- | --- |
-| 产品与发行标签 | `VERSION` 为 `2.6.2`，标签为 `v2.6.2` |
-| Go/Python SDK 与 OpenAPI 文档版本 | `2.6.2` |
+| 产品与发行标签 | `VERSION` 为 `2.6.3`，标签为 `v2.6.3` |
+| Go/Python SDK 与 OpenAPI 文档版本 | `2.6.3` |
 | Go 模块 | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP 路由命名空间 | `/v1/...`，不代表产品主版本 |
 | Parquet/WAL 与快照格式 | Parquet/逻辑快照沿用2.x；2.4.2把WAL durable marker迁移为双槽v2；Raft另有协议和目录角色标记 |
@@ -48,7 +48,7 @@ GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然
 
 ## Raft 协议与升级
 
-产品版本、Raft 协议和快照格式分别管理。Raft 默认协议为 1。2.6.2 支持协议 1 至 12，按步骤显式启用[大图分片和分片 WAL](partition-wal-ingestion.zh-CN.md#显式启用与升级)。
+产品版本、Raft 协议和快照格式分别管理。Raft 默认协议为 1。2.6.3 支持协议 1 至 12，按步骤显式启用[大图分片和分片 WAL](partition-wal-ingestion.zh-CN.md#显式启用与升级)。
 协议 2 的流式快照/准备维护、协议 3 的准备 GC 须在全组具备支持后独立启用；
 已持久化协议 3 的目录不能由最高协议为 2 的程序打开。滚动升级只限于
 [已验证来源、目标和协议窗口](raft-rolling-upgrade.zh-CN.md)。
@@ -56,7 +56,7 @@ GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然
 
 ## 发行状态与性能承诺
 
-本发行的验收范围见 [2.6.2 发布验收](release-checklist.md#262-qualification)和包内证据。
+本发行的验收范围见 [2.6.3 发布验收](release-checklist.md#263-qualification)和包内证据。
 此前性能候选的三十分钟长测完成 45,116 次操作，在显著共享内核资源压力下仍有四次 HAProxy 503 查询失败。
 该轮为 FAIL，继续保留；不能将其转为发行 PASS，也不能据环境争用证明服务端无可用性缺陷。
 跨宿主机、生产容量和天级稳定性仍未资格验证。快照捕获微基准不代表整体读写吞吐提升。

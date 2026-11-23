@@ -117,6 +117,7 @@ func decodeParquetSnapshotRecordReader(ctx context.Context, source parquet.Reade
 	var record snapshotRecord
 	var expectedHash string
 	build := &commitBuild{}
+	maxRows := file.NumRows()
 	rows := 0
 	for reader.Next() {
 		if err := objectContextErr(ctx); err != nil {
@@ -143,6 +144,11 @@ func decodeParquetSnapshotRecordReader(ctx context.Context, source parquet.Reade
 				return snapshotRecord{}, fmt.Errorf("snapshot record identity mismatch")
 			}
 			row := codec.ParquetCommitRowFromColumns(columns, i)
+			if row.ParentOrdinal < 0 || int64(row.ParentOrdinal) >= maxRows ||
+				row.ChildOrdinal < 0 || int64(row.ChildOrdinal) >= maxRows ||
+				row.NestedOrdinal < 0 || int64(row.NestedOrdinal) >= maxRows {
+				return snapshotRecord{}, fmt.Errorf("invalid parquet snapshot ordinal for %d rows", maxRows)
+			}
 			switch row.Kind {
 			case commitRowMetadata,
 				commitRowUpsertCIType, commitRowCITypeExtends, commitRowCITypeField, commitRowCITypeFieldEnum, commitRowCITypeFieldDefault, commitRowCITypeIdentity, commitRowCITypeIdentityField,
@@ -167,15 +173,27 @@ func decodeParquetSnapshotRecordReader(ctx context.Context, source parquet.Reade
 		return snapshotRecord{}, fmt.Errorf("parquet snapshot record is empty")
 	}
 	for ordinal, item := range build.CITypes() {
+		if ordinal < 0 || ordinal >= rows {
+			return snapshotRecord{}, fmt.Errorf("invalid snapshot ci type ordinal %d", ordinal)
+		}
 		record.Snapshot.CITypes = codec.SetCITypeAt(record.Snapshot.CITypes, ordinal, item)
 	}
 	for ordinal, item := range build.Relations() {
+		if ordinal < 0 || ordinal >= rows {
+			return snapshotRecord{}, fmt.Errorf("invalid snapshot relation type ordinal %d", ordinal)
+		}
 		record.Snapshot.RelationTypes = codec.SetRelationTypeAt(record.Snapshot.RelationTypes, ordinal, item)
 	}
 	for ordinal, item := range build.Entities() {
+		if ordinal < 0 || ordinal >= rows {
+			return snapshotRecord{}, fmt.Errorf("invalid snapshot entity ordinal %d", ordinal)
+		}
 		record.Snapshot.Entities = codec.SetEntityAt(record.Snapshot.Entities, ordinal, item)
 	}
 	for ordinal, item := range build.Edges() {
+		if ordinal < 0 || ordinal >= rows {
+			return snapshotRecord{}, fmt.Errorf("invalid snapshot edge ordinal %d", ordinal)
+		}
 		record.Snapshot.Edges = codec.SetEdgeAt(record.Snapshot.Edges, ordinal, item)
 	}
 	if err := normalizeObjectAfterRead(&record, "snapshot"); err != nil {

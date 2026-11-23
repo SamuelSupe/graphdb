@@ -340,8 +340,11 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 	}
 	defer s.changed(key, "", true)
 	journal := s.replicationJournal(ctx)
-	files, batched := ctx.Value(fileBatchKey{}).(*FileStore)
-	batched = batched && files == s && journal == nil
+	gcFiles, gcBatched := ctx.Value(gcDeleteBatchKey{}).(*FileStore)
+	gcBatched = gcBatched && gcFiles == s && journal == nil
+	files, writeBatched := ctx.Value(fileBatchKey{}).(*FileStore)
+	writeBatched = !gcBatched && writeBatched && files == s && journal == nil
+	batched := gcBatched || writeBatched
 	if batched {
 		s.runtime.publicationMu.Lock()
 		defer s.runtime.publicationMu.Unlock()
@@ -361,7 +364,14 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 			journal.deferDeletedObject(filepath.Dir(path), key, !reclaim)
 			return nil
 		}
-		if batched {
+		if gcBatched {
+			if s.runtime.pendingDeleteDirectories == nil {
+				s.runtime.pendingDeleteDirectories = make(map[string]struct{})
+			}
+			s.runtime.pendingDeleteDirectories[filepath.Dir(path)] = struct{}{}
+			return nil
+		}
+		if writeBatched {
 			if s.runtime.pendingDirectories == nil {
 				s.runtime.pendingDirectories = make(map[string]struct{})
 			}
@@ -536,7 +546,7 @@ func syncDir(dir string) error {
 // unfinished atomic writes are excluded from a complete application snapshot.
 func fileStoreInternalPath(key string) bool {
 	root, _, _ := strings.Cut(key, "/")
-	if root == replicationDirectory || root == fileRestoreDirectory || root == ".graphdb-raft" || root == ".graphdb.lock" || root == ".graphdb-runtime-restore.json" {
+	if root == replicationDirectory || root == fileRestoreDirectory || root == ".graphdb-raft" || root == ".graphdb.lock" || root == ".graphdb-runtime-restore.json" || root == objectViewMarker {
 		return true
 	}
 	for _, prefix := range []string{".snapshot-view-", ".graphdb-replication-snapshot-", ".maintenance-", ".runtime-restore-"} {

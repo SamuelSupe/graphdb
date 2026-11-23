@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -114,14 +115,26 @@ func (s *ReadProtectedObjectStore) getWithMeta(ctx context.Context, key string) 
 				return nil, ObjectMeta{Key: key}, ctx.Err()
 			}
 		}
-		call.data, call.meta, call.err = s.loadWithMeta(ctx, key)
-		call.canceled = loadCanceledByContext(ctx, call.err)
-		unique := s.finishRead(key, call)
-		if unique {
-			return call.data, call.meta, call.err
-		}
-		return cloneReadCall(call)
+		return s.runReadOwner(ctx, key, call)
 	}
+}
+
+func (s *ReadProtectedObjectStore) runReadOwner(ctx context.Context, key string, call *readObjectCall) ([]byte, ObjectMeta, error) {
+	finished := false
+	defer func() {
+		if !finished {
+			call.err = errors.New("object read aborted")
+			s.finishRead(key, call)
+		}
+	}()
+	call.data, call.meta, call.err = s.loadWithMeta(ctx, key)
+	call.canceled = loadCanceledByContext(ctx, call.err)
+	unique := s.finishRead(key, call)
+	finished = true
+	if unique {
+		return call.data, call.meta, call.err
+	}
+	return cloneReadCall(call)
 }
 
 func (s *ReadProtectedObjectStore) loadWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {

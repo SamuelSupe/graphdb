@@ -1,8 +1,8 @@
 # GGraphDB Documentation
 
-[简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.2)
+[简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.3)
 
-The stable release is **2.6.2**. See the [release notes](../release/local-disk.md) for interrupted Raft streams and upgrade steps.
+The stable release is **2.6.3**. See the [release notes](../release/local-disk.md) for stream completion, WAL recovery and rolling upgrade details.
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 
@@ -12,7 +12,7 @@ some cluster operations guides are currently Chinese-only.
 | --- | --- |
 | Try the database | [Quick start](user/quickstart.md) → [Console](management-ui.md) → [Usage manual](user/usage-manual.md) |
 | Integrate business data | [Data model](user/data-model.md) → [Ingestion](user/write-ingest.md) → [Queries](user/read-query.md) → [SDKs](user/sdk.md) |
-| Prepare a deployment | [Release deployment](user/release-deployment.md) → [Security](security-deployment.md) → [Backup/restore](object-backup.md) → [Release checks](release-checklist.md#262-qualification) |
+| Prepare a deployment | [Release deployment](user/release-deployment.md) → [Security](security-deployment.md) → [Backup/restore](object-backup.md) → [Release checks](release-checklist.md#263-qualification) |
 
 ## User guides
 
@@ -69,7 +69,7 @@ some cluster operations guides are currently Chinese-only.
 | 2.5.1 release evidence | [Release notes](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [Validation](validation-v2.5.1.md) |
 | 2.3.6 matched performance replay | [Maintenance windows and 30-minute Raft growth replay](performance-tail-validation-2026-10-20.zh-CN.md) · [Earlier 6-minute comparison](performance-tail-validation-2026-10-19.zh-CN.md) |
 
-SDK and OpenAPI versions in this checkout are 2.6.2. Module `/v2`, HTTP `/v1` and separate Raft protocol
+SDK and OpenAPI versions in this checkout are 2.6.3. Module `/v2`, HTTP `/v1` and separate Raft protocol
 identifiers follow their own contracts; do not substitute the product version.
 
 ## Historical designs and validation
@@ -77,7 +77,7 @@ identifiers follow their own contracts; do not substitute the product version.
 <details>
 <summary>Browse historical designs, reviews and validation</summary>
 
-These records retain their original dates and conclusions. See the [2.6.2 release checks](release-checklist.md#262-qualification) for the current release.
+These records retain their original dates and conclusions. See the [2.6.3 release checks](release-checklist.md#263-qualification) for the current release.
 
 - [Product P0/P1 review after 2.2.2](product-p0-p1-review-2026-10-03.zh-CN.md)
 - [Follow-up review: missing heads, graph digests and source identities](product-p0-p1-review2-2026-10-03.zh-CN.md)

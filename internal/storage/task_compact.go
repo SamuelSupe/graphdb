@@ -17,7 +17,12 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	if err := s.EnsureTenantWritable(ctx, task.TenantID); err != nil {
 		return nil, "", err
 	}
-	loaded, err := s.loadForWriteLocked(ctx, task.TenantID)
+	readCtx, releaseView, err := s.ReadViewContext(ctx, task.TenantID)
+	if err != nil {
+		return nil, "", err
+	}
+	loaded, err := s.loadForWriteLocked(readCtx, task.TenantID)
+	releaseView()
 	if err != nil {
 		return nil, "", err
 	}

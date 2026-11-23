@@ -132,6 +132,7 @@ func (g *Graph) Clone() *Graph {
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
 		logicalHashCache:        logicalHashCache,
+		entityPartitions:        g.inheritedEntityPartitions(),
 	}
 	for name, ciType := range g.CITypes {
 		clone.CITypes[name] = copyCIType(ciType)

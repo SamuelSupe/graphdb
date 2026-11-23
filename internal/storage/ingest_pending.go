@@ -155,7 +155,16 @@ func failedIngestResult(request IngestRequest, failure error) IngestResult {
 }
 
 func (s *IngestService) prune(ctx context.Context, generation ...uint64) error {
-	err := s.wal.prune(ctx, 0, true, generation...)
+	s.mu.Lock()
+	canSegmentPrune := len(s.active) == 0 && len(s.accepting) == 0 && !s.wal.hasCheckpoint.Load() && len(generation) == 0
+	beforeLSN := s.highestLSN + 1
+	s.mu.Unlock()
+	var err error
+	if canSegmentPrune {
+		err = s.wal.Prune(ctx, beforeLSN)
+	} else {
+		err = s.wal.prune(ctx, 0, true, generation...)
+	}
 	if err != nil {
 		s.recordError(err)
 	}

@@ -107,6 +107,7 @@ type EdgeShardData struct {
 	hashCanonical      bool
 	logicalContentHash string
 	reverse            bool
+	encodedParquet     []byte
 }
 
 type EntityPageData struct {
@@ -120,6 +121,7 @@ type EntityPageData struct {
 	cacheVerified      bool
 	hashCanonical      bool
 	logicalContentHash string
+	encodedParquet     []byte
 }
 
 type EntityRecord struct {

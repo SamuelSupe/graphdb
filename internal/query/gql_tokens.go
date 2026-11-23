@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 type gqlTokenKind int
@@ -25,9 +26,9 @@ type gqlToken struct {
 func tokenizeGQL(input string) ([]gqlToken, error) {
 	tokens := []gqlToken{}
 	for i := 0; i < len(input); {
-		r := rune(input[i])
+		r, size := utf8.DecodeRuneInString(input[i:])
 		if unicode.IsSpace(r) {
-			i++
+			i += size
 			continue
 		}
 		if input[i] == '"' || input[i] == '\'' {
@@ -45,16 +46,20 @@ func tokenizeGQL(input string) ([]gqlToken, error) {
 			continue
 		}
 		if strings.ContainsRune("=><(),[]", r) {
-			tokens = append(tokens, gqlToken{kind: gqlSymbol, value: input[i : i+1]})
-			i++
+			tokens = append(tokens, gqlToken{kind: gqlSymbol, value: input[i : i+size]})
+			i += size
 			continue
 		}
 		start := i
-		for i < len(input) && isGQLBareChar(rune(input[i])) {
-			i++
+		for i < len(input) {
+			cr, csize := utf8.DecodeRuneInString(input[i:])
+			if !isGQLBareChar(cr) {
+				break
+			}
+			i += csize
 		}
 		if start == i {
-			return nil, fmt.Errorf("%w: unexpected character %q", ErrInvalid, input[i])
+			return nil, fmt.Errorf("%w: unexpected character %q", ErrInvalid, r)
 		}
 		value := input[start:i]
 		kind := gqlIdent
@@ -85,7 +90,7 @@ func readGQLString(input string, start int) (string, int, error) {
 		if ch == quote {
 			raw := input[start : i+1]
 			if quote == '\'' {
-				raw = `"` + strings.ReplaceAll(strings.Trim(raw, "'"), `"`, `\"`) + `"`
+				raw = singleQuotedToDoubleQuoted(raw[1 : len(raw)-1])
 			}
 			value, err := strconv.Unquote(raw)
 			if err != nil {
@@ -96,6 +101,34 @@ func readGQLString(input string, start int) (string, int, error) {
 		i++
 	}
 	return "", 0, fmt.Errorf("%w: unterminated string literal", ErrInvalid)
+}
+
+func singleQuotedToDoubleQuoted(inner string) string {
+	var b strings.Builder
+	b.Grow(len(inner) + 2)
+	b.WriteByte('"')
+	for i := 0; i < len(inner); i++ {
+		ch := inner[i]
+		if ch == '\\' && i+1 < len(inner) {
+			next := inner[i+1]
+			if next == '\'' {
+				b.WriteByte('\'')
+				i++
+				continue
+			}
+			b.WriteByte('\\')
+			b.WriteByte(next)
+			i++
+			continue
+		}
+		if ch == '"' {
+			b.WriteString(`\"`)
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func isGQLOperator(value string) bool {

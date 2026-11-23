@@ -43,11 +43,16 @@ func newUniqueEntityValidator(
 	if len(validator.complexKinds) == 0 {
 		return validator, nil
 	}
-	for id, entity := range g.Entities.All() {
-		if _, ok := validator.complexKinds[entity.Kind]; !ok {
+	for kind := range validator.complexKinds {
+		kindIDs := g.kindEntityIDs.At(kind)
+		if kindIDs == nil {
 			continue
 		}
-		validator.addComplexValues(id, entity)
+		for id := range kindIDs.Keys() {
+			if entity, ok := g.Entities.Get(id); ok {
+				validator.addComplexValues(id, entity)
+			}
+		}
 	}
 	return validator, nil
 }
@@ -88,9 +93,11 @@ func (v *uniqueEntityValidator) ensureKind(kind string) error {
 	if _, complex := v.complexKinds[kind]; !complex {
 		return nil
 	}
-	for id, entity := range v.graph.Entities.All() {
-		if entity.Kind == kind {
-			v.addComplexValues(id, entity)
+	if kindIDs := v.graph.kindEntityIDs.At(kind); kindIDs != nil {
+		for id := range kindIDs.Keys() {
+			if entity, ok := v.graph.Entities.Get(id); ok {
+				v.addComplexValues(id, entity)
+			}
 		}
 	}
 	return nil

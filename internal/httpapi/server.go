@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +47,7 @@ type Server struct {
 	MaintenanceGC         maintenance.GCConfig
 	maintenance           *maintenance.Runner
 	maintenanceOnce       sync.Once
+	prepareOnce           sync.Once
 	usageCache            *tenantUsageCache
 }
 
@@ -424,12 +427,12 @@ func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	release, ok := s.enterMaintenance(w, tenantID)
+	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)
 	if !ok {
 		return
 	}
 	defer release()
-	manifest, err := s.Store.Compact(r.Context(), tenantID)
+	manifest, err := s.Store.Compact(ctx, tenantID)
 	if err != nil {
 		s.auditError("compact_failed", tenantID, err, map[string]any{})
 		writeStorageError(w, err)
@@ -488,7 +491,18 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 			failure := recover()
 			interrupted = failure == http.ErrAbortHandler
 			if failure != nil && !interrupted {
-				panic(failure)
+				panicErr := fmt.Errorf("http handler panic: %v", failure)
+				obs.Logger.Error("http_panic", map[string]any{
+					"tenant": tenantID, "method": r.Method, "path": r.URL.Path,
+					"error": panicErr.Error(), "stack": string(debug.Stack()),
+				})
+				span.RecordError(panicErr)
+				span.SetStatus(codes.Error, panicErr.Error())
+				if !recorder.wroteHeader {
+					writeError(recorder, http.StatusInternalServerError, "internal server error")
+				} else {
+					interrupted = true
+				}
 			}
 			duration := time.Since(start)
 			route := observedRoute(r)
@@ -517,7 +531,7 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 			}
 		}()
 		next.ServeHTTP(recorder, r)
-		if recorder.status < 400 && r.Pattern != "" && s.Store != nil && storage.ValidateTenantID(tenantID) == nil && !obs.HasTenant(tenantID) {
+		if recorder.status < 400 && r.Pattern != "" && isTenantScopedRoute(r.URL.Path) && s.Store != nil && storage.ValidateTenantID(tenantID) == nil && !obs.HasTenant(tenantID) {
 			if version, err := s.Store.CurrentVersion(r.Context(), tenantID); err == nil && version > 0 {
 				obs.RegisterTenant(tenantID)
 			}
@@ -525,19 +539,38 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 	})
 }
 
+func isTenantScopedRoute(path string) bool {
+	switch path {
+	case "/v1/health", "/v1/readiness", "/openapi.yaml", "/metrics", "/v1/tenants", "/v1/diagnostics":
+		return false
+	default:
+		return !strings.HasPrefix(path, "/debug/")
+	}
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusRecorder) WriteHeader(status int) {
-	w.status = status
+	if !w.wroteHeader {
+		w.status = status
+		w.wroteHeader = true
+	}
 	w.ResponseWriter.WriteHeader(status)
 }
 
+func (w *statusRecorder) Write(p []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(p)
+}
+
 func (w *statusRecorder) FlushError() error {
+	w.wroteHeader = true
 	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
@@ -554,9 +587,9 @@ func observedRoute(r *http.Request) string {
 	case path == "/v1/tenant-usage":
 		return "GET /v1/tenant-usage"
 	case path == "/v1/tenants":
-		return r.Method + " /v1/tenants"
+		return traceRouteMethod(r.Method) + " /v1/tenants"
 	case strings.HasPrefix(path, "/v1/tenants/"):
-		return r.Method + " /v1/tenants/{tenant_id}"
+		return traceRouteMethod(r.Method) + " /v1/tenants/{tenant_id}"
 	case path == "/v1/entities/stream":
 		return "GET /v1/entities/stream"
 	case strings.HasPrefix(path, "/v1/entities/"):

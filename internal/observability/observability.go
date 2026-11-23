@@ -31,7 +31,22 @@ func (o *Observability) RegisterTenant(tenantID string) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if _, exists := o.tenants[tenantID]; exists {
+		return
+	}
+	if len(o.tenants) >= 4096 {
+		return
+	}
 	o.tenants[tenantID] = struct{}{}
+}
+
+func (o *Observability) UnregisterTenant(tenantID string) {
+	if o == nil || tenantID == "" {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.tenants, tenantID)
 }
 
 func (o *Observability) HasTenant(tenantID string) bool {
@@ -61,18 +76,23 @@ func (o *Observability) StartIndexHealthMonitor(ctx context.Context, interval ti
 	if o == nil || interval <= 0 || check == nil {
 		return
 	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				o.checkKnownTenantIndexes(ctx, check)
-			case <-ctx.Done():
-				return
-			}
+	go o.RunIndexHealthMonitor(ctx, interval, check)
+}
+
+func (o *Observability) RunIndexHealthMonitor(ctx context.Context, interval time.Duration, check func(context.Context, string) (string, int, error)) {
+	if o == nil || interval <= 0 || check == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			o.checkKnownTenantIndexes(ctx, check)
+		case <-ctx.Done():
+			return
 		}
-	}()
+	}
 }
 
 func (o *Observability) checkKnownTenantIndexes(ctx context.Context, check func(context.Context, string) (string, int, error)) {

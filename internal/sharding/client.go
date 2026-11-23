@@ -29,10 +29,10 @@ type Client struct {
 	graphDescriptors map[string]cachedGraph
 	mu               sync.Mutex
 	leaders          map[string]cachedLeader
+	discoveryEpochs  map[string]uint64
 	metrics          *observability.OperationMetrics
 	lastDiscovery    atomic.Int64
 	discovery        singleflight.Group
-	discoveryEpoch   atomic.Uint64
 }
 
 type cachedLeader struct {
@@ -65,13 +65,13 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (origin string, err er
 	key := shard.ClusterID + "/" + shard.ID
 	c.mu.Lock()
 	cached := c.leaders[key]
+	epoch := c.discoveryEpochs[key]
 	c.mu.Unlock()
 	if cached.definition == string(definition) && time.Now().Before(cached.expires) {
 		c.metrics.Event("leader_cache_hit")
 		return cached.origin, nil
 	}
 	c.metrics.Event("leader_cache_miss")
-	epoch := c.discoveryEpoch.Load()
 	flight := c.discovery.DoChan(fmt.Sprintf("%s/%s/%d", key, definition, epoch), func() (any, error) {
 		// One bounded discovery serves independent callers; one caller's cancellation
 		// must not abort every waiter. A forgotten result cannot repopulate the cache.
@@ -84,7 +84,7 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (origin string, err er
 			return "", err
 		}
 		c.mu.Lock()
-		if c.discoveryEpoch.Load() == epoch {
+		if c.discoveryEpochs[key] == epoch {
 			if len(c.leaders) >= 1024 || c.leaders == nil {
 				c.leaders = make(map[string]cachedLeader)
 			}
@@ -128,13 +128,19 @@ func (c *Client) discoverLeader(ctx context.Context, shard Shard, preferred stri
 			results <- ""
 			return
 		}
-		defer response.Body.Close()
+		defer func() {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+		}()
 		var status struct {
+			NodeID   uint64            `json:"node_id"`
 			LeaderID uint64            `json:"leader_id"`
+			Draining bool              `json:"draining"`
+			Error    string            `json:"error"`
 			Peers    map[uint64]string `json:"peers"`
 		}
 		err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&status)
-		if err != nil || response.StatusCode != http.StatusOK {
+		if err != nil || response.StatusCode != http.StatusOK || status.Error != "" || (status.NodeID != 0 && status.NodeID == status.LeaderID && status.Draining) {
 			results <- ""
 			return
 		}
@@ -192,9 +198,13 @@ func (c *Client) discoverLeader(ctx context.Context, shard Shard, preferred stri
 
 func (c *Client) ForgetLeader(shard Shard) {
 	c.metrics.Event("leader_cache_invalidation")
+	key := shard.ClusterID + "/" + shard.ID
 	c.mu.Lock()
-	c.discoveryEpoch.Add(1)
-	delete(c.leaders, shard.ClusterID+"/"+shard.ID)
+	if c.discoveryEpochs == nil {
+		c.discoveryEpochs = make(map[string]uint64)
+	}
+	c.discoveryEpochs[key]++
+	delete(c.leaders, key)
 	c.mu.Unlock()
 }
 
@@ -266,6 +276,7 @@ func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body 
 		if shardRead(method, path) && ctx.Err() == nil {
 			c.metrics.Event("read_retry")
 			if response != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 				response.Body.Close()
 			}
 			origin, discoverErr := c.Leader(ctx, shard)

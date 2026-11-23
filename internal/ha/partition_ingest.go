@@ -361,13 +361,15 @@ func (c *Cluster) advancePartitionIngest(ctx context.Context, g partition.Graph,
 }
 
 func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph, publishAfter <-chan struct{}, run *partitionIngestRun) (bool, error) {
-	c.App.mu.Lock()
+	if err := c.App.lockPending(ctx); err != nil {
+		return false, err
+	}
 	key, err := c.App.firstPartitionIngest(ctx, g.Tenant, g.Generation)
 	var record acceptedRequest
 	if err == nil && key != "" {
 		record, err = c.App.accepted(ctx, key)
 	}
-	c.App.mu.Unlock()
+	c.App.mu.RUnlock()
 	if err != nil || key == "" {
 		return false, err
 	}

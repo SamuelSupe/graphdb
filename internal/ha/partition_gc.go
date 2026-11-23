@@ -88,7 +88,9 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 	var roots map[uint8][]partition.Root
 	if g.GC.Phase == "starting" {
 		var err error
+		c.App.mu.RLock()
 		roots, err = c.App.partitionStore().GCRootPlan(ctx, g, ids)
+		c.App.mu.RUnlock()
 		if err != nil {
 			return err
 		}
@@ -110,22 +112,29 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 		actions = append(actions, action)
 	}
 	states, err := partition.ExecuteFragmentActions[partition.DataState](ctx, remote, g, actions, c.config.Protocol >= partition.BatchProtocol)
-	if err != nil {
-		return err
+	if ctx.Err() != nil {
+		return errors.Join(err, ctx.Err())
 	}
 	base.Operation = "graph_gc_done"
 	if g.GC.Phase == "starting" {
 		base.Operation = "graph_gc_started"
 	}
 	for index, id := range ids {
-		if g.GC.Phase == "starting" || states[index].GC == nil {
+		if index >= len(states) {
+			break
+		}
+		state := states[index]
+		if state.Tenant != g.Tenant || state.Generation != g.Generation || state.Partition != id {
+			continue
+		}
+		if g.GC.Phase == "starting" || state.GC == nil {
 			base.Participants = append(base.Participants, id)
 		}
 	}
 	if len(base.Participants) == 0 {
-		return nil
+		return err
 	}
-	return remote.Action(ctx, c.graphHome(), base, nil)
+	return errors.Join(err, remote.Action(ctx, c.graphHome(), base, nil))
 }
 
 func pendingGCPartitions(g partition.Graph, protocol int) []uint8 {

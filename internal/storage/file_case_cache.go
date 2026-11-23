@@ -35,7 +35,10 @@ func (s *FileStore) checkDirectorySpelling(parent, part string) error {
 	s.caseMu.Lock()
 	cached, ok := s.directorySpellings[parent]
 	s.caseMu.Unlock()
-	if !ok || !os.SameFile(cached.info, info) || !cached.info.ModTime().Equal(info.ModTime()) || cached.info.Size() != info.Size() {
+	fold := directoryFold(part)
+	_, cachedSpelling := cached.names[fold]
+	// A creation can share the directory timestamp on coarse filesystems.
+	if !ok || !cachedSpelling || !os.SameFile(cached.info, info) || !cached.info.ModTime().Equal(info.ModTime()) || cached.info.Size() != info.Size() {
 		entries, err := os.ReadDir(parent)
 		if err != nil {
 			return err
@@ -73,7 +76,7 @@ func (s *FileStore) checkDirectorySpelling(parent, part string) error {
 			s.caseMu.Unlock()
 		}
 	}
-	if spelling, exists := cached.names[directoryFold(part)]; exists && spelling != part {
+	if spelling, exists := cached.names[fold]; exists && spelling != part {
 		return errFileStoreKey
 	}
 	return nil

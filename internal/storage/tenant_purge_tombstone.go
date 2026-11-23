@@ -253,23 +253,25 @@ func tenantPurgeState(metadata TenantMetadata, exists bool) (string, string) {
 
 func (s *TenantStore) tenantPurgeTombstoneExists(ctx context.Context, tenantID string) (bool, error) {
 	metadata, exists, _, err := s.getTenantPurgeTombstone(ctx, tenantID)
+	now := time.Now().UTC()
 	if err != nil || !exists {
 		if err == nil {
-			s.setCachedTenantPurgeTombstone(tenantID, cachedTenantPurgeTombstone{phase: tenantPurgePhaseCleared, checkedAt: mutationTime(ctx)})
+			s.setCachedTenantPurgeTombstone(tenantID, cachedTenantPurgeTombstone{phase: tenantPurgePhaseCleared, checkedAt: now})
 		}
 		return false, err
 	}
 	phase, operationID := tenantPurgeState(metadata, true)
 	s.setCachedTenantPurgeTombstone(tenantID, cachedTenantPurgeTombstone{
-		phase: phase, operationID: operationID, exists: true, checkedAt: mutationTime(ctx),
+		phase: phase, operationID: operationID, exists: true, checkedAt: now,
 	})
 	return phase != tenantPurgePhaseCleared, nil
 }
 
 func (s *TenantStore) tenantPurgeTombstoneExistsCached(ctx context.Context, tenantID string) (bool, error) {
-	now := mutationTime(ctx)
-	if cached, ok := s.getCachedTenantPurgeTombstone(tenantID, now); ok {
-		return cached.exists && cached.phase != tenantPurgePhaseCleared, nil
+	if !IsReplicatedContext(ctx) {
+		if cached, ok := s.getCachedTenantPurgeTombstone(tenantID, time.Now().UTC()); ok {
+			return cached.exists && cached.phase != tenantPurgePhaseCleared, nil
+		}
 	}
 	return s.tenantPurgeTombstoneExists(ctx, tenantID)
 }
@@ -292,6 +294,12 @@ func (s *TenantStore) deleteCachedTenantPurgeTombstone(tenantID string) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
 	delete(s.purgeTombstoneCache, tenantID)
+}
+
+func (s *TenantStore) clearPurgeTombstoneCache() {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	clear(s.purgeTombstoneCache)
 }
 
 func (s *TenantStore) lifecycleCacheTTL() time.Duration {

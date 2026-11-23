@@ -56,13 +56,14 @@ func (s *TenantStore) publishLocalCompaction(
 		candidate.DataHash = dataHash
 	}
 	candidate.UpdatedAt = mutationTime(ctx)
+	previousCached, hasPreviousCached := s.getWriteCache(tenantID)
 	meta, err := s.putManifestMeta(ctx, tenantID, candidate, currentMeta)
 	if err != nil {
 		s.deleteWriteCache(tenantID)
 		return Manifest{}, ObjectMeta{}, err
 	}
 	s.updateWriteCacheAfterLocalCompaction(
-		tenantID, loaded, current, currentMeta, candidate, meta,
+		tenantID, loaded, previousCached, hasPreviousCached, current, currentMeta, candidate, meta,
 	)
 	return candidate, meta, nil
 }
@@ -119,6 +120,8 @@ func (s *TenantStore) requireManifestDescendsFrom(
 func (s *TenantStore) updateWriteCacheAfterLocalCompaction(
 	tenantID string,
 	loaded loadedGraph,
+	previousCached loadedGraph,
+	hasPreviousCached bool,
 	current Manifest,
 	currentMeta ObjectMeta,
 	candidate Manifest,
@@ -132,7 +135,7 @@ func (s *TenantStore) updateWriteCacheAfterLocalCompaction(
 		s.setWriteCache(tenantID, loaded)
 		return
 	}
-	cached, ok := s.getWriteCache(tenantID)
+	cached, ok := previousCached, hasPreviousCached
 	if !ok || !cachedManifestMatches(cached, current, currentMeta) {
 		s.deleteWriteCache(tenantID)
 		return

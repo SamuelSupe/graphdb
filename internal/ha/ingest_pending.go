@@ -92,7 +92,7 @@ func (a *Application) ensurePending(ctx context.Context) error {
 		pending[key] = info
 		size += info.objectBytes
 	}
-	if hint != nil && len(pending) != hint.Count {
+	if indexed && len(pending) != hint.Count {
 		return fmt.Errorf("pending queue differs from replication checkpoint")
 	}
 	a.pendingIndex = pendingReceiptIndex{}

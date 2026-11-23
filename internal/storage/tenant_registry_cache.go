@@ -19,6 +19,12 @@ func (s *TenantStore) deleteRegisteredTenantCached(tenantID string) {
 	delete(s.registeredTenantCache, tenantID)
 }
 
+func (s *TenantStore) clearRegisteredTenantCache() {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	clear(s.registeredTenantCache)
+}
+
 func (s *TenantStore) replaceRegisteredTenantCache(tenantIDs []string) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()

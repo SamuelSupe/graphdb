@@ -3,6 +3,7 @@ package observability
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ var ingestTerminalBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 
 type Metrics struct {
 	mu           sync.Mutex
 	tenantLabels map[string]struct{}
+	sourceLabels map[string]struct{}
 
 	httpRequests           map[string]float64
 	httpInterruptedStreams uint64
@@ -292,6 +294,7 @@ func (m *Metrics) RecordQuery(tenantID string, op string, status string, duratio
 	if m == nil {
 		return
 	}
+	op = normalizeQueryMetricOp(op)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	tenantID = m.metricTenantLocked(tenantID)
@@ -300,6 +303,17 @@ func (m *Metrics) RecordQuery(tenantID string, op string, status string, duratio
 	m.observe(m.queryDuration, key, queryBuckets, duration.Seconds())
 	if slow {
 		m.slowQueries[labelKey(tenantID, op)]++
+	}
+}
+
+func normalizeQueryMetricOp(op string) string {
+	switch op {
+	case "match", "pattern", "neighbors", "traverse", "impact", "shortest_path", "graphql", "gql", "unknown":
+		return op
+	case "":
+		return "unknown"
+	default:
+		return "invalid"
 	}
 }
 
@@ -372,6 +386,7 @@ func (m *Metrics) RecordIngestSuppressed(tenantID string, source string, count i
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	tenantID = m.metricTenantLocked(tenantID)
+	source = m.metricSourceLocked(source)
 	m.ingestSuppressed[labelKey(tenantID, source)] += float64(count)
 }
 
@@ -382,6 +397,7 @@ func (m *Metrics) RecordIngestSkipped(tenantID string, source string, reason str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	tenantID = m.metricTenantLocked(tenantID)
+	source = m.metricSourceLocked(source)
 	m.ingestSkipped[labelKey(tenantID, source, reason)]++
 }
 
@@ -502,12 +518,90 @@ func (m *Metrics) RecordIndexHealth(tenantID string, status string, issues int) 
 	m.indexHealthIssues[tenantID] = float64(issues)
 }
 
+func cloneHistograms(src map[string]*histogram) map[string]*histogram {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]*histogram, len(src))
+	for key, h := range src {
+		dst[key] = &histogram{
+			Buckets: h.Buckets,
+			Counts:  append([]uint64(nil), h.Counts...),
+			Sum:     h.Sum,
+			Count:   h.Count,
+		}
+	}
+	return dst
+}
+
+func (m *Metrics) snapshot() *Metrics {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return &Metrics{
+		httpRequests:           maps.Clone(m.httpRequests),
+		httpInterruptedStreams: m.httpInterruptedStreams,
+		httpDuration:           cloneHistograms(m.httpDuration),
+		objectDuration:         cloneHistograms(m.objectDuration),
+		maintenanceDuration:    cloneHistograms(m.maintenanceDuration),
+		maintenanceMemory:      maps.Clone(m.maintenanceMemory),
+		queries:                maps.Clone(m.queries),
+		queryDuration:          cloneHistograms(m.queryDuration),
+		slowQueries:            maps.Clone(m.slowQueries),
+		readAdmission:          cloneHistograms(m.readAdmission),
+		readerNotFresh:         maps.Clone(m.readerNotFresh),
+		readerVisibleVersion:   maps.Clone(m.readerVisibleVersion),
+		readerCatchup:          maps.Clone(m.readerCatchup),
+		readerCatchupLatency:   cloneHistograms(m.readerCatchupLatency),
+		readerCache:            maps.Clone(m.readerCache),
+		writeBackpressure:      maps.Clone(m.writeBackpressure),
+		taskFailures:           maps.Clone(m.taskFailures),
+		writeAdmission:         cloneHistograms(m.writeAdmission),
+		manifestConflicts:      maps.Clone(m.manifestConflicts),
+		commitTailLength:       maps.Clone(m.commitTailLength),
+		coordinatorCAS:         maps.Clone(m.coordinatorCAS),
+		coordinatorCleanup:     maps.Clone(m.coordinatorCleanup),
+		coordinatorCleanupRuns: maps.Clone(m.coordinatorCleanupRuns),
+		coordinatorHeads:       maps.Clone(m.coordinatorHeads),
+		coordinatorStatus:      maps.Clone(m.coordinatorStatus),
+		suppressed:             maps.Clone(m.suppressed),
+		ingestSuppressed:       maps.Clone(m.ingestSuppressed),
+		ingestSkipped:          maps.Clone(m.ingestSkipped),
+		ingestWALAppend:        maps.Clone(m.ingestWALAppend),
+		ingestWALBytes:         m.ingestWALBytes,
+		ingestWALSync:          maps.Clone(m.ingestWALSync),
+		ingestWALSyncTime:      cloneHistograms(m.ingestWALSyncTime),
+		ingestWALGroups:        cloneHistograms(m.ingestWALGroups),
+		ingestWALBuffer:        m.ingestWALBuffer,
+		ingestWALDisk:          m.ingestWALDisk,
+		ingestWALWritten:       m.ingestWALWritten,
+		ingestWALDurable:       m.ingestWALDurable,
+		ingestQueue:            m.ingestQueue,
+		ingestQueueBytes:       m.ingestQueueBytes,
+		ingestQueueMemory:      m.ingestQueueMemory,
+		ingestQueueOldest:      m.ingestQueueOldest,
+		ingestQueueCache:       maps.Clone(m.ingestQueueCache),
+		ingestFlush:            maps.Clone(m.ingestFlush),
+		ingestFlushTime:        cloneHistograms(m.ingestFlushTime),
+		ingestTerminalTime:     cloneHistograms(m.ingestTerminalTime),
+		ingestFlushReqs:        cloneHistograms(m.ingestFlushReqs),
+		ingestFlushCommit:      cloneHistograms(m.ingestFlushCommit),
+		ingestFlushSegs:        cloneHistograms(m.ingestFlushSegs),
+		ingestFlushPub:         cloneHistograms(m.ingestFlushPub),
+		ingestFlushDedup:       m.ingestFlushDedup,
+		ingestFlushFall:        m.ingestFlushFall,
+		ingestRecovery:         maps.Clone(m.ingestRecovery),
+		ingestRecoveryTime:     cloneHistograms(m.ingestRecoveryTime),
+		indexHealthChecks:      maps.Clone(m.indexHealthChecks),
+		indexHealthStatus:      maps.Clone(m.indexHealthStatus),
+		indexHealthIssues:      maps.Clone(m.indexHealthIssues),
+	}
+}
+
 func (m *Metrics) SnapshotPrometheus() []byte {
 	if m == nil {
 		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m = m.snapshot()
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "# TYPE graphdb_http_interrupted_streams_total counter\ngraphdb_http_interrupted_streams_total %d\n", m.httpInterruptedStreams)
 	writeCounter(&b, "graphdb_http_requests_total", "HTTP requests by method, route and status.", []string{"method", "route", "status"}, m.httpRequests)
@@ -634,16 +728,25 @@ func writeGaugeStrings(b *bytes.Buffer, name string, help string, values map[str
 
 func writeHistogram(b *bytes.Buffer, name string, help string, labels []string, values map[string]*histogram) {
 	writeMetricHeader(b, name, help, "histogram")
+	allLabels := make([]string, len(labels)+1)
+	copy(allLabels, labels)
+	allLabels[len(labels)] = "le"
+	allValues := make([]string, len(labels)+1)
 	for _, key := range sortedKeysHist(values) {
 		h := values[key]
 		base := splitKey(key)
+		for i := range labels {
+			if i < len(base) {
+				allValues[i] = base[i]
+			} else {
+				allValues[i] = ""
+			}
+		}
 		for i, bucket := range h.Buckets {
-			allLabels := append(append([]string(nil), labels...), "le")
-			allValues := append(append([]string(nil), base...), strconv.FormatFloat(bucket, 'f', -1, 64))
+			allValues[len(labels)] = strconv.FormatFloat(bucket, 'f', -1, 64)
 			fmt.Fprintf(b, "%s_bucket%s %d\n", name, formatLabels(allLabels, allValues), h.Counts[i])
 		}
-		allLabels := append(append([]string(nil), labels...), "le")
-		allValues := append(append([]string(nil), base...), "+Inf")
+		allValues[len(labels)] = "+Inf"
 		fmt.Fprintf(b, "%s_bucket%s %d\n", name, formatLabels(allLabels, allValues), h.Counts[len(h.Counts)-1])
 		fmt.Fprintf(b, "%s_sum%s %g\n", name, formatLabels(labels, base), h.Sum)
 		fmt.Fprintf(b, "%s_count%s %d\n", name, formatLabels(labels, base), h.Count)
@@ -733,4 +836,24 @@ func (m *Metrics) metricTenantLocked(tenant string) string {
 	}
 	m.tenantLabels[tenant] = struct{}{}
 	return tenant
+}
+
+func (m *Metrics) metricSourceLocked(source string) string {
+	if source == "" {
+		return ""
+	}
+	if len(source) > 128 {
+		return "__other__"
+	}
+	if _, ok := m.sourceLabels[source]; ok {
+		return source
+	}
+	if len(m.sourceLabels) >= 256 {
+		return "__other__"
+	}
+	if m.sourceLabels == nil {
+		m.sourceLabels = make(map[string]struct{})
+	}
+	m.sourceLabels[source] = struct{}{}
+	return source
 }

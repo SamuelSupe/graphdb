@@ -324,13 +324,10 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 			prepared++
 		}
 	}
-	go service.schedule()
+	go service.schedule(recovered...)
 	for range config.FlushWorkers {
 		service.workers.Add(1)
 		go service.runWorker()
-	}
-	for _, pending := range recovered {
-		service.enqueueCh <- pending
 	}
 	recordIngestRecovery(config, "ok", recovery.records, len(recovered), prepared, recoveryStarted, nil)
 	recoverySpan.SetAttributes(

@@ -114,11 +114,11 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 	neighbors := make([]graph.Neighbor, 0, len(edges))
 	for _, candidate := range edges {
 		edge := candidate.edge
-		if !requestEdgeMatches(request, edge) {
-			continue
-		}
 		if err := budget.add(1); err != nil {
 			return nil, false, err
+		}
+		if !requestEdgeMatches(request, edge) {
+			continue
 		}
 		neighborID := directedNeighborID(edge, candidate.direction)
 		entity, ok, err := materializeEntity(g, neighborID, request, budget)

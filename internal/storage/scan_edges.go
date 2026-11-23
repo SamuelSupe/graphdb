@@ -222,7 +222,11 @@ func edgeScanPage(tenantID string, version int64, items []graph.Edge, options Ed
 		}
 		next = encodeScanCursor(scanCursor{Version: version, CatalogHash: catalogHash, After: after, Query: edgeScanQueryHash(options)})
 	}
-	return EdgeScanResult{TenantID: tenantID, Version: version, Edges: append([]graph.Edge(nil), page...), NextCursor: next, IndexedRead: true}
+	edges := make([]graph.Edge, len(page))
+	for i := range page {
+		edges[i] = graph.CopyEdge(page[i])
+	}
+	return EdgeScanResult{TenantID: tenantID, Version: version, Edges: edges, NextCursor: next, IndexedRead: true}
 }
 
 func edgeMatchesScan(edge graph.Edge, options EdgeScanOptions) bool {

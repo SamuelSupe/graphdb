@@ -107,7 +107,7 @@ func decodeGQLQueryRequest(w http.ResponseWriter, r *http.Request) (query.Reques
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxQueryRequestBytes))
 		if err != nil {
 			endHTTPSpan(span, err)
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeDecodeError(w, r, err)
 			return query.Request{}, false
 		}
 		if span != nil {
@@ -220,7 +220,7 @@ func encodeMaterializedQueryStream(stream *queryStreamWriter, r *http.Request, r
 		return err
 	}
 	for _, result := range response.Results {
-		if err = stream.write(ctx, result); err != nil {
+		if err = stream.write(ctx, queryResultJSON(result)); err != nil {
 			return err
 		}
 	}
@@ -262,6 +262,9 @@ func (s *Server) tryLazyQueryStreamAdmitted(stream *queryStreamWriter, r *http.R
 	g := graph.New()
 	g.Version = version
 	ok, err = query.StreamContextWithOptions(r.Context(), g, request, options, func(item any) error {
+		if result, ok := item.(query.Result); ok {
+			item = queryResultJSON(result)
+		}
 		return stream.write(r.Context(), item)
 	})
 	if !ok {
@@ -308,7 +311,7 @@ func (s *queryStreamWriter) finishError(err error) {
 	if s.writeFailed {
 		panic(http.ErrAbortHandler)
 	}
-	if err := s.encoder.Encode(queryStreamError(err)); err != nil {
+	if err := encodeStreamError(s.w, s.encoder, queryStreamError(err)); err != nil {
 		panic(http.ErrAbortHandler)
 	}
 }
@@ -608,4 +611,15 @@ func (s *Server) observeQuery(tenantID string, request query.Request, response q
 		return
 	}
 	s.obs().Logger.Info("query_completed", fields)
+}
+
+func encodeStreamError(w http.ResponseWriter, encoder *json.Encoder, item any) error {
+	if err := encoder.Encode(item); err != nil {
+		return err
+	}
+	controller := http.NewResponseController(w)
+	if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
 }

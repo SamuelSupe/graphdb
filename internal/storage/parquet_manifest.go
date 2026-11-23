@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -144,26 +145,26 @@ func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
 		for i := 0; i < int(batch.NumRows()); i++ {
 			rowManifest := Manifest{
 				LayoutVersion:      int(columns.layoutVersion.Value(i)),
-				TenantID:           columns.tenantID.Value(i),
+				TenantID:           strings.Clone(columns.tenantID.Value(i)),
 				Version:            columns.version.Value(i),
-				HeadCommitID:       columns.headCommitID.Value(i),
-				SnapshotKey:        columns.snapshotKey.Value(i),
-				SnapshotCatalogKey: columns.snapshotCatalogKey.Value(i),
+				HeadCommitID:       strings.Clone(columns.headCommitID.Value(i)),
+				SnapshotKey:        strings.Clone(columns.snapshotKey.Value(i)),
+				SnapshotCatalogKey: strings.Clone(columns.snapshotCatalogKey.Value(i)),
 				SnapshotVersion:    columns.snapshotVersion.Value(i),
 				UpdatedAt:          parquetio.ParseTime(columns.updatedAt.Value(i)),
 			}
 			if columns.writerFence != nil {
-				rowManifest.WriterFence = columns.writerFence.Value(i)
+				rowManifest.WriterFence = strings.Clone(columns.writerFence.Value(i))
 			}
 			if columns.writerFenceEpoch != nil {
 				rowManifest.WriterFenceEpoch = columns.writerFenceEpoch.Value(i)
 			}
 			if columns.dataHash != nil {
-				rowManifest.DataHash = columns.dataHash.Value(i)
+				rowManifest.DataHash = strings.Clone(columns.dataHash.Value(i))
 			}
 			if rows == 0 {
 				manifest = rowManifest
-				expectedHash = columns.contentHash.Value(i)
+				expectedHash = strings.Clone(columns.contentHash.Value(i))
 				segmentCount = columns.commitSegmentCount.Value(i)
 				commitKeyCount = columns.commitKeyCount.Value(i)
 			} else if !sameManifestMetadata(manifest, rowManifest) ||
@@ -182,18 +183,18 @@ func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
 					return Manifest{}, fmt.Errorf("manifest commit segment ordinal mismatch")
 				}
 				manifest.CommitSegments = append(manifest.CommitSegments, CommitSegmentRef{
-					Key:          columns.segmentKey.Value(i),
-					Codec:        columns.segmentCodec.Value(i),
+					Key:          strings.Clone(columns.segmentKey.Value(i)),
+					Codec:        strings.Clone(columns.segmentCodec.Value(i)),
 					FirstVersion: columns.segmentFirstVersion.Value(i),
 					LastVersion:  columns.segmentLastVersion.Value(i),
 					Count:        int(columns.segmentCount.Value(i)),
-					ContentHash:  columns.segmentContentHash.Value(i),
+					ContentHash:  strings.Clone(columns.segmentContentHash.Value(i)),
 				})
 			case manifestRowKindCommitKey:
 				if int64(len(manifest.CommitKeys)) != columns.ordinal.Value(i) {
 					return Manifest{}, fmt.Errorf("manifest commit key ordinal mismatch")
 				}
-				manifest.CommitKeys = append(manifest.CommitKeys, columns.commitKey.Value(i))
+				manifest.CommitKeys = append(manifest.CommitKeys, strings.Clone(columns.commitKey.Value(i)))
 			default:
 				return Manifest{}, fmt.Errorf("unknown manifest row kind %q", kind)
 			}

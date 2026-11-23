@@ -5,6 +5,21 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-11-24
+
+- Report truncated NDJSON and terminal error frames in both SDKs. Record
+  interrupted HTTP streams in metrics and logs, and recover handler panics.
+- Preserve the durable Raft protocol floor during snapshot publication and
+  repair older on-disk floors from retained log entries during startup.
+- Isolate router Catalog failures from request cancellation and keep cached
+  placement across ordinary write conflicts. Respect tenant CAS windows.
+- Fence stale object-cache fills, preserve hot objects on oversized reads,
+  and recheck directory spelling on cache misses.
+- Group ordinary WAL receipts in one pass, cache queued HA maintenance tasks,
+  and reuse compacted standalone WAL checkpoints while staging recovered work safely.
+- Incorporate the repository audit fixes for graph validation, query budgets,
+  reader caching, replication rollback and backup scheduling.
+
 ## [2.6.2] - 2026-11-24
 
 - Abort NDJSON responses interrupted by Raft maintenance after streaming begins

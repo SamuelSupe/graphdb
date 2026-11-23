@@ -20,22 +20,32 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 	report := ApplyReport{}
 	affected := newUniqueStringCollector(&report.AffectedEntityIDs)
 	affectedEdges := newUniqueStringCollector(&report.AffectedEdgeIDs)
-	ids := sortedEntityIDs(g.Entities)
+	var ids []string
+	if request.Kind != "" && g.kindEntityIDs.Len() > 0 {
+		if kindIDs := g.kindEntityIDs.At(request.Kind); kindIDs != nil {
+			ids = sortedFieldIDs(kindIDs)
+		}
+	} else {
+		ids = sortedEntityIDs(g.Entities)
+	}
 	for _, entityID := range ids {
-		entity := copyEntity(g.Entities.At(entityID))
-		if request.Kind != "" && entity.Kind != request.Kind {
+		current, ok := g.Entities.Get(entityID)
+		if !ok {
 			continue
 		}
-		if !entitySourceMissing(entity, request.Source, observed) {
+		if request.Kind != "" && current.Kind != request.Kind {
 			continue
 		}
+		if !entitySourceMissing(current, request.Source, observed) {
+			continue
+		}
+		entity := copyEntity(current)
 		switch request.Action {
 		case "mark_stale":
 			tracker.touchEntity(entityID)
 			markEntitySourceStale(&entity, request.Source, version, now)
 			entity.Version = version
 			entity.UpdatedAt = now
-			g.updateEntityIndexes(entityID, g.Entities.At(entityID), entity)
 			g.Entities.Set(entityID, entity)
 			affected.add(entityID)
 		case "delete":

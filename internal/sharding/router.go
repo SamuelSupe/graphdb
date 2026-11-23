@@ -351,7 +351,11 @@ func (r *Router) migrationResponse(ctx context.Context, response *http.Response,
 		Code      string `json:"code"`
 		Retryable bool   `json:"retryable"`
 	}
-	if len(body) > 4096 || json.Unmarshal(body, &rejection) != nil || rejection.Code != "shard_epoch_changed" || !rejection.Retryable {
+	parsed := len(body) <= 4096 && json.Unmarshal(body, &rejection) == nil
+	if !parsed || rejection.Code == "" || rejection.Code == "shard_epoch_changed" || rejection.Code == "graph_mode_changed" || rejection.Code == "graph_layout_changed" {
+		r.forgetPlacement(tenant)
+	}
+	if !parsed || rejection.Code != "shard_epoch_changed" || !rejection.Retryable {
 		return nil
 	}
 	r.forgetPlacement(tenant)

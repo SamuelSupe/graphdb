@@ -12,11 +12,19 @@ func normalizeRelationType(relationType RelationType) (RelationType, error) {
 	if relationType.Name == "" {
 		return RelationType{}, fmt.Errorf("relation type name is required")
 	}
-	for i := range relationType.FromKinds {
-		relationType.FromKinds[i] = strings.TrimSpace(relationType.FromKinds[i])
+	if len(relationType.FromKinds) > 0 {
+		trimmed := make([]string, len(relationType.FromKinds))
+		for i, k := range relationType.FromKinds {
+			trimmed[i] = strings.TrimSpace(k)
+		}
+		relationType.FromKinds = trimmed
 	}
-	for i := range relationType.ToKinds {
-		relationType.ToKinds[i] = strings.TrimSpace(relationType.ToKinds[i])
+	if len(relationType.ToKinds) > 0 {
+		trimmed := make([]string, len(relationType.ToKinds))
+		for i, k := range relationType.ToKinds {
+			trimmed[i] = strings.TrimSpace(k)
+		}
+		relationType.ToKinds = trimmed
 	}
 	if !relationType.AllowCrossKind && relationType.FromKind == "" && relationType.ToKind == "" && len(relationType.FromKinds) == 0 && len(relationType.ToKinds) == 0 {
 		return RelationType{}, fmt.Errorf("relation type %q requires from_kind and to_kind", relationType.Name)

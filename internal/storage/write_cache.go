@@ -127,6 +127,7 @@ func (s *TenantStore) getWriteCache(tenantID string) (loadedGraph, bool) {
 // setWriteCache publishes an already-durable immutable graph to attached
 // readers, even when the writer cache has no capacity to retain it.
 func (s *TenantStore) setWriteCache(tenantID string, loaded loadedGraph) {
+	loaded.CacheBytes = normalizedWriteCacheBytes(loaded)
 	publish := true
 	defer func() {
 		if publish {
@@ -140,7 +141,6 @@ func (s *TenantStore) setWriteCache(tenantID string, loaded loadedGraph) {
 		publish = false
 		return
 	}
-	loaded.CacheBytes = normalizedWriteCacheBytes(loaded)
 	if s.MaxWriteCacheTenants <= 0 || s.MaxWriteCacheBytes <= 0 || loaded.CacheBytes > s.MaxWriteCacheBytes {
 		s.removeWriteCacheLocked(tenantID)
 		return

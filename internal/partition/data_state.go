@@ -66,8 +66,9 @@ func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (a
 		if a.Sequence <= state.Sequence || state.Root != a.Base {
 			return nil, conflict("partition base or transaction sequence changed")
 		}
+		cache := &treeReadCache{}
 		tree := s.Tree(a.Tenant, a.Generation, a.Partition)
-		tree.cache = &treeReadCache{}
+		tree.cache = cache
 		tree.balanceLeaves = a.Revision >= BalancedLeafRevision
 		var captured []Row
 		if state.Capture != "" || state.GC != nil && state.GC.Phase != "cleanup" {
@@ -83,6 +84,8 @@ func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (a
 		if err := s.recordNewPages(ctx, &state, uniqueHashRows(captured), a.Revision); err != nil {
 			return nil, err
 		}
+		readTree := s.Tree(a.Tenant, a.Generation, a.Partition)
+		readTree.cache = cache
 		prepared := Prepared{EdgeTypeDelta: map[string]int64{}, Txn: a.Txn, Sequence: a.Sequence, Base: a.Base, Root: root, Digest: a.Digest}
 		for _, row := range a.Changes {
 			entity := strings.HasPrefix(row.Key, Key("entity"))
@@ -90,7 +93,7 @@ func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (a
 			if !entity && !edge {
 				continue
 			}
-			previous, found, err := tree.Get(ctx, a.Base, row.Key)
+			previous, found, err := readTree.Get(ctx, a.Base, row.Key)
 			if err != nil {
 				return nil, err
 			}
@@ -121,7 +124,7 @@ func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (a
 				}
 			}
 		}
-		prepared.HashBuckets, err = tree.LogicalBuckets(ctx, root, a.Changes)
+		prepared.HashBuckets, err = readTree.LogicalBuckets(ctx, root, a.Changes)
 		if err != nil {
 			return nil, err
 		}

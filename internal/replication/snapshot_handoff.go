@@ -101,7 +101,7 @@ func (n *Node) handoffSnapshotLeadership(now time.Time) {
 			return
 		}
 		ctx, cancel = context.WithTimeout(n.ctx, timeout)
-		_ = n.transferLeadership(ctx, id)
+		_ = n.transferLeadership(ctx, id, false)
 		cancel()
 		return
 	}

@@ -180,12 +180,12 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 		return nil, err
 	}
 	response, err := c.Node.Propose(ctx, data)
-	if err == nil && cmd.Kind == "partition_accept" && c.config.Protocol >= partition.IngestHandoffProtocol {
+	if err == nil && cmd.Kind == "partition_accept" {
 		select {
 		case c.partitionWake <- cmd.Tenant:
 		default:
 		}
-	} else if err == nil && (cmd.Kind == "accept" || cmd.Kind == "partition_accept") {
+	} else if err == nil && cmd.Kind == "accept" {
 		select {
 		case c.flushWake <- struct{}{}:
 		default:
@@ -473,11 +473,15 @@ func (c *Cluster) Close() error {
 		c.closeErr = c.Node.Close()
 		c.exportMu.Lock()
 		c.exportClosed = true
+		closing := make([]*tenantExport, 0, len(c.exports))
 		for key, transfer := range c.exports {
-			transfer.close()
+			closing = append(closing, transfer)
 			delete(c.exports, key)
 		}
 		c.exportMu.Unlock()
+		for _, transfer := range closing {
+			transfer.close()
+		}
 	})
 	return c.closeErr
 }

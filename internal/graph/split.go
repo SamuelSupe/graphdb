@@ -11,6 +11,7 @@ func (g *Graph) applySplit(
 	now time.Time,
 	uniqueValidator *uniqueEntityValidator,
 	fieldSpecsByKind map[string]map[string]FieldSpec,
+	tracker *mutationFingerprintTracker,
 	affected *uniqueStringCollector,
 	affectedEdges *uniqueStringCollector,
 ) error {
@@ -20,6 +21,9 @@ func (g *Graph) applySplit(
 	source, ok := g.Entities.Get(request.SourceID)
 	if !ok {
 		return fmt.Errorf("split source entity %q not found", request.SourceID)
+	}
+	if tracker != nil {
+		tracker.touchEntityWithEdges(request.SourceID)
 	}
 	g.removeEntityFromIndexes(request.SourceID, source)
 	g.Entities.Delete(request.SourceID)
@@ -39,6 +43,14 @@ func (g *Graph) applySplit(
 			return err
 		}
 		sanitizeIncomingEntitySources(&normalized)
+		if normalized.ID == "" {
+			if normalized.Source != "" && normalized.ExternalID != "" {
+				normalized.ID = canonicalEntityID(normalized)
+			}
+			if normalized.ID == "" {
+				return fmt.Errorf("split replacement entity id is required")
+			}
+		}
 		fields, err := g.effectiveFieldsCached(
 			normalized.Kind,
 			fieldSpecsByKind,
@@ -63,6 +75,9 @@ func (g *Graph) applySplit(
 				"split replacement entity %q already exists",
 				normalized.ID,
 			)
+		}
+		if tracker != nil {
+			tracker.touchEntity(normalized.ID)
 		}
 		normalized.SplitFrom = request.SourceID
 		normalized.Version = version

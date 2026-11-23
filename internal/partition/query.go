@@ -266,6 +266,9 @@ func (l *Lookup) edges(ctx context.Context, id, direction string, allowed map[st
 					}
 					edges[edge.ID] = edge
 				}
+				if len(result.Remaining) >= len(keys) {
+					return false, fmt.Errorf("%w: edge batch made no progress", ErrPartitionCorrupt)
+				}
 				keys = result.Remaining
 			}
 		}
@@ -286,6 +289,9 @@ func (l *Lookup) edges(ctx context.Context, id, direction string, allowed map[st
 		}
 		if batch.Next == "" {
 			return true, nil
+		}
+		if batch.Next <= next {
+			return false, fmt.Errorf("%w: adjacency scan made no progress", ErrPartitionCorrupt)
 		}
 		next = batch.Next
 	}

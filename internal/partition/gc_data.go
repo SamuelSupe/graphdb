@@ -162,6 +162,7 @@ func (s Store) applyDataGCState(ctx context.Context, a Action, state DataState) 
 			seenTree := s.gcTree(state, "seen")
 			seenTree.cache = &treeReadCache{}
 			dataTree := s.Tree(a.Tenant, a.Generation, a.Partition)
+			dataTree.cache = &treeReadCache{}
 			var marked, seen []Row
 			limit := 16
 			if gc.Buffered || a.Revision >= BatchGCRevision {

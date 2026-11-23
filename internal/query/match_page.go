@@ -64,7 +64,7 @@ func executeFieldIndexPage(g *graph.Graph, request Request, plan Plan, cursor cu
 			}
 			var err error
 			if plan.Strategy == "field-index-scan" {
-				filters := filtersForIndexField(plan.IndexField, requestFilters(request))
+				filters := filtersForIndexField(plan.IndexField, requestIndexFilters(request))
 				if budget.lookup == nil {
 					match := IndexScanKeyMatcher(filters)
 					err = g.VisitFilteredFieldIDs(request.Kind, plan.IndexField, runtimeIndexBounds(filters), startID, func(key string) (bool, error) { return match(key), budget.check() }, visit)
@@ -94,7 +94,7 @@ func measuredCandidateIDs(g *graph.Graph, request Request, plan Plan, budget *bu
 	var ok bool
 	err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
 		var err error
-		ids, ok, err = candidateIDsForPlan(request.Kind, plan, budget)
+		ids, ok, err = candidateIDsForPlan(request, plan, budget)
 		if ok || err != nil {
 			return len(ids), err
 		}
@@ -132,7 +132,7 @@ func runtimeCandidateIDs(
 			g,
 			request.Kind,
 			plan.IndexField,
-			requestFilters(request),
+			requestIndexFilters(request),
 		)
 		return ids, true, err
 	case "kind-scan":

@@ -97,20 +97,33 @@ func (c *tenantUsageCache) getOrLoad(
 		c.loading[tenantID] = active
 		c.mu.Unlock()
 
-		report, err := loader(ctx, tenantID)
-		active.report = cloneTenantUsageReport(report)
-		active.err = err
-		active.canceled = err != nil && ctx.Err() != nil
-		active.cachedAt = now
-		active.cached = err == nil && c.ttl >= 0
+		var report storage.TenantUsageReport
+		var err error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					c.mu.Lock()
+					delete(c.loading, tenantID)
+					close(active.done)
+					c.mu.Unlock()
+					panic(recovered)
+				}
+			}()
+			report, err = loader(ctx, tenantID)
+			active.report = cloneTenantUsageReport(report)
+			active.err = err
+			active.canceled = err != nil && ctx.Err() != nil
+			active.cachedAt = now
+			active.cached = err == nil && c.ttl >= 0
 
-		c.mu.Lock()
-		if active.cached {
-			c.putLocked(tenantID, report, now)
-		}
-		delete(c.loading, tenantID)
-		close(active.done)
-		c.mu.Unlock()
+			c.mu.Lock()
+			if active.cached {
+				c.putLocked(tenantID, report, now)
+			}
+			delete(c.loading, tenantID)
+			close(active.done)
+			c.mu.Unlock()
+		}()
 		return report, err
 	}
 }

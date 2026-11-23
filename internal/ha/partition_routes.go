@@ -124,7 +124,9 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 		}
 	}
 	if action.Operation == "data_move_install" {
+		c.App.mu.RLock()
 		verified, err := c.App.partitionStore().VerifyMoveStep(ctx, action)
+		c.App.mu.RUnlock()
 		if err != nil {
 			return nil, err
 		}
@@ -288,6 +290,10 @@ func (c *Cluster) registerPartitionRoutes(mux *http.ServeMux) {
 	fragmentRead := func(w http.ResponseWriter, r *http.Request) {
 		if c.config.Protocol < 5 || c.App.Catalog || c.App.ShardID == "" {
 			http.Error(w, "graph partitions require protocol 5", http.StatusConflict)
+			return
+		}
+		if err := c.Node.Healthy(); err != nil {
+			c.writeError(w, err)
 			return
 		}
 		var input partition.ReadRequest

@@ -102,9 +102,14 @@ func (c *entityPageCache) put(key string, entry cachedEntityPage) {
 	if c == nil || c.max <= 0 || c.maxBytes <= 0 {
 		return
 	}
+	size := estimateEntityPageBytes(entry.page)
+	if size > c.maxBytes {
+		c.drop(key)
+		return
+	}
+	entry.size = size
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry.size = estimateEntityPageBytes(entry.page)
 	if previous, ok := c.data[key]; ok {
 		c.bytes -= previous.size
 	}

@@ -39,6 +39,9 @@ func parseCursor(raw string) (cursorState, error) {
 	if cursor.Version <= 0 {
 		return cursorState{}, fmt.Errorf("%w: cursor version is required", ErrInvalid)
 	}
+	if cursor.Offset > 0 && cursor.After == "" {
+		return cursorState{}, fmt.Errorf("%w: cursor after is required for offset pagination", ErrInvalid)
+	}
 	if cursor.Order != "" {
 		if cursor.After == "" || !validCursorOrder(cursor.Order) {
 			return cursorState{}, fmt.Errorf("%w: invalid cursor order", ErrInvalid)

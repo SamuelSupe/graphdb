@@ -44,27 +44,6 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		p := state.Tenants[id]
-		if p.State != "partitioning" {
-			continue
-		}
-		groups := map[string]partition.Group{}
-		for _, id := range p.GraphGroups {
-			g := state.Shards[id]
-			groups[id] = partition.Group{ID: g.ID, ClusterID: g.ClusterID, Peers: g.Peers}
-		}
-		var descriptor partition.Graph
-		err := c.shards.JSON(ctx, state.Shards[p.Shard], http.MethodPost, "/cluster/graph/enable", partition.EnableRequest{Tenant: p.Tenant, Epoch: p.Epoch, Groups: groups}, &descriptor)
-		if err != nil {
-			_, _ = c.shardAction(ctx, sharding.Action{Operation: "partition_error", Tenant: p.Tenant, Epoch: p.Epoch, Error: err.Error()})
-			continue
-		}
-		if descriptor.State == "active" {
-			_, err = c.shardAction(ctx, sharding.Action{Operation: "partition_ready", Tenant: p.Tenant, Epoch: p.Epoch})
-			return err
-		}
-	}
-	for _, id := range ids {
 		placement := state.Tenants[id]
 		if placement.State != "assigning" {
 			continue
@@ -77,6 +56,29 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 		}
 		_, err = c.shardAction(ctx, sharding.Action{Operation: "assigned", Tenant: id, Epoch: placement.Epoch})
 		return err
+	}
+	for _, id := range ids {
+		p := state.Tenants[id]
+		if p.State != "partitioning" {
+			continue
+		}
+		groups := map[string]partition.Group{}
+		for _, id := range p.GraphGroups {
+			g := state.Shards[id]
+			groups[id] = partition.Group{ID: g.ID, ClusterID: g.ClusterID, Peers: g.Peers}
+		}
+		var descriptor partition.Graph
+		err := c.shards.JSON(ctx, state.Shards[p.Shard], http.MethodPost, "/cluster/graph/enable", partition.EnableRequest{Tenant: p.Tenant, Epoch: p.Epoch, Groups: groups}, &descriptor)
+		if err != nil {
+			if p.PartitionError != err.Error() {
+				_, _ = c.shardAction(ctx, sharding.Action{Operation: "partition_error", Tenant: p.Tenant, Epoch: p.Epoch, Error: err.Error()})
+			}
+			continue
+		}
+		if descriptor.State == "active" {
+			_, err = c.shardAction(ctx, sharding.Action{Operation: "partition_ready", Tenant: p.Tenant, Epoch: p.Epoch})
+			return err
+		}
 	}
 	for _, id := range ids {
 		placement := state.Tenants[id]

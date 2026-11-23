@@ -29,7 +29,7 @@ func loadIngestWALCheckpoint(dir string) (ingestWALCheckpoint, int64, error) {
 	if err != nil {
 		return checkpoint, 0, err
 	}
-	if len(data) < 4 || crc32.Checksum(data[4:], crc32.MakeTable(crc32.Castagnoli)) != binary.BigEndian.Uint32(data[:4]) ||
+	if len(data) < 4 || crc32.Checksum(data[4:], ingestWALCRCTable) != binary.BigEndian.Uint32(data[:4]) ||
 		json.Unmarshal(data[4:], &checkpoint) != nil || checkpoint.Version != 1 {
 		return checkpoint, 0, fmt.Errorf("%w: invalid ingest checkpoint", ErrIngestWALCorrupt)
 	}
@@ -78,6 +78,10 @@ func (s *ingestWALWriterState) checkpoint() error {
 	}
 	s.totalBytes += size - previousBytes
 	s.checkpointRequired = true
+	s.wal.hasCheckpoint.Store(true)
+	if err := s.persistDurableTail(s.writtenLSN); err != nil {
+		return errors.Join(ErrIngestWALFailed, err)
+	}
 	return s.prune(checkpoint.Through + 1)
 }
 
@@ -96,7 +100,7 @@ func writeIngestWALCheckpoint(dir string, checkpoint ingestWALCheckpoint, limit 
 	if _, err = file.Write(make([]byte, 4)); err != nil {
 		return 0, err
 	}
-	crc := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	crc := crc32.New(ingestWALCRCTable)
 	writer := &ingestCheckpointWriter{writer: io.MultiWriter(file, crc), remaining: limit - 5}
 	if _, err = fmt.Fprintf(writer, `{"version":1,"through_lsn":%d,"pending":[`, checkpoint.Through); err != nil {
 		return 0, err
@@ -135,7 +139,7 @@ func writeIngestWALCheckpoint(dir string, checkpoint ingestWALCheckpoint, limit 
 		return 0, err
 	}
 	if err = syncDir(dir); err != nil {
-		return 0, err
+		return 0, errors.Join(ErrIngestWALFailed, err)
 	}
 	return size, nil
 }

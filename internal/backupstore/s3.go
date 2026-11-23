@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -90,9 +91,23 @@ func New(ctx context.Context, c Config) (*Repository, error) {
 	if region == "" {
 		region = "us-east-1"
 	}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+	}
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(region),
-		awsconfig.WithHTTPClient(&http.Client{Timeout: 5 * time.Minute}),
+		awsconfig.WithHTTPClient(&http.Client{Transport: transport}),
 	}
 	if c.AccessKeyID != "" {
 		opts = append(opts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(c.AccessKeyID, c.SecretAccessKey, c.SessionToken)))

@@ -17,7 +17,13 @@ import (
 )
 
 func (c *Cluster) graphHome() partition.Group {
-	return partition.Group{ID: c.App.ShardID, ClusterID: c.config.ClusterID, Peers: c.config.Peers}
+	peers := c.config.Peers
+	if c.Node != nil {
+		if live := c.Node.Peers(); len(live) > 0 {
+			peers = live
+		}
+	}
+	return partition.Group{ID: c.App.ShardID, ClusterID: c.config.ClusterID, Peers: peers}
 }
 
 func (c *Cluster) enablePartitionedGraph(ctx context.Context, input partition.EnableRequest) (partition.Graph, error) {
@@ -168,6 +174,7 @@ func (c *Cluster) runPartitionBackground(ctx context.Context) {
 		})
 	}
 	offset := 0
+
 	for {
 		var wake string
 		select {
@@ -303,7 +310,13 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 		}
 	}
 	if g.State == "active" && g.SourceCleanupRevision < partition.ActionRevision {
-		return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "retire_source", Tenant: tenant, Generation: g.Generation}, nil)
+		if err := remote.Action(ctx, c.graphHome(), partition.Action{Operation: "retire_source", Tenant: tenant, Generation: g.Generation}, nil); err != nil {
+			return err
+		}
+		g, err = c.App.graphDescriptor(ctx, tenant)
+		if err != nil {
+			return err
+		}
 	}
 	if g.State == "active" && g.SourceRetired && g.GC == nil && g.Move == nil {
 		interval := g.Config.Maintenance.GCIntervalSeconds

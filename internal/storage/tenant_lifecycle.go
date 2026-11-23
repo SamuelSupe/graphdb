@@ -654,8 +654,10 @@ func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string)
 }
 
 func (s *TenantStore) getTenantMetadataForStatus(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
-	if metadata, configured, meta, ok := s.getCachedTenantMetadataFresh(tenantID, mutationTime(ctx)); ok {
-		return metadata, configured, meta, nil
+	if !IsReplicatedContext(ctx) {
+		if metadata, configured, meta, ok := s.getCachedTenantMetadataFresh(tenantID, time.Now().UTC()); ok {
+			return metadata, configured, meta, nil
+		}
 	}
 	metadata, configured, meta, err := s.getTenantMetadataWithMetaFresh(ctx, tenantID)
 	if err != nil {

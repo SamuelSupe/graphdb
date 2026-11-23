@@ -21,7 +21,7 @@ func (s Store) MoveRoots(ctx context.Context, g Graph, id uint8, now time.Time) 
 		if err := s.load(ctx, object.Key, &pin); err != nil {
 			return err
 		}
-		if !now.Before(pin.KeepUntil) || seenVersions[pin.Version] {
+		if !now.Before(pin.KeepUntil) || !pin.KeepUntil.After(g.HistoryCutoff) || seenVersions[pin.Version] {
 			return nil
 		}
 		view, err := s.Snapshot(ctx, g.Tenant, g.Generation, pin.Version)
@@ -71,19 +71,15 @@ func (s Store) exportReachablePages(ctx context.Context, state DataState, raw st
 			if len(path) > 32 {
 				return ErrPartitionCorrupt
 			}
-			page, err := tree.load(ctx, root)
+			if len(seek) == 0 && seen[root.Hash] {
+				return nil
+			}
+			page, data, err := tree.loadWithData(ctx, root)
 			if err != nil {
 				return err
 			}
 			if len(seek) == 0 {
-				if seen[root.Hash] {
-					return nil
-				}
-				data, err := tree.Objects.Get(ctx, tree.pageKey(root.Hash))
-				if err != nil {
-					return err
-				}
-				if len(out.Objects) >= moveBatchPages || bytes+len(data) > moveBatchBytes {
+				if len(out.Objects) >= moveBatchPages || (bytes+len(data) > moveBatchBytes && len(out.Objects) > 0) {
 					next, _ := json.Marshal(movePageCursor{Root: index, Path: path})
 					out.Next = base64.RawURLEncoding.EncodeToString(next)
 					return nil

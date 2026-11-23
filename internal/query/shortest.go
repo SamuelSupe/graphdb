@@ -70,7 +70,7 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 	active := map[int]bool{startState.serial: true}
 	nextSerial := 1
 	previous := map[shortestState]shortestPredecessor{}
-	entities := map[shortestState]graph.Entity{startState: start}
+	entities := map[string]graph.Entity{start.ID: start}
 	for head := 0; head < len(queue); head++ {
 		if err := budget.check(); err != nil {
 			return graph.Path{}, false, err
@@ -99,7 +99,9 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 				return true, nil
 			}
 			previous[next] = shortestPredecessor{state: current, edge: neighbor.Edge}
-			entities[next] = neighbor.Entity
+			if _, ok := entities[next.id]; !ok {
+				entities[next.id] = neighbor.Entity
+			}
 			if isTarget {
 				result = rebuildShortestPath(
 					startState, next, previous, entities,
@@ -108,15 +110,18 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 				return false, nil
 			}
 			if stepped {
-				if !retainSteppedShortestState(next, current, previous, frontiers, active) {
+				retained, err := retainSteppedShortestState(next, current, previous, frontiers, active, budget)
+				if err != nil {
 					delete(previous, next)
-					delete(entities, next)
+					return false, err
+				}
+				if !retained {
+					delete(previous, next)
 					return true, nil
 				}
 			} else {
 				if _, ok := seen[next.id]; ok {
 					delete(previous, next)
-					delete(entities, next)
 					return true, nil
 				}
 				seen[next.id] = struct{}{}
@@ -183,18 +188,27 @@ func shortestPathContains(state shortestState, id string, previous map[shortestS
 	}
 }
 
-func retainSteppedShortestState(candidate shortestState, parent shortestState, previous map[shortestState]shortestPredecessor, frontiers map[shortestLevel][]shortestState, active map[int]bool) bool {
+func retainSteppedShortestState(candidate shortestState, parent shortestState, previous map[shortestState]shortestPredecessor, frontiers map[shortestLevel][]shortestState, active map[int]bool, budget *budget) (bool, error) {
 	level := shortestLevel{id: candidate.id, depth: candidate.depth}
 	existing := frontiers[level]
 	for _, state := range existing {
-		if active[state.serial] && shortestStateSubsetOfCandidate(state, parent, candidate.id, previous) {
-			return false
+		if !active[state.serial] {
+			continue
+		}
+		if err := budget.add(1); err != nil {
+			return false, err
+		}
+		if shortestStateSubsetOfCandidate(state, parent, candidate.id, previous) {
+			return false, nil
 		}
 	}
 	kept := existing[:0]
 	for _, state := range existing {
 		if !active[state.serial] {
 			continue
+		}
+		if err := budget.add(1); err != nil {
+			return false, err
 		}
 		if shortestCandidateSubsetOfState(parent, candidate.id, state, previous) {
 			active[state.serial] = false
@@ -204,7 +218,7 @@ func retainSteppedShortestState(candidate shortestState, parent shortestState, p
 	}
 	frontiers[level] = append(kept, candidate)
 	active[candidate.serial] = true
-	return true
+	return true, nil
 }
 
 func shortestStateSubsetOfCandidate(state shortestState, parent shortestState, candidateID string, previous map[shortestState]shortestPredecessor) bool {
@@ -269,10 +283,10 @@ func shortestTargetAllows(target graph.Entity, depth int, filter PathFilter) boo
 	return entityMatches(&target, filter.EndWhere) && entityExprMatches(&target, filter.EndWhereExpr)
 }
 
-func rebuildShortestPath(start shortestState, target shortestState, previous map[shortestState]shortestPredecessor, entities map[shortestState]graph.Entity) graph.Path {
+func rebuildShortestPath(start shortestState, target shortestState, previous map[shortestState]shortestPredecessor, entities map[string]graph.Entity) graph.Path {
 	path := graph.Path{}
 	for current := target; ; {
-		path.Entities = append(path.Entities, entities[current])
+		path.Entities = append(path.Entities, entities[current.id])
 		if current == start {
 			break
 		}

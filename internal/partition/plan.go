@@ -198,6 +198,9 @@ func (l *fragmentLoader) incident(id string) error {
 			if batch.Next == "" {
 				break
 			}
+			if batch.Next <= start {
+				return fmt.Errorf("%w: incident edge scan made no progress", ErrPartitionCorrupt)
+			}
 			start = batch.Next
 		}
 	}

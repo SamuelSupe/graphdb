@@ -315,17 +315,19 @@ func sourceRankBetter(incomingPriority int, incomingConfidence float64, existing
 }
 
 func appendUnique(values []string, more ...string) []string {
-	seen := map[string]struct{}{}
+	seen := make(map[string]struct{}, len(values)+len(more))
 	out := make([]string, 0, len(values)+len(more))
-	for _, value := range append(values, more...) {
-		if value == "" {
-			continue
+	for _, slice := range [][]string{values, more} {
+		for _, value := range slice {
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
 		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
 	}
 	return out
 }

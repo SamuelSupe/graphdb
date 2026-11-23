@@ -480,7 +480,11 @@ func entityScanPage(tenantID string, version int64, items []graph.Entity, option
 		last := page[len(page)-1]
 		next = encodeScanCursor(scanCursor{Version: version, CatalogHash: catalogHash, After: scanKey(entityShardID(last.ID), last.ID), Query: entityScanQueryHash(options)})
 	}
-	return EntityScanResult{TenantID: tenantID, Version: version, Entities: append([]graph.Entity(nil), page...), NextCursor: next, IndexedRead: true}
+	entities := make([]graph.Entity, len(page))
+	for i := range page {
+		entities[i] = graph.CopyEntity(page[i])
+	}
+	return EntityScanResult{TenantID: tenantID, Version: version, Entities: entities, NextCursor: next, IndexedRead: true}
 }
 
 func entityMatchesScan(entity graph.Entity, options EntityScanOptions) bool {

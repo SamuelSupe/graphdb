@@ -10,7 +10,7 @@ func (g *Graph) applyCITypeMutations(
 	if len(deletes) == 0 && len(upserts) == 0 {
 		return nil
 	}
-	usedKinds := entityKindSet(g.Entities)
+	usedKinds := g.usedEntityKindSet()
 	changedKinds := make(map[string]struct{}, len(deletes)+len(upserts))
 	for _, name := range deletes {
 		if name == "" {
@@ -49,6 +49,19 @@ func (g *Graph) applyCITypeMutations(
 		intersectStringSets(changedKinds, usedKinds),
 	)
 	return nil
+}
+
+func (g *Graph) usedEntityKindSet() map[string]struct{} {
+	if g.Entities.Len() > 0 && len(g.kindCounts) == 0 {
+		return entityKindSet(g.Entities)
+	}
+	kinds := make(map[string]struct{}, len(g.kindCounts))
+	for kind, count := range g.kindCounts {
+		if count > 0 {
+			kinds[kind] = struct{}{}
+		}
+	}
+	return kinds
 }
 
 func entityKindSet(entities *ShardedMap[Entity],
@@ -111,13 +124,17 @@ func (g *Graph) rebuildIdentityIndexesForKinds(
 	for kind := range kinds {
 		next[kind] = map[string]string{}
 	}
-	for id, entity := range g.Entities.All() {
-		identities, affected := next[entity.Kind]
-		if !affected {
-			continue
-		}
-		for _, signature := range g.identitySignatures(entity) {
-			identities[signature.Value] = id
+	for kind, identities := range next {
+		if kindIDs := g.kindEntityIDs.At(kind); kindIDs != nil {
+			for id := range kindIDs.Keys() {
+				entity, ok := g.Entities.Get(id)
+				if !ok {
+					continue
+				}
+				for _, signature := range g.identitySignatures(entity) {
+					identities[signature.Value] = id
+				}
+			}
 		}
 	}
 	for kind, identities := range next {

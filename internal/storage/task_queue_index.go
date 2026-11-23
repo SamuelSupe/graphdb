@@ -76,7 +76,11 @@ func (s *TenantStore) queuedTasks(ctx context.Context, tenant string, options Ta
 	if len(catalog.tasks) > 4096 {
 		s.discardQueuedCatalog(tenant, catalog)
 	}
-	collector := taskListCollector{options: options}
+	candidateOptions := options
+	if options.Limit == 1 {
+		candidateOptions.Limit = 4
+	}
+	collector := taskListCollector{options: candidateOptions}
 	for _, header := range catalog.tasks {
 		collector.add(header)
 	}
@@ -91,6 +95,9 @@ func (s *TenantStore) queuedTasks(ctx context.Context, tenant string, options Ta
 		}
 		if task.Status == TaskStatusQueued && task.Type == header.Type {
 			tasks = append(tasks, task)
+			if options.Limit > 0 && len(tasks) == options.Limit {
+				break
+			}
 		}
 	}
 	return tasks, nil

@@ -638,6 +638,10 @@ func (p *gqlParser) parseValue() (any, error) {
 }
 
 func (p *gqlParser) parseArray() ([]any, error) {
+	if err := p.enterFilterNesting(); err != nil {
+		return nil, err
+	}
+	defer p.leaveFilterNesting()
 	values := []any{}
 	if p.matchSymbol("]") {
 		return values, nil

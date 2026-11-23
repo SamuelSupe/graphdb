@@ -1,31 +1,32 @@
-# GGraphDB v2.6.2
+# GGraphDB v2.6.3
 
-2.6.2 修复 Raft 维护取消已开始的 NDJSON 流时，客户端可能把部分结果当成完整结果的问题。
+2.6.3 修复流式读取结果判定、Raft 升级恢复、租户路由隔离和后台开销，并纳入图模型、查询、存储、备份和 HA 的独立审计改进。
 
-- 已开始的 NDJSON 响应被维护打断时，服务显式中止 HTTP 响应。客户端应检查响应体读取错误和最终的 `done: true`，丢弃未完成的流并重试。
-- 尚未开始写入的响应仍返回完整的 JSON `503 raft_unavailable`，其中 `retryable` 为 `true`，并附带 `Retry-After: 1`。阻塞写入在取消后至多有一秒，流式处理器无法续长这个期限。
-
-四组定向用例在 Linux x86_64 和 OrbStack Linux ARM64 上分别通过三轮和五轮竞态检测。三节点 Raft 与 HAProxy 同时运行 GC、慢速租户用量读取和普通查询时，两类读取均收到完整的 503，GC 在 1.39 到 1.64 秒内完成。维护后两类读取均返回 200。截断错误通过 HAProxy 单独验证三轮。[Raft 读排空语义](https://github.com/SamuelSupe/graphdb/blob/v2.6.2/docs/raft-ha.zh-CN.md#243-读排空与转发修正) · [标签工作流](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.2)
+- Go 和 Python SDK 校验 NDJSON 完成标记并报告流中的终止错误。服务同时记录中断流的 HTTP 指标和访问日志。
+- 快照写入保留已持久化的最高 Raft 协议。首次升级读取旧快照目录时，根据仍保留的日志修正协议下限。
+- Router 将请求取消与 Catalog 故障分开处理，业务版本冲突保留租户路由。写入背压使用租户的 CAS 冲突窗口。
+- 对象缓存阻止并发旧读覆盖新值，超预算对象不会挤掉其他热键。普通 WAL 刷新一次按租户归组，独占文件存储的 HA 维护调度复用待执行任务索引。单机 WAL 恢复复用已有检查点。
+- 审计改进涵盖输入规范化与图校验、查询资源限制、读缓存并发、复制回滚和备份调度。
 
 ## 升级
 
-替换二进制时使用各 Raft 组已配置的协议。协议激活按独立的维护窗口流程执行。[Raft 升级说明](https://github.com/SamuelSupe/graphdb/blob/v2.6.2/docs/raft-rolling-upgrade.zh-CN.md) · [2.6.1 发行说明](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.1)
+替换各 Raft 节点时沿用已配置的协议。按组滚动替换，各副本追平后再继续。需要启用新协议时使用独立维护窗口。使用流式 SDK 的调用方应读取到流结束并检查错误。首次从旧目录核对协议下限的耗时取决于保留的日志数量。[滚动升级](https://github.com/SamuelSupe/graphdb/blob/v2.6.3/docs/raft-rolling-upgrade.zh-CN.md) · [SDK 文档](https://github.com/SamuelSupe/graphdb/blob/v2.6.3/docs/user/sdk.zh-CN.md) · [发布验证](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.3)
 
 ## 下载和校验
 
 | 平台 | 归档 |
 | --- | --- |
-| Linux x86_64 | `graphdb-v2.6.2-linux-amd64.tar.gz` |
-| Linux aarch64 | `graphdb-v2.6.2-linux-arm64.tar.gz` |
-| 完整版（含 macOS ARM64 二进制） | `graphdb-v2.6.2.tar.gz` |
+| Linux x86_64 | `graphdb-v2.6.3-linux-amd64.tar.gz` |
+| Linux aarch64 | `graphdb-v2.6.3-linux-arm64.tar.gz` |
+| 完整版（含 macOS ARM64 二进制） | `graphdb-v2.6.3.tar.gz` |
 
 将归档与对应的 `.sha256` 放在同一目录。以下命令校验 Linux AMD64 归档并检查版本。
 
 ```sh
-archive=graphdb-v2.6.2-linux-amd64.tar.gz
+archive=graphdb-v2.6.3-linux-amd64.tar.gz
 sha256sum -c "$archive.sha256"
 tar -xzf "$archive"
-./graphdb-v2.6.2-linux-amd64/graphdb version
+./graphdb-v2.6.3-linux-amd64/graphdb version
 ```
 
 完整版包含源码、SDK、部署示例和发布门禁证据。`BUILD-METADATA.json` 记录版本和构建提交。

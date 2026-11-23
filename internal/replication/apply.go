@@ -67,7 +67,6 @@ func (n *Node) applyEntries(entries []raftpb.Entry) (err error) {
 		}
 		n.applicationCommits.Add(1)
 		n.applicationEntries.Add(uint64(len(responses)))
-		n.progress(work[len(responses)-1].Index)
 		for i, data := range responses {
 			n.applicationBytes.Add(-int64(len(entries[offset+i].Data)))
 			n.mu.Lock()
@@ -77,6 +76,7 @@ func (n *Node) applyEntries(entries []raftpb.Entry) (err error) {
 				ch <- result{data: data}
 			}
 		}
+		n.progress(work[len(responses)-1].Index)
 		offset += len(responses)
 	}
 	return nil

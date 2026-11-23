@@ -164,12 +164,27 @@ func (s *TenantStore) setCachedIndexCatalogWithHash(tenantID string, catalog Ind
 	catalog.contentHash = contentHash
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	s.bumpIndexCatalogGenerationLocked(tenantID)
 	s.setCachedIndexCatalogEntryLocked(tenantID, cachedIndexCatalog{
 		catalog:     copyIndexCatalog(catalog),
 		meta:        meta,
 		contentHash: contentHash,
 		checkedAt:   time.Now(),
 	})
+}
+
+func (s *TenantStore) bumpIndexCatalogGenerationLocked(tenantID string) {
+	if s.indexCatalogGeneration == nil {
+		s.indexCatalogGeneration = map[string]uint64{}
+	}
+	s.indexCatalogGeneration[tenantID]++
+}
+
+func (s *TenantStore) bumpReverseIndexCatalogGenerationLocked(tenantID string) {
+	if s.reverseIndexCatalogGeneration == nil {
+		s.reverseIndexCatalogGeneration = map[string]uint64{}
+	}
+	s.reverseIndexCatalogGeneration[tenantID]++
 }
 
 func (s *TenantStore) setCachedIndexCatalogEntryLocked(
@@ -203,6 +218,8 @@ func evictOneCacheEntry[T any](cache map[string]T, incoming string, max int) {
 func (s *TenantStore) deleteCachedIndexCatalog(tenantID string) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	s.bumpIndexCatalogGenerationLocked(tenantID)
+	s.bumpReverseIndexCatalogGenerationLocked(tenantID)
 	delete(s.indexCatalogCache, tenantID)
 	delete(s.reverseIndexCatalogCache, tenantID)
 	for key := range s.compiledScanCatalogCache {
@@ -210,6 +227,13 @@ func (s *TenantStore) deleteCachedIndexCatalog(tenantID string) {
 			delete(s.compiledScanCatalogCache, key)
 		}
 	}
+}
+
+func (s *TenantStore) deleteCachedReverseIndexCatalog(tenantID string) {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	s.bumpReverseIndexCatalogGenerationLocked(tenantID)
+	delete(s.reverseIndexCatalogCache, tenantID)
 }
 
 func copyIndexCatalog(catalog IndexCatalog) IndexCatalog {

@@ -14,6 +14,8 @@ import (
 const ingestWALDurableFile = ".durable"
 const ingestWALTailSlotBytes = 44
 
+var ingestWALCRCTable = crc32.MakeTable(crc32.Castagnoli)
+
 type ingestWALDurableTail struct {
 	startLSN   uint64
 	offset     int64
@@ -37,7 +39,7 @@ func loadIngestWALDurableTail(dir string) (*ingestWALDurableTail, error) {
 	bad := func() (*ingestWALDurableTail, error) {
 		return nil, fmt.Errorf("%w: invalid durable WAL boundary", ErrIngestWALCorrupt)
 	}
-	table := crc32.MakeTable(crc32.Castagnoli)
+	table := ingestWALCRCTable
 	if len(data) == 36 {
 		if string(data[:4]) != "GIWD" || data[4] != 1 || data[5] > 1 || crc32.Checksum(data[:32], table) != binary.BigEndian.Uint32(data[32:]) {
 			return bad()
@@ -92,7 +94,7 @@ func encodeIngestWALTail(t ingestWALDurableTail) []byte {
 	binary.BigEndian.PutUint64(b[16:24], t.startLSN)
 	binary.BigEndian.PutUint64(b[24:32], uint64(t.offset))
 	binary.BigEndian.PutUint64(b[32:40], t.lastLSN)
-	binary.BigEndian.PutUint32(b[40:], crc32.Checksum(b[:40], crc32.MakeTable(crc32.Castagnoli)))
+	binary.BigEndian.PutUint32(b[40:], crc32.Checksum(b[:40], ingestWALCRCTable))
 	return b
 }
 func (s *ingestWALWriterState) persistDurableTail(lsn uint64) error {

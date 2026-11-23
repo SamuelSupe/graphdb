@@ -14,7 +14,7 @@ func (c *ReaderCache) cacheEntryAfterLoadAcquire(
 	if !ok || !cacheEntryFresh(entry, now, minVersion) {
 		return entry, ok, generation, false
 	}
-	entry.lastAccess = now
+	entry.initAccess(now)
 	c.entries[tenantID] = entry
 	return entry, true, generation, true
 }

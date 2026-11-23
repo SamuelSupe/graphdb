@@ -1,8 +1,8 @@
 # GGraphDB 文档中心
 
-[English](README.md) · [项目首页](../README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.2)
+[English](README.md) · [项目首页](../README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.3)
 
-当前稳定版为 **2.6.2**。Raft 流式响应中断的修复和升级步骤见[发行说明](../release/local-disk.md)。
+当前稳定版为 **2.6.3**。流式响应、WAL 恢复和滚动升级见[发行说明](../release/local-disk.md)。
 用户指南与控制台文档均提供中英文版本；部分集群运维专题目前仅有中文。
 
 ## 推荐阅读路径
@@ -11,7 +11,7 @@
 | --- | --- |
 | 首次体验 | [快速开始](user/quickstart.zh-CN.md) → [控制台](management-ui.zh-CN.md) → [使用手册](user/usage-manual.zh-CN.md) |
 | 接入业务数据 | [数据模型](user/data-model.zh-CN.md) → [写入与采集](user/write-ingest.zh-CN.md) → [查询](user/read-query.zh-CN.md) → [SDK](user/sdk.zh-CN.md) |
-| 准备部署 | [发行版部署](user/release-deployment.zh-CN.md) → [生产安全](security-deployment.zh-CN.md) → [备份恢复](object-backup.zh-CN.md) → [发布验收](release-checklist.md#262-qualification) |
+| 准备部署 | [发行版部署](user/release-deployment.zh-CN.md) → [生产安全](security-deployment.zh-CN.md) → [备份恢复](object-backup.zh-CN.md) → [发布验收](release-checklist.md#263-qualification) |
 
 ## 用户指南
 
@@ -68,7 +68,7 @@
 | 2.5.1 发行证据 | [发行说明](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [发布验证](validation-v2.5.1.md) |
 | 2.3.6 优化候选性能对照 | [维护窗口与 30 分钟 Raft 增长负载对照](performance-tail-validation-2026-10-20.zh-CN.md) · [此前六分钟对照](performance-tail-validation-2026-10-19.zh-CN.md) |
 
-当前源码的 SDK 与 OpenAPI 版本为 2.6.2。Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
+当前源码的 SDK 与 OpenAPI 版本为 2.6.3。Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
 各自遵循兼容契约，不能用产品版本号替换。
 
 ## 历史设计与验证记录
@@ -77,7 +77,7 @@
 <summary>展开历史设计、审核与验证档案</summary>
 
 以下记录固定于各自日期和构建，保留原有 PASS、FAIL、跳过和未发布状态。
-当前发行的验收范围见 [2.6.2 发布验收](release-checklist.md#262-qualification)。
+当前发行的验收范围见 [2.6.3 发布验收](release-checklist.md#263-qualification)。
 
 - [2.2.2 发布后的产品 P0/P1 审核](product-p0-p1-review-2026-10-03.zh-CN.md)
 - [后续审核：manifest、图摘要与来源身份](product-p0-p1-review2-2026-10-03.zh-CN.md)

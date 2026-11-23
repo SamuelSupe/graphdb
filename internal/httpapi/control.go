@@ -504,12 +504,12 @@ func (s *Server) integrityAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deep := r.URL.Query().Get("deep") != "false"
-	release, ok := s.enterMaintenance(w, tenantID)
+	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)
 	if !ok {
 		return
 	}
 	defer release()
-	report, err := s.Store.AuditIntegrity(r.Context(), tenantID, storage.IntegrityAuditOptions{Deep: deep})
+	report, err := s.Store.AuditIntegrity(ctx, tenantID, storage.IntegrityAuditOptions{Deep: deep})
 	if err != nil {
 		s.auditError("integrity_audit_failed", tenantID, err, map[string]any{"deep": deep})
 		writeStorageError(w, err)
@@ -534,12 +534,12 @@ func (s *Server) repairTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "repair apply is disabled in reader mode")
 		return
 	}
-	release, ok := s.enterMaintenance(w, tenantID)
+	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)
 	if !ok {
 		return
 	}
 	defer release()
-	report, err := s.Store.RepairTenant(r.Context(), tenantID, storage.RepairOptions{Apply: request.Apply})
+	report, err := s.Store.RepairTenant(ctx, tenantID, storage.RepairOptions{Apply: request.Apply})
 	if err != nil {
 		s.auditError("tenant_repair_failed", tenantID, err, map[string]any{"apply": request.Apply})
 		writeStorageError(w, err)
@@ -563,12 +563,12 @@ func (s *Server) cleanupCommits(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	release, ok := s.enterMaintenance(w, tenantID)
+	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)
 	if !ok {
 		return
 	}
 	defer release()
-	report, err := s.Store.CleanupCommits(r.Context(), tenantID)
+	report, err := s.Store.CleanupCommits(ctx, tenantID)
 	if err != nil {
 		s.auditError("commit_cleanup_failed", tenantID, err, map[string]any{})
 		writeStorageError(w, err)

@@ -11,12 +11,14 @@ import (
 
 const timeSortLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
+var defaultIDSortSpec = []SortSpec{{Field: "id"}}
+
 func compareResults(left, right Result, specs []SortSpec) int {
 	if len(specs) == 0 && left.Path != nil && right.Path != nil {
 		return strings.Compare(resultIdentity(left), resultIdentity(right))
 	}
 	if len(specs) == 0 {
-		specs = []SortSpec{{Field: "id"}}
+		specs = defaultIDSortSpec
 	}
 	for _, spec := range specs {
 		lv := resultValue(left, spec.Field)

@@ -18,7 +18,7 @@ func newBoundedResults(specs []SortSpec, keep int) *boundedResults {
 	}
 	return &boundedResults{
 		keep: keep,
-		heap: boundedResultHeap{items: make([]Result, 0, keep), specs: specs},
+		heap: boundedResultHeap{items: make([]Result, 0, boundedInitialCap(keep)), specs: specs},
 	}
 }
 

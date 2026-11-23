@@ -33,7 +33,11 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 		}
 		sort.Strings(parents)
 		err := runIndexWriteJobs(context.Background(), len(parents), func(_ context.Context, index int) error {
-			return syncDir(parents[index])
+			err := syncDir(parents[index])
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
 		})
 		clear(dirty)
 		return err

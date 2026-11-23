@@ -31,6 +31,7 @@ func (s *Server) maintenanceRuntime() *maintenance.Runner {
 }
 
 func (s *Server) StartMaintenanceLoop(ctx context.Context, interval time.Duration) {
+	s.prepareHandler()
 	if s.writeAllowed() {
 		s.maintenanceRuntime().Start(ctx, interval)
 	}
