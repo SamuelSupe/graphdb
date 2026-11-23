@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/quorum"
 	"go.etcd.io/raft/v3/raftpb"
@@ -1340,6 +1341,19 @@ func TestSnapshotPreservesProtocolOfLaterLogEntries(t *testing.T) {
 	}
 	write(2, 12)
 	if err := disk.saveSnapshot(snapshot, 1); err != nil {
+		t.Fatal(err)
+	}
+	if minimum, err := disk.minimumProtocol(); err != nil || minimum != 12 {
+		t.Fatalf("minimum after delayed snapshot = %d, err = %v", minimum, err)
+	}
+	// Recreate the bbolt metadata left behind by an unpatched 2.6.2 snapshot.
+	if err := disk.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		if err := meta.Delete([]byte(verifiedProtocolFloorSnapshot)); err != nil {
+			return err
+		}
+		return meta.Put([]byte("minimum-protocol"), indexKey(11))
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := disk.Close(); err != nil {

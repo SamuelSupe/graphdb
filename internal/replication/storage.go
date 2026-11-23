@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,8 @@ import (
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
+
+const verifiedProtocolFloorSnapshot = "protocol-floor-snapshot"
 
 type diskStorage struct {
 	dir          string
@@ -86,8 +89,7 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 			}
 			disk.confIndex = binary.BigEndian.Uint64(data)
 		}
-		_ = entries
-		return nil
+		return repairSnapshotProtocolFloor(meta, entries, snapshot.Metadata.Index)
 	})
 	if err != nil {
 		disk.Close()
@@ -120,6 +122,51 @@ func (s *diskStorage) InitialState() (hard raftpb.HardState, conf raftpb.ConfSta
 		return nil
 	})
 	return hard, s.conf, err
+}
+
+// Older releases could persist a delayed snapshot after a newer protocol entry,
+// replacing the durable floor. Reconcile their retained log once per unverified snapshot.
+func repairSnapshotProtocolFloor(meta, entries *bolt.Bucket, snapshotIndex uint64) error {
+	if snapshotIndex == 0 || bytes.Equal(meta.Get([]byte(verifiedProtocolFloorSnapshot)), indexKey(snapshotIndex)) {
+		return nil
+	}
+	minimum := uint64(ProtocolVersion)
+	err := entries.ForEach(func(_, value []byte) error {
+		var entry raftpb.Entry
+		if err := entry.Unmarshal(value); err != nil {
+			return err
+		}
+		minimum = max(minimum, entryMinimumProtocol(entry))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := raiseMinimumProtocol(meta, minimum); err != nil {
+		return err
+	}
+	return meta.Put([]byte(verifiedProtocolFloorSnapshot), indexKey(snapshotIndex))
+}
+
+func entryMinimumProtocol(entry raftpb.Entry) uint64 {
+	if entry.Type != raftpb.EntryNormal || len(entry.Data) == 0 {
+		return 0
+	}
+	// The command body can be large. Read only its protocol header.
+	var header struct {
+		Protocol int `json:"protocol"`
+	}
+	if json.Unmarshal(entry.Data, &header) != nil || header.Protocol < 0 {
+		return 0
+	}
+	return uint64(header.Protocol)
+}
+
+func persistSnapshot(meta *bolt.Bucket, index uint64, data []byte) error {
+	if err := meta.Put([]byte("snapshot"), data); err != nil {
+		return err
+	}
+	return meta.Put([]byte(verifiedProtocolFloorSnapshot), indexKey(index))
 }
 
 func raiseMinimumProtocol(meta *bolt.Bucket, minimum uint64) error {
@@ -285,12 +332,7 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 			minimum = max(minimum, uint64(envelope.Protocol))
 		}
 		for _, entry := range ready.Entries {
-			if entry.Type == raftpb.EntryNormal && len(entry.Data) > 0 {
-				var proposal proposal
-				if json.Unmarshal(entry.Data, &proposal) == nil {
-					minimum = max(minimum, uint64(max(0, proposal.Protocol)))
-				}
-			}
+			minimum = max(minimum, entryMinimumProtocol(entry))
 		}
 		if err := raiseMinimumProtocol(meta, minimum); err != nil {
 			return err
@@ -301,7 +343,7 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 			if err != nil {
 				return err
 			}
-			if err := meta.Put([]byte("snapshot"), data); err != nil {
+			if err := persistSnapshot(meta, ready.Snapshot.Metadata.Index, data); err != nil {
 				return err
 			}
 			conf, err := ready.Snapshot.Metadata.ConfState.Marshal()
@@ -397,7 +439,7 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 				return err
 			}
 		}
-		if err := tx.Bucket([]byte("meta")).Put([]byte("snapshot"), data); err != nil {
+		if err := persistSnapshot(tx.Bucket([]byte("meta")), snapshot.Metadata.Index, data); err != nil {
 			return err
 		}
 		cursor := tx.Bucket([]byte("entries")).Cursor()
