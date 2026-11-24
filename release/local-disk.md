@@ -34,3 +34,9 @@ tar -xzf "$archive"
 ```
 
 完整版包含源码、SDK、部署示例和发布门禁证据。`BUILD-METADATA.json` 记录版本和构建提交。
+
+## 本次发布验证范围
+
+本次从 `v2.6.5` 标签直接打包，提交为 `17f86dd1b7ce603f5dafc550aced58eecd969d66`。已完成本地磁盘和 WAL 恢复、对象备份还原、网关验证，以及针对本地 GC 游标的回归测试。包内附有本次标签的对象备份和网关记录。
+
+本次发布跳过长时间混合负载和完整 Raft 检查。常规 GitHub Actions 标签流程已停止，全量静态检查作业当时也尚未完成。[查看各项检查结果](https://github.com/SamuelSupe/graphdb/actions/runs/45300753426)

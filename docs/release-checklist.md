@@ -8,9 +8,16 @@ checklist, not a record that every published version passed every item.
 
 The [release notes](../release/local-disk.md) cover upgrades from 2.6.2, including
 partition GC recovery and local GC cursor progress during concurrent writes.
-The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.5)
-runs the mixed read/write soak, validates captured metrics with promtool, and checks
-both Linux archives on native runners. The full archive includes the gate evidence.
+The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/runs/45300753426)
+passed standalone disk and WAL recovery, object backup and restore, and gateway
+checks. This release was packaged directly from tag commit `17f86dd`. The
+long-running load and Raft checks were waived. The full static job was still
+running when the workflow was stopped. The full archive includes the completed
+gateway and backup evidence and a record of the release scope.
+
+Both Linux archives passed SHA-256 verification. The extracted binaries reported
+`v2.6.5`, commit `17f86dd` and Go 1.27.3 on native AMD64 and ARM64 Linux.
+The packaged AMD64 binary also matched the digest recorded by the GitHub gateway job.
 
 ## 2.6.4 qualification
 
