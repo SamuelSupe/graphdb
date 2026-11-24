@@ -127,8 +127,17 @@ func TestLocalGCRetirementSurvivesReadersAndSameVersionCatalogChanges(t *testing
 	}
 	defer reintroduced()
 	old()
+	view := store.gcView("tenant-a")
 	if _, err := store.putIndexCatalogWithMeta(ctx, "tenant-a", original, meta); err != nil {
 		t.Fatal(err)
+	}
+	// Resume immediately before the orphan, with the catalog republished
+	// after the batch acquired its view.
+	cursor := key[:len(key)-1]
+	checkpoint := newGCCheckpointRunner(GCOptions{CheckpointCursor: cursor, view: view})
+	err = store.cleanupIndexOrphansLocked(ctx, "tenant-a", checkpoint, &GCReport{})
+	if !gcPaused(err) || checkpoint.result().NextCursor <= cursor || checkpoint.result().DeferredFiles != 1 {
+		t.Fatalf("GC failed to advance past a deferred orphan: %+v, %v", checkpoint.result(), err)
 	}
 	gc()
 	if _, err := files.Get(ctx, key); err != nil {

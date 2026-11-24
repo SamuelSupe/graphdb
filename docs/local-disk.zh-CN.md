@@ -163,7 +163,7 @@ WAL 绑定的租户代次保存在租户目录之外，并在清空或恢复时�
 
 ## 验证与性能
 
-当前发行范围见 [2.3.0 验证记录](validation-v2.3.0.md)，具体二进制资格以完整发行流程与包内证据为准。[2.1.2 验证记录](validation-v2.1.2.md) 和[写入长尾报告](performance-write-tail.md) 属于旧版；该历史版本的 30 分钟负载提前停止，不计为通过，也不豁免当前发行门禁。
+当前发行的工作流和二进制验证范围见[发布验收](release-checklist.md#265-qualification)，完整归档包含该版本的验证记录。[2.1.2 验证记录](validation-v2.1.2.md) 和[写入长尾报告](performance-write-tail.md) 属于旧版；该历史版本的 30 分钟负载提前停止，不计为通过，也不豁免当前发行门禁。
 [2.0 验证报告](performance-v2.0.md)及以下旧版报告仅作历史参考。
 
 日常优化先运行代表性单轮对比，出现明确退化后才定向复测。已有工具
@@ -280,7 +280,7 @@ GC 每批至多访问 512 个候选，在对象之间检查 50 ms / 16 MiB 预�
 观察延迟工作尝试全量重建的次数，`phase="index_deferred_load"` 记录写缓存未命中时加载目标 manifest 的耗时。
 `graphdb_maintenance_estimated_bytes` 显示执行和排队预留，不表示实测 RSS。
 
-详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](validation-v2.3.0.md)。
+详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](release-checklist.md#265-qualification)。
 
 ## 索引失败与 WAL 准入
 

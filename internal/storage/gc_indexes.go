@@ -63,13 +63,15 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 		// decoding so active queries do not pay for repeated, unusable GC work.
 		// Delete rechecks the view in case roots change during validation.
 		if !checkpoint.options.view.canDelete(object.Key) {
-			if checkpoint.options.view.stale() {
-				checkpoint.pauseBeforeObject(object.Key)
-				return errGCPaused
-			}
 			checkpoint.checkpoint.ScannedKeys++
 			checkpoint.checkpoint.LastKey = object.Key
 			checkpoint.checkpoint.DeferredFiles++
+			if checkpoint.options.view.stale() {
+				// Reacquire the roots for the next key. A later GC pass can
+				// reconsider this file even under repeated root publication.
+				checkpoint.pause()
+				return errGCPaused
+			}
 			continue
 		}
 		if isAdjacencyObjectKey(object.Key) {

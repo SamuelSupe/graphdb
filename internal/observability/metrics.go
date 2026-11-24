@@ -603,7 +603,8 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	}
 	m = m.snapshot()
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "# TYPE graphdb_http_interrupted_streams_total counter\ngraphdb_http_interrupted_streams_total %d\n", m.httpInterruptedStreams)
+	writeMetricHeader(&b, "graphdb_http_interrupted_streams_total", "HTTP response streams interrupted by the server.", "counter")
+	fmt.Fprintf(&b, "graphdb_http_interrupted_streams_total %d\n", m.httpInterruptedStreams)
 	writeCounter(&b, "graphdb_http_requests_total", "HTTP requests by method, route and status.", []string{"method", "route", "status"}, m.httpRequests)
 	writeGaugeValues(&b, "graphdb_maintenance_estimated_bytes", "Estimated bytes charged to maintenance admission pools, not RSS.", []string{"pool"}, m.maintenanceMemory)
 	writeHistogram(&b, "graphdb_maintenance_phase_seconds", "Local maintenance wait and processing time.", []string{"phase"}, m.maintenanceDuration)

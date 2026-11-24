@@ -1,6 +1,6 @@
 # GGraphDB Python SDK
 
-Version **2.6.4**, matching the [server release](../../release/local-disk.md).
+Version **2.6.5**, matching the [server release](../../release/local-disk.md).
 
 Install locally:
 

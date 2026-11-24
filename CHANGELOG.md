@@ -5,11 +5,17 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
-## [2.6.4] - 2026-11-24
+## [2.6.5] - 2026-11-24
+
+- When index roots change during local GC, defer the affected orphan and resume
+  after it with a fresh view. Concurrent writes could previously leave a batch
+  at the same cursor and fail the maintenance task.
+- Include Prometheus HELP metadata for `graphdb_http_interrupted_streams_total`.
+
+## [2.6.4] - 2026-11-24 (unpublished candidate)
 
 - Count compact replies when acknowledging partition GC batches. The 2.6.3
   tag was an unpublished candidate whose partition GC recovery gate failed.
-
 - Report truncated NDJSON and terminal error frames in both SDKs. Record
   interrupted HTTP streams in metrics and logs, and recover handler panics.
 - Preserve the durable Raft protocol floor during snapshot publication and

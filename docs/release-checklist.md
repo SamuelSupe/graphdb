@@ -4,11 +4,20 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
+## 2.6.5 qualification
+
+The [release notes](../release/local-disk.md) cover upgrades from 2.6.2, including
+partition GC recovery and local GC cursor progress during concurrent writes.
+The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.5)
+runs the mixed read/write soak, validates captured metrics with promtool, and checks
+both Linux archives on native runners. The full archive includes the gate evidence.
+
 ## 2.6.4 qualification
 
-The [release notes](../release/local-disk.md) describe the changes and migration
-behavior. The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.4)
-qualifies the exact tag and checks both Linux archives on native runners.
+The [2.6.4 candidate run](https://github.com/SamuelSupe/graphdb/actions/runs/45294821351)
+reported a stalled GC cursor during the local-disk soak. The
+[main CI run](https://github.com/SamuelSupe/graphdb/actions/runs/45294822075)
+also found missing HELP metadata for the interrupted-stream counter.
 
 ## 2.6.2 qualification
 

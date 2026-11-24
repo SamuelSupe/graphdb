@@ -2,7 +2,7 @@
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.4) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.5) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,7 +14,7 @@ storage is optional for snapshot backups.
 
 ## Releases
 
-**[2.6.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.4)** reports incomplete reads in the Go and Python SDKs, preserves the durable Raft protocol floor, and reduces background work for WAL and HA maintenance.
+**[2.6.5](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.5)** fixes a local-disk GC failure during concurrent writes and preserves completed partition GC work on recovery. It also reports interrupted HTTP streams in Prometheus and detects incomplete reads in the Go and Python SDKs.
 
 **[2.6.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.1)** returns a complete, retryable HTTP 503 when Raft maintenance cancels a read before its response starts. Writes on interrupted streams remain bounded.
 
@@ -31,7 +31,7 @@ storage is optional for snapshot backups.
 | Reliability | Durable receipt publication, WAL replay, offline receipt checks and automatic inode reclamation |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups, with opt-in large-graph partitioning and partitioned WAL |
 
-See [release checks](docs/release-checklist.md#264-qualification) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release checks](docs/release-checklist.md#265-qualification) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -186,7 +186,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.6.4 release checks](docs/release-checklist.md#264-qualification) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.6.5 release checks](docs/release-checklist.md#265-qualification) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 
