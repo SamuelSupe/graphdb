@@ -4,10 +4,10 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
-## 2.6.3 qualification
+## 2.6.4 qualification
 
 The [release notes](../release/local-disk.md) describe the changes and migration
-behavior. The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.3)
+behavior. The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.4)
 qualifies the exact tag and checks both Linux archives on native runners.
 
 ## 2.6.2 qualification

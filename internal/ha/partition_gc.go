@@ -111,7 +111,7 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 		}
 		actions = append(actions, action)
 	}
-	states, err := partition.ExecuteFragmentActions[partition.DataState](ctx, remote, g, actions, c.config.Protocol >= partition.BatchProtocol)
+	states, err := partition.ExecuteFragmentActions[json.RawMessage](ctx, remote, g, actions, c.config.Protocol >= partition.BatchProtocol)
 	if ctx.Err() != nil {
 		return errors.Join(err, ctx.Err())
 	}
@@ -119,16 +119,19 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 	if g.GC.Phase == "starting" {
 		base.Operation = "graph_gc_started"
 	}
-	for index, id := range ids {
-		if index >= len(states) {
-			break
+	for index, reply := range states {
+		// Batched fragments return a compact GC marker, or JSON null when
+		// complete. A nil RawMessage means this fragment never replied.
+		if len(reply) == 0 {
+			continue
 		}
-		state := states[index]
-		if state.Tenant != g.Tenant || state.Generation != g.Generation || state.Partition != id {
+		var state partition.DataState
+		if decodeErr := json.Unmarshal(reply, &state); decodeErr != nil {
+			err = errors.Join(err, decodeErr)
 			continue
 		}
 		if g.GC.Phase == "starting" || state.GC == nil {
-			base.Participants = append(base.Participants, id)
+			base.Participants = append(base.Participants, ids[index])
 		}
 	}
 	if len(base.Participants) == 0 {

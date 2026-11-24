@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release is **2.6.3**. See its [release checks](release-checklist.md#263-qualification). GGraphDB runs one process
+The current release is **2.6.4**. See its [release checks](release-checklist.md#264-qualification). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,8 +12,8 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION` is `2.6.3` and the tag is `v2.6.3` |
-| Go/Python SDKs and OpenAPI document version | `2.6.3` |
+| Product and release tag | `VERSION` is `2.6.4` and the tag is `v2.6.4` |
+| Go/Python SDKs and OpenAPI document version | `2.6.4` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
 | Persisted Parquet/WAL and snapshot format | Parquet/logical snapshots retain2.x;2.4.2 migrates the WAL durable marker to two-slot v2; Raft has separate protocol/directory-role markers |
@@ -62,7 +62,7 @@ the [Raft administration APIs](raft-ha.zh-CN.md).
 ## Raft protocols and upgrades
 
 Product versions, Raft protocols and snapshot formats are separate identifiers.
-Raft defaults to protocol 1. Version 2.6.3 supports protocols 1 through 12, with separate steps for [large-graph sharding and partitioned WAL activation](partition-wal-ingestion.zh-CN.md#显式启用与升级). Activate protocol-2 streaming
+Raft defaults to protocol 1. Version 2.6.4 supports protocols 1 through 12, with separate steps for [large-graph sharding and partitioned WAL activation](partition-wal-ingestion.zh-CN.md#显式启用与升级). Activate protocol-2 streaming
 snapshots/prepared maintenance or protocol-3 prepared GC only after all voters
 support them. A protocol-2-only binary cannot open a directory whose protocol-3
 minimum has been persisted. Rolling upgrades cover only the
@@ -72,7 +72,7 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See the [2.6.3 release checks](release-checklist.md#263-qualification) and packaged
+See the [2.6.4 release checks](release-checklist.md#264-qualification) and packaged
 evidence for the exact release binary. A local performance candidate completed
 45,116 operations but recorded four HAProxy 503 query failures under severe
 shared-kernel resource pressure. That failed result remains documented; it is
