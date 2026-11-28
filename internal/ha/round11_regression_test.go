@@ -280,3 +280,55 @@ func TestReplicatedOverwriteRestoreDoesNotPoisonReaderCache(t *testing.T) {
 		}
 	}
 }
+
+func TestPostTasksIsNonBatchablePublicationCommand(t *testing.T) {
+	cmd := command{Kind: "http", Method: http.MethodPost, URI: "/v1/tasks"}
+	if !publicationCommand(cmd) {
+		t.Fatal("POST /v1/tasks must be a publication command so queueing a task never revokes in-flight reads")
+	}
+	if batchableCommand(cmd) {
+		t.Fatal("POST /v1/tasks must remain non-batchable so multi-entry HTTP batch barriers are not triggered")
+	}
+	if publicationCommand(command{Kind: "task", Tenant: "t1", IDs: []string{"task-1"}}) {
+		t.Fatal("task execution must still acquire the reader barrier")
+	}
+}
+
+func TestScheduledHAMaintenanceUsesCanonicalTenantHeaderAndRespectsGCInterval(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host"}]}}`, http.StatusOK)
+
+	c := group.nodes[leader].cluster
+	ctx := context.Background()
+	t0 := time.Date(2026, 11, 28, 7, 0, 0, 0, time.UTC)
+	lastGC := make(map[string]time.Time)
+
+	// First observation must initialize lastGC without firing an immediate GC storm.
+	c.scheduleHAMaintenanceOnce(ctx, t0, lastGC)
+	if !lastGC["tenant-a"].Equal(t0) {
+		t.Fatalf("expected lastGC[tenant-a] initialized to %v, got %v", t0, lastGC["tenant-a"])
+	}
+	queued, err := c.App.Store.QueuedMaintenanceTasks(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("expected no immediate GC task on first tick, got %+v", queued)
+	}
+
+	// After GCIntervalSeconds elapses, proposeScheduledTask must succeed with
+	// canonical X-Tenant-ID header (202 Accepted) instead of 400 missing tenant.
+	t1 := t0.Add(31 * time.Minute)
+	c.scheduleHAMaintenanceOnce(ctx, t1, lastGC)
+	if !lastGC["tenant-a"].Equal(t1) {
+		t.Fatalf("expected scheduled GC to succeed and advance lastGC[tenant-a] to %v, got %v", t1, lastGC["tenant-a"])
+	}
+	tasks, err := c.App.Store.ListTasks(ctx, "tenant-a", storage.TaskListOptions{Type: storage.TaskTypeGC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) == 0 {
+		t.Fatal("expected scheduled GC task to be created for tenant tenant-a")
+	}
+}

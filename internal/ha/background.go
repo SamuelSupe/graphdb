@@ -173,17 +173,22 @@ func (c *Cluster) scheduleHAMaintenanceOnce(ctx context.Context, now time.Time, 
 		if cfg.Maintenance.GCIntervalSeconds != nil {
 			gcInterval = *cfg.Maintenance.GCIntervalSeconds
 		}
-		if gcInterval > 0 && !hasGCTask && (inodePressure || now.Sub(lastGC[tenant]) >= time.Duration(gcInterval)*time.Second) {
-			keepSnapshots := 2
-			if cfg.Maintenance.KeepSnapshots != nil && *cfg.Maintenance.KeepSnapshots >= 1 {
-				keepSnapshots = *cfg.Maintenance.KeepSnapshots
-			}
-			if c.proposeScheduledTask(ctx, tenant, routeEpoch, storage.TaskTypeGC, map[string]any{
-				"keep_snapshots":        keepSnapshots,
-				"cleanup_index_orphans": true,
-				"max_deletes":           4096,
-			}) {
+		if gcInterval > 0 && !hasGCTask {
+			last, seen := lastGC[tenant]
+			if !seen && !inodePressure {
 				lastGC[tenant] = now
+			} else if inodePressure || now.Sub(last) >= time.Duration(gcInterval)*time.Second {
+				keepSnapshots := 2
+				if cfg.Maintenance.KeepSnapshots != nil && *cfg.Maintenance.KeepSnapshots >= 1 {
+					keepSnapshots = *cfg.Maintenance.KeepSnapshots
+				}
+				if c.proposeScheduledTask(ctx, tenant, routeEpoch, storage.TaskTypeGC, map[string]any{
+					"keep_snapshots":        keepSnapshots,
+					"cleanup_index_orphans": true,
+					"max_deletes":           4096,
+				}) {
+					lastGC[tenant] = now
+				}
 			}
 		}
 	}
@@ -204,13 +209,13 @@ func (c *Cluster) proposeScheduledTask(ctx context.Context, tenant string, route
 	}
 	cmd.Method = http.MethodPost
 	cmd.URI = "/v1/tasks"
-	cmd.Header = http.Header{
-		"Content-Type": []string{"application/json"},
-		"X-Tenant-ID":  []string{tenant},
-	}
+	cmd.Header = make(http.Header)
+	cmd.Header.Set("Content-Type", "application/json")
+	cmd.Header.Set("X-Tenant-ID", tenant)
 	cmd.Body = body
 	cmd.Tenant = tenant
 	cmd.RouteEpoch = routeEpoch
+	cmd.AdminAuthorized = true
 	data, err := c.propose(ctx, cmd)
 	if err != nil {
 		return false

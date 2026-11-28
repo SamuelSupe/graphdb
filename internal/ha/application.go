@@ -226,7 +226,7 @@ func publicationCommand(cmd command) bool {
 		return true
 	case "http":
 		uri, _, _ := strings.Cut(cmd.URI, "?")
-		return cmd.Method == http.MethodPost && (uri == "/v1/ingest/batches" || uri == "/v1/commits" || uri == "/v1/query/templates")
+		return cmd.Method == http.MethodPost && (uri == "/v1/ingest/batches" || uri == "/v1/commits" || uri == "/v1/query/templates" || uri == "/v1/tasks")
 	case "graph_partition":
 		// Transaction state and input chunks live outside pinned graph views.
 		// Publication keeps the immutable roots already selected by readers.
@@ -257,6 +257,11 @@ func graphCommandOperation(cmd command) string {
 }
 
 func batchableCommand(cmd command) bool {
+	if cmd.Kind == "http" {
+		if uri, _, _ := strings.Cut(cmd.URI, "?"); uri == "/v1/tasks" {
+			return false
+		}
+	}
 	if cmd.Kind == "graph_fragment_batch" {
 		return len(cmd.Body) <= 128<<10 && publicationCommand(cmd)
 	}
