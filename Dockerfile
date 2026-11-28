@@ -7,6 +7,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
+COPY docs/openapi_embed.go docs/openapi.yaml ./docs/
 COPY internal ./internal
 RUN test "$(go env GOVERSION)" = go1.27.3 && buildinfo_package=github.com/SamuelSupe/graphdb/v2/internal/buildinfo && \
     CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false \
