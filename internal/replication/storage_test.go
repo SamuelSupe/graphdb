@@ -1534,3 +1534,204 @@ func TestSnapshotPreservesProtocolOfLaterLogEntries(t *testing.T) {
 		t.Fatalf("reopened minimum protocol = %d, err = %v", minimum, err)
 	}
 }
+
+func TestOpenStorageReconcilesStaleCompactedMetaAfterLegacyRollback(t *testing.T) {
+	dir := t.TempDir()
+	disk, _, err := openStorage(dir, 3, "rolling")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := raftpb.ConfState{Voters: []uint64{1, 2, 3}}
+	envData, err := json.Marshal(snapshotEnvelope{
+		Version:  1,
+		Protocol: 1,
+		State:    []byte("v27-snap"),
+		Peers:    map[uint64]string{1: "http://n1", 2: "http://n2", 3: "http://n3"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Step 1: v2.7.0 persists snapshot and compacted-meta at index 19.
+	snap19 := raftpb.Snapshot{
+		Data:     envData,
+		Metadata: raftpb.SnapshotMetadata{Index: 19, Term: 2, ConfState: conf},
+	}
+	if err := disk.save(raft.Ready{
+		Snapshot:  snap19,
+		HardState: raftpb.HardState{Term: 2, Vote: 1, Commit: 19},
+	}, &snapshotEnvelope{
+		Version:  1,
+		Protocol: 1,
+		Peers:    map[uint64]string{1: "http://n1", 2: "http://n2", 3: "http://n3"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Step 2: Simulate rolling back to an older binary (e.g. v2.3.0) that
+	// installs snapshot index 76 (deleting entries <= 76), appends entries
+	// 77..92, and advances HardState.Commit to 92 without touching compacted-meta.
+	snap76 := raftpb.Snapshot{
+		Data:     envData,
+		Metadata: raftpb.SnapshotMetadata{Index: 76, Term: 3, ConfState: conf},
+	}
+	snap76Raw, err := snap76.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hard92Raw, err := (&raftpb.HardState{Term: 3, Vote: 2, Commit: 92}).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := disk.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		if err := meta.Put([]byte("snapshot"), snap76Raw); err != nil {
+			return err
+		}
+		if err := meta.Put([]byte("hard"), hard92Raw); err != nil {
+			return err
+		}
+		entries := tx.Bucket([]byte("entries"))
+		cursor := entries.Cursor()
+		for k, _ := cursor.First(); k != nil; k, _ = cursor.Next() {
+			if err := cursor.Delete(); err != nil {
+				return err
+			}
+		}
+		for idx := uint64(77); idx <= 92; idx++ {
+			raw, err := (&raftpb.Entry{Index: idx, Term: 3, Type: raftpb.EntryNormal}).Marshal()
+			if err != nil {
+				return err
+			}
+			if err := entries.Put(indexKey(idx), raw); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: Upgrade back to v2.7.0; openStorage must reconcile compacted-meta
+	// to 76 and load entries 77..92 so raft.RestartNode does not panic with
+	// "state.commit 92 is out of range [19, 19]".
+	reopened, existing, err := openStorage(dir, 3, "rolling")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if !existing {
+		t.Fatal("expected existing storage")
+	}
+	first, err := reopened.FirstIndex()
+	if err != nil || first != 77 {
+		t.Fatalf("FirstIndex() = (%d, %v), want (77, nil)", first, err)
+	}
+	last, err := reopened.LastIndex()
+	if err != nil || last != 92 {
+		t.Fatalf("LastIndex() = (%d, %v), want (92, nil)", last, err)
+	}
+	if term, err := reopened.Term(76); err != nil || term != 3 {
+		t.Fatalf("Term(76) = (%d, %v), want (3, nil)", term, err)
+	}
+	if _, err := reopened.Entries(20, 77, 1<<20); err != raft.ErrCompacted {
+		t.Fatalf("Entries(20, 77) err = %v, want ErrCompacted", err)
+	}
+	got, err := reopened.Entries(77, 93, 1<<20)
+	if err != nil || len(got) != 16 || got[0].Index != 77 || got[len(got)-1].Index != 92 {
+		t.Fatalf("Entries(77, 93) = (%d entries, %v), want 16 entries [77..92]", len(got), err)
+	}
+	rn := raft.RestartNode(&raft.Config{
+		ID:              3,
+		ElectionTick:    10,
+		HeartbeatTick:   1,
+		Storage:         reopened,
+		MaxSizePerMsg:   1 << 20,
+		MaxInflightMsgs: 64,
+	})
+	rn.Stop()
+}
+
+func TestOpenStoragePreservesValidRetainedTailAndRejectsPartialGap(t *testing.T) {
+	dir := t.TempDir()
+	disk, _, err := openStorage(dir, 1, "tail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := raftpb.ConfState{Voters: []uint64{1}}
+	entries := make([]raftpb.Entry, 0, 20)
+	for idx := uint64(1); idx <= 20; idx++ {
+		entries = append(entries, raftpb.Entry{Index: idx, Term: 2, Type: raftpb.EntryNormal})
+	}
+	if err := disk.save(raft.Ready{
+		Entries:   entries,
+		HardState: raftpb.HardState{Term: 2, Vote: 1, Commit: 20},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	envData, err := json.Marshal(snapshotEnvelope{
+		Version:  1,
+		Protocol: 1,
+		State:    []byte("snap"),
+		Peers:    map[uint64]string{1: "http://n1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap15, err := disk.CreateSnapshot(15, &conf, envData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retain tail (10, 20] while snapshot is at 15.
+	if err := disk.saveSnapshot(snap15, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Normal reopen must preserve retained tail starting at 11.
+	reopened, _, err := openStorage(dir, 1, "tail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, _ := reopened.FirstIndex(); first != 11 {
+		reopened.Close()
+		t.Fatalf("FirstIndex() after normal reopen = %d, want 11", first)
+	}
+	if last, _ := reopened.LastIndex(); last != 20 {
+		reopened.Close()
+		t.Fatalf("LastIndex() after normal reopen = %d, want 20", last)
+	}
+	// Simulate an older binary pruning entries <= 12 without updating compacted-meta (still 10).
+	if err := reopened.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("entries"))
+		if err := b.Delete(indexKey(11)); err != nil {
+			return err
+		}
+		return b.Delete(indexKey(12))
+	}); err != nil {
+		reopened.Close()
+		t.Fatal(err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen must detect the gap in (10, 15], advance compacted-meta to 15, and keep [16..20].
+	repaired, _, err := openStorage(dir, 1, "tail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repaired.Close()
+	if first, _ := repaired.FirstIndex(); first != 16 {
+		t.Fatalf("FirstIndex() after partial-gap repair = %d, want 16", first)
+	}
+	if last, _ := repaired.LastIndex(); last != 20 {
+		t.Fatalf("LastIndex() after partial-gap repair = %d, want 20", last)
+	}
+	if _, err := repaired.Entries(13, 16, 1<<20); err != raft.ErrCompacted {
+		t.Fatalf("Entries(13, 16) err = %v, want ErrCompacted", err)
+	}
+}

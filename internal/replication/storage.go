@@ -50,6 +50,32 @@ func readTxCompactedMeta(meta *bolt.Bucket) (index, term uint64, ok bool) {
 	return readTxSnapshotMeta(meta)
 }
 
+func retainedTailValid(entries *bolt.Bucket, compIdx, snapIndex, snapTerm uint64) bool {
+	if compIdx >= snapIndex {
+		return false
+	}
+	expected := compIdx + 1
+	cursor := entries.Cursor()
+	for key, value := cursor.Seek(indexKey(expected)); key != nil; key, value = cursor.Next() {
+		if len(key) != 8 {
+			continue
+		}
+		idx := binary.BigEndian.Uint64(key)
+		if idx != expected {
+			return false
+		}
+		if idx == snapIndex {
+			var entry raftpb.Entry
+			if err := entry.Unmarshal(value); err != nil {
+				return false
+			}
+			return entry.Index == snapIndex && entry.Term == snapTerm
+		}
+		expected++
+	}
+	return false
+}
+
 type diskStorage struct {
 	dir            string
 	mu             sync.RWMutex
@@ -112,21 +138,36 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 			}
 			existing = true
 		}
-		if compIdx, compTerm, ok := readTxCompactedMeta(meta); ok && compIdx <= disk.snapIndex {
-			disk.compactedIndex = compIdx
-			disk.compactedTerm = compTerm
-		} else {
+		if disk.snapIndex > 0 {
 			disk.compactedIndex = disk.snapIndex
 			disk.compactedTerm = disk.snapTerm
+			if compIdx, compTerm, ok := readTxCompactedMeta(meta); ok && compIdx < disk.snapIndex {
+				// Older releases update meta["snapshot"] and prune compacted
+				// entries without updating compacted-meta. Only trust a
+				// pre-snapshot compacted floor when the retained log tail up
+				// through the canonical snapshot is still intact and term-matched.
+				if retainedTailValid(entries, compIdx, disk.snapIndex, disk.snapTerm) {
+					disk.compactedIndex = compIdx
+					disk.compactedTerm = compTerm
+				}
+			}
+			if err := meta.Put([]byte(compactedMetaKey), encodeSnapshotMeta(disk.compactedIndex, disk.compactedTerm)); err != nil {
+				return err
+			}
+		} else {
+			if err := meta.Delete([]byte(snapshotMetaKey)); err != nil {
+				return err
+			}
+			if err := meta.Delete([]byte(compactedMetaKey)); err != nil {
+				return err
+			}
 		}
-		if err := entries.ForEach(func(key, value []byte) error {
+		cursor := entries.Cursor()
+		for key, value := cursor.Seek(indexKey(disk.compactedIndex + 1)); key != nil; key, value = cursor.Next() {
 			if len(key) != 8 {
-				return nil
+				continue
 			}
 			idx := binary.BigEndian.Uint64(key)
-			if idx <= disk.compactedIndex {
-				return nil
-			}
 			var entry raftpb.Entry
 			if err := entry.Unmarshal(value); err != nil {
 				return err
@@ -134,9 +175,6 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 			if idx == disk.compactedIndex+1+uint64(len(disk.terms)) {
 				disk.terms = append(disk.terms, entry.Term)
 			}
-			return nil
-		}); err != nil {
-			return err
 		}
 		if data := meta.Get([]byte("hard")); data != nil {
 			var hard raftpb.HardState
