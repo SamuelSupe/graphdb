@@ -4,9 +4,26 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
+## 2.7.2 qualification
+
+The [release notes](../release/local-disk.md) describe query correctness and
+response integrity fixes. Check sorted path pagination with a path limit,
+neighbor grouping and aggregation over edge fields, and final NDJSON metadata
+for partitioned graph queries.
+
+For tenant sharding, compare direct Router traffic and traffic through HAProxy.
+Exercise fresh and reused connections, including while indexes rebuild. Read
+each JSON body to completion and check every NDJSON stream for a final
+`done: true` record. Validate result order, aggregate values, and pagination
+cursors.
+
+The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.7.2)
+records the exact-tag gates, native Linux archive checks, and publication.
+
 ## 2.7.1 qualification
 
-The [release notes](../release/local-disk.md) describe the index health fix.
+The [release notes](https://github.com/SamuelSupe/graphdb/blob/v2.7.1/release/local-disk.md)
+describe the index health fix.
 Regression tests inject a reverse catalog write failure during a full rebuild
 and an incremental update. Both paths must leave the current graph version
 unindexed until the reverse catalog is durable.

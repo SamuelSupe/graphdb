@@ -14,16 +14,10 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 	}
 	complete := requiresCompletePathScan(request) ||
 		plan.Strategy != "entity-id"
-	collectionLimit := patternCollectionLimit(request)
-	if complete {
-		if plan.Strategy != "entity-id" && request.Path.MaxPaths > 0 {
-			// When scanning multiple start entities (possibly in non-canonical
-			// shard order), do not short-circuit before scanning all starts;
-			// pathResultCollector keeps the deterministic top-MaxPaths results.
-			collectionLimit = 0
-		} else {
-			collectionLimit = completePathScanLimit(request)
-		}
+	// A bounded prefix is sufficient only for one start in default path order.
+	collectionLimit := 0
+	if !complete {
+		collectionLimit = maxPathResults(request)
 	}
 	paths := make([]graph.Path, 0, min(collectionLimit, maxQueryLimit+1))
 	var collector *pathResultCollector
@@ -101,8 +95,4 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 		return Response{}, fmt.Errorf("build pattern response: %w", err)
 	}
 	return response, nil
-}
-
-func patternCollectionLimit(request Request) int {
-	return maxPathResults(request)
 }

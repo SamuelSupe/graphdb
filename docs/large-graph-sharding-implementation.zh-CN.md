@@ -87,7 +87,7 @@ home group 使用协议 7 时，GC 另清理未被活动事务认领的暂存输
 
 ## 尚未实现及使用边界
 
-新批次的来源全量对账 `full_sync`、import、collector/deadletter 管理、GQL/GraphQL、边扫描/导出、在线整图备份恢复、clone、完整租户生命周期、配置写入和带存量数据的 schema 修改返回 `501 operation_disabled`。分片增量 ingest 需 home group 启用协议 6，并兼容转换前保留的批次状态和幂等收据。全组停机归档可用于[离线集群恢复](product-operations.zh-CN.md#大图分片离线集群恢复)。
+新批次的来源全量对账 `full_sync`、import、collector/deadletter 管理、GQL/GraphQL、保存查询模板、边扫描/导出、在线整图备份恢复、clone、完整租户生命周期、配置写入和带存量数据的 schema 修改返回 `501 operation_disabled`。分片增量 ingest 需 home group 启用协议 6，并兼容转换前保留的批次状态和幂等收据。全组停机归档可用于[离线集群恢复](product-operations.zh-CN.md#大图分片离线集群恢复)。
 
 协议 7 可以为新受理的分片批次配置[终态回执保留期](partition-wal-ingestion.zh-CN.md#终态回执保留期)，既有回执继续沿用原规则。转换发布前的取消接口、超级节点 segment、hash 范围继续拆分、home group 搬迁和已用数据组的自动排空尚未完成。目录保守保留图关联，注销曾关联的组可能仍被拒绝。转换已进入初始化后应排除错误并继续，不得手工删描述或改目录强行恢复旧模式。
 

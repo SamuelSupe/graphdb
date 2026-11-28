@@ -180,7 +180,7 @@ func serveGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 		if path == "/v1/query/stream" {
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			encoder := json.NewEncoder(w)
-			if encoder.Encode(query.StreamMeta{Version: response.Version, NextCursor: response.NextCursor, Stats: &response.Stats, Aggregates: response.Aggregates, Groups: response.Groups, Plan: response.Plan, Profile: response.Profile}) != nil {
+			if encoder.Encode(response.StreamMeta(false)) != nil {
 				return true
 			}
 			for _, result := range response.Results {
@@ -188,7 +188,7 @@ func serveGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 					return true
 				}
 			}
-			_ = encoder.Encode(query.StreamMeta{Done: true, Version: response.Version, Stats: &response.Stats})
+			_ = encoder.Encode(response.StreamMeta(true))
 			return true
 		}
 		graphJSON(w, http.StatusOK, response)

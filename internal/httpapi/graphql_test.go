@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -45,6 +46,100 @@ func TestGraphQLQueryEndpoint(t *testing.T) {
 	}
 	if response.Header().Get("X-GraphDB-Query-ID") == "" {
 		t.Fatal("GraphQL response did not include query id")
+	}
+}
+
+func TestQueryEntrypointsPreserveProjectedSortedPages(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{
+		{ID: "host:d", Kind: "host", Fields: graph.Fields{"rank": 1, "name": "delta"}},
+		{ID: "host:c", Kind: "host", Fields: graph.Fields{"rank": 3, "name": "charlie"}},
+		{ID: "host:b", Kind: "host", Fields: graph.Fields{"rank": 0, "name": "excluded"}},
+		{ID: "host:a", Kind: "host", Fields: graph.Fields{"rank": 3, "name": "alpha"}},
+	}}
+	if _, err := store.Commit(context.Background(), "tenant-a", mutations, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	const text = `FIND host WHERE rank >= 1 PROJECT id, name ORDER BY rank DESC LIMIT 2`
+	const document = `query Search($request: QueryRequest!) {
+		lookup: graph(request: $request) { version results next_cursor: nextCursor }
+	}`
+	for _, tc := range []struct {
+		path    string
+		body    func(query.Request) any
+		graphql bool
+		stream  bool
+	}{
+		{"/v1/query", func(r query.Request) any { return r }, false, false},
+		{"/v1/query/stream", func(r query.Request) any { return r }, false, true},
+		{"/v1/query/gql", func(r query.Request) any { return map[string]any{"query": text, "cursor": r.Cursor} }, false, false},
+		{"/v1/query/gql/stream", func(r query.Request) any { return map[string]any{"query": text, "cursor": r.Cursor} }, false, true},
+		{"/v1/query/graphql", func(r query.Request) any {
+			return map[string]any{"query": document, "variables": map[string]any{"request": r}}
+		}, true, false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			request := query.Request{
+				Op: "match", Kind: "host", Where: []query.Filter{{Field: "rank", Op: "gte", Value: 1}},
+				Project: []string{"id", "name"}, Sort: []query.SortSpec{{Field: "rank", Desc: true}}, Limit: 2,
+			}
+			for page, wantIDs := range [][]string{{"host:a", "host:c"}, {"host:d"}} {
+				response := serveJSON(handler, http.MethodPost, tc.path, "tenant-a", tc.body(request))
+				if response.Code != http.StatusOK {
+					t.Fatalf("page %d: %d %s", page, response.Code, response.Body)
+				}
+				decoder := json.NewDecoder(response.Body)
+				var observed query.Response
+				switch {
+				case tc.stream:
+					var first query.StreamMeta
+					if err := decoder.Decode(&first); err != nil || first.Done || first.Version != 1 {
+						t.Fatalf("page %d stream header = %+v, %v", page, first, err)
+					}
+					for range wantIDs {
+						var row query.Result
+						if err := decoder.Decode(&row); err != nil {
+							t.Fatal(err)
+						}
+						observed.Results = append(observed.Results, row)
+					}
+					var end query.StreamMeta
+					if err := decoder.Decode(&end); err != nil || !end.Done || end.Stats == nil || end.Stats.Returned != len(wantIDs) {
+						t.Fatalf("page %d stream tail = %+v, %v", page, end, err)
+					}
+					observed.Version, observed.NextCursor = end.Version, end.NextCursor
+				case tc.graphql:
+					var envelope struct {
+						Data   map[string]query.Response
+						Errors []json.RawMessage
+					}
+					if err := decoder.Decode(&envelope); err != nil || len(envelope.Errors) > 0 {
+						t.Fatalf("page %d GraphQL response = %+v, %v", page, envelope, err)
+					}
+					observed = envelope.Data["lookup"]
+				default:
+					if err := decoder.Decode(&observed); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ids := make([]string, 0, len(observed.Results))
+				for _, row := range observed.Results {
+					if row.Entity == nil || len(row.Entity.Fields) != 1 || len(row.Fields) != 2 || row.Fields["id"] != row.Entity.ID {
+						t.Fatalf("page %d invalid projected row: %+v", page, row)
+					}
+					name, ok := row.Entity.Fields["name"].(string)
+					if !ok || row.Fields["name"] != name {
+						t.Fatalf("page %d name mismatch: %+v", page, row)
+					}
+					ids = append(ids, row.Entity.ID)
+				}
+				if !slices.Equal(ids, wantIDs) || observed.Version != 1 || (observed.NextCursor != "") != (page == 0) {
+					t.Fatalf("page %d IDs = %v, want %v, version = %d, cursor = %q", page, ids, wantIDs, observed.Version, observed.NextCursor)
+				}
+				request.Cursor = observed.NextCursor
+			}
+		})
 	}
 }
 

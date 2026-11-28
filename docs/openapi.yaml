@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.7.1
+  version: 2.7.2
   description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Standalone 2.2 retains the 2.0/2.1 data format and optional S3 backup automation; Raft has separate replica-directory and protocol upgrade requirements. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
@@ -3268,6 +3268,7 @@ components:
           format: date-time
     QueryRequest:
       type: object
+      description: For neighbors, sorting, grouping and aggregation use the entity field when present and otherwise use the edge field. The fields.* and identity.* forms refer to the entity.
       required: [op]
       properties:
         op:
@@ -3402,6 +3403,8 @@ components:
             $ref: '#/components/schemas/PathStep'
         max_paths:
           type: integer
+          minimum: 0
+          description: For pattern, cap the paths returned across pages. Aggregations include all matching paths. For traverse and impact, a positive cap bounds the matches in default path order before sorting and aggregation.
     PathStep:
       type: object
       properties:

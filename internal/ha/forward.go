@@ -79,6 +79,11 @@ func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, p
 			c.writeError(w, err)
 		},
 	}
+	if body == nil && r.ContentLength != 0 {
+		// Keep a streamed request body available to the transport during an
+		// early response flush. Buffered public requests already own a copy.
+		_ = http.NewResponseController(w).EnableFullDuplex()
+	}
 	// A transport failure or a submitted proposal may have committed. Only
 	// requests rejected before proposal admission enter this forwarding path.
 	proxy.ServeHTTP(w, r)

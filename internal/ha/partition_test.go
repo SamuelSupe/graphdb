@@ -806,13 +806,34 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 	if err := json.Unmarshal(page.Body.Bytes(), &listed); err != nil || listed.Version != 2 || len(listed.Entities) != 2 || listed.Entities[0].ID <= lastID || listed.NextCursor != "" {
 		t.Fatalf("entity second page: %s", page.Body.String())
 	}
-	match := query.Request{Op: "match", Kind: "host", Limit: 2}
+	match := query.Request{
+		Op: "match", Kind: "host", Limit: 2, Aggregate: []query.Aggregation{{Op: "count"}},
+		GroupBy: []string{"kind"}, Profile: true,
+	}
 	page = call(http.MethodPost, "/v1/query", "big", match, http.StatusOK)
 	var matched query.Response
 	if err := json.Unmarshal(page.Body.Bytes(), &matched); err != nil || matched.NextCursor == "" {
 		t.Fatalf("match first page: %s", page.Body.String())
 	}
-	match.Cursor = matched.NextCursor
+	stream := call(http.MethodPost, "/v1/query/stream", "big", match, http.StatusOK)
+	decoder := json.NewDecoder(stream.Body)
+	var header query.StreamMeta
+	if err := decoder.Decode(&header); err != nil || header.Done || header.Version != matched.Version {
+		t.Fatalf("stream header: %+v, %v", header, err)
+	}
+	for _, expected := range matched.Results {
+		var row query.Result
+		if err := decoder.Decode(&row); err != nil || row.Entity == nil || row.Entity.ID != expected.Entity.ID {
+			t.Fatalf("stream row: %+v, %v", row, err)
+		}
+	}
+	var end query.StreamMeta
+	if err := decoder.Decode(&end); err != nil || !end.Done || end.Version != matched.Version ||
+		end.NextCursor != matched.NextCursor || end.Aggregates["count"] != float64(4) ||
+		len(end.Groups) != 1 || end.Groups[0].Key["kind"] != "host" || len(end.Profile) == 0 {
+		t.Fatalf("stream final record: %+v, %v", end, err)
+	}
+	match.Cursor = end.NextCursor
 	page = call(http.MethodPost, "/v1/query", "big", match, http.StatusOK)
 	matched = query.Response{}
 	if err := json.Unmarshal(page.Body.Bytes(), &matched); err != nil || matched.Version != 2 || len(matched.Results) != 2 || matched.Results[0].Entity.ID <= lastID {

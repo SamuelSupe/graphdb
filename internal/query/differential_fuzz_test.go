@@ -55,6 +55,10 @@ func runDifferentialSeed(t *testing.T, seed int64) {
 			predicates := []func(graph.Entity) bool{nil}
 			if idx%3 == 0 {
 				predicates = append(predicates, func(e graph.Entity) bool {
+					// Keep explicit endpoints visible so the predicate tests graph expansion.
+					if e.ID == req.ID || e.ID == req.TargetID {
+						return true
+					}
 					v, _ := e.Fields["active"].(bool)
 					return v
 				})
@@ -191,12 +195,18 @@ func generateDifferentialRequests(rng *rand.Rand, g *graph.Graph) []Request {
 			Op: "neighbors", ID: ids[0], Direction: "both", Limit: pickLimit(),
 			EdgeWhere: []Filter{{Field: "weight", Op: "gte", Value: 2}},
 			Sort:      []SortSpec{{Field: "score", Desc: true}},
-			Aggregate: []Aggregation{{Op: "count"}},
+			Aggregate: []Aggregation{{Op: "count"}, {Op: "sum", Field: "weight"}},
 			GroupBy:   []string{"group"},
 		},
 		// traverse: out, both, stepped
 		{Op: "traverse", ID: ids[0], Direction: "out", Depth: 3, Limit: pickLimit()},
 		{Op: "traverse", ID: ids[0], Direction: "both", Depth: 2, Limit: pickLimit()},
+		{
+			Op: "traverse", ID: ids[0], Direction: "both", Depth: 3, Limit: pickLimit(),
+			Path:      PathFilter{MaxPaths: 1 + rng.Intn(7)},
+			Sort:      []SortSpec{{Field: "end_id", Desc: true}},
+			Aggregate: []Aggregation{{Op: "count"}, {Op: "sum", Field: "length"}},
+		},
 		{
 			Op: "traverse", ID: ids[0], Depth: 2, Limit: pickLimit(),
 			Path: PathFilter{Steps: []PathStep{
@@ -210,6 +220,13 @@ func generateDifferentialRequests(rng *rand.Rand, g *graph.Graph) []Request {
 		// impact (exercises forward, reverse, both relation impact directions)
 		{Op: "impact", ID: ids[0], Depth: 3, Limit: pickLimit()},
 		{Op: "impact", ID: pickID(), Depth: 2, Limit: pickLimit(), RelationTypes: []string{"calls", "depends_on"}},
+		{
+			Op: "impact", ID: ids[0], Depth: 3, Limit: pickLimit(),
+			Path:      PathFilter{MaxPaths: 1 + rng.Intn(7)},
+			Sort:      []SortSpec{{Field: "length", Desc: true}},
+			Aggregate: []Aggregation{{Op: "count"}},
+			GroupBy:   []string{"env"},
+		},
 		// pattern (with EntityPredicate tested by caller loop!)
 		{
 			Op: "pattern", Kind: "service", Limit: pickLimit(),
@@ -217,6 +234,15 @@ func generateDifferentialRequests(rng *rand.Rand, g *graph.Graph) []Request {
 				{Direction: "out", RelationTypes: []string{"calls", "depends_on", "peers_with"}},
 				{Direction: "both", RelationTypes: []string{"calls", "peers_with"}},
 			}},
+		},
+		{
+			Op: "pattern", Kind: "service", Limit: pickLimit(),
+			Path: PathFilter{MaxPaths: 1 + rng.Intn(7), Steps: []PathStep{
+				{Direction: "both", RelationTypes: []string{"calls", "peers_with"}},
+			}},
+			Sort:      []SortSpec{{Field: "end_id", Desc: true}},
+			Aggregate: []Aggregation{{Op: "count"}},
+			GroupBy:   []string{"env"},
 		},
 	}
 	return reqs

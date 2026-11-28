@@ -10,7 +10,7 @@ from .tenant import TenantMixin
 from .transport import TransportMixin, _ConnectionPool
 from .write import WriteMixin
 
-SDK_VERSION = "2.7.1"
+SDK_VERSION = "2.7.2"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 _MAX_POOLED_CONNECTIONS = 16
 

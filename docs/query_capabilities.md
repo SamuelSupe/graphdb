@@ -142,6 +142,9 @@ edge 排序和聚合支持：
 - 元字段：`id`、`type`、`relation_type`、`from`、`to`。
 - edge schemaless 字段：直接使用字段名。
 
+`neighbors` 同时返回实体和边。排序、分组和聚合优先使用实体的同名字段，即使其值为 `null`。
+实体没有该字段时，使用边的同名字段。`fields.*` 和 `identity.*` 始终引用实体字段。
+
 path 排序支持：
 
 - `length` 或 `depth`: path 边数量。
@@ -255,6 +258,8 @@ path 排序支持：
 - 匹配精确 step 数；不做无界重复、变量绑定、optional pattern 或 join。
 - 起点可以复用 `match` 的字段索引，`in`/`both` step 可以使用持久化反向
   邻接 shard。
+- `pattern` 的 `path.max_paths` 限制所有分页累计返回的排序结果数，聚合计算全部匹配路径。
+  `traverse` 和 `impact` 的正数 `path.max_paths` 按默认路径顺序限定参与排序和聚合的匹配集合，翻页时沿用同一集合。
 
 ### neighbors
 
@@ -501,7 +506,7 @@ path 排序支持：
 
 ## Streaming
 
-`POST /v1/query/stream` 和 `POST /v1/query/gql/stream` 输出 NDJSON。lazy match 且无 sort/aggregate/group 时可以边拉取边输出；其他查询会先执行得到当前页或聚合结果，再按 NDJSON 输出。stream meta 会包含 `aggregates` 和 `groups`。
+`POST /v1/query/stream` 和 `POST /v1/query/gql/stream` 输出 NDJSON。lazy match 且无 sort/aggregate/group 时可以边拉取边输出；其他查询会先执行得到当前页或聚合结果，再按 NDJSON 输出。最终 `done` 行包含下一页游标、统计，以及查询请求的聚合、分组和分析结果。
 
 流式响应的写入截止时间固定为流开始后的 10 分钟。连接停滞或中断仍可能截断响应，客户端必须确认最终 `done:true`，不能仅凭 HTTP 200 判断完成。
 

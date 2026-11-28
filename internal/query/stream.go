@@ -18,6 +18,18 @@ type StreamMeta struct {
 	Done       bool             `json:"done,omitempty"`
 }
 
+// StreamMeta keeps pagination and aggregation metadata available at stream completion.
+func (r *Response) StreamMeta(done bool) StreamMeta {
+	meta := StreamMeta{
+		Version: r.Version, NextCursor: r.NextCursor, Stats: &r.Stats,
+		Aggregates: r.Aggregates, Groups: r.Groups, Profile: r.Profile, Done: done,
+	}
+	if !done {
+		meta.Plan = r.Plan
+	}
+	return meta
+}
+
 func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Request, options ExecuteOptions, emit func(any) error) (bool, error) {
 	if !canStreamLazyMatch(request, options) {
 		return false, nil

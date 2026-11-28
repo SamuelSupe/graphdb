@@ -518,6 +518,11 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 		return
 	}
 	proxy := r.reverseProxyFor(origin, target)
+	if request.ContentLength != 0 {
+		// HTTP/1 would close the incoming body at the first response flush,
+		// while the proxy transport can still be reading that same body.
+		_ = http.NewResponseController(w).EnableFullDuplex()
+	}
 	proxy.ServeHTTP(w, request.WithContext(context.WithValue(request.Context(), proxyCallKey{}, state)))
 }
 

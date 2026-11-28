@@ -2,6 +2,8 @@ package query
 
 import (
 	"fmt"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -142,6 +144,86 @@ func TestTraverseGlobalSortAndAggregateExceedLookahead(t *testing.T) {
 			"first sorted result = %#v, want host:1099",
 			response.Results,
 		)
+	}
+}
+
+func TestPathCapKeepsSortedPagesAndAggregatesStable(t *testing.T) {
+	const pathCount = 1350
+	const pathCap = 1250
+	const start = "service:start"
+	g := largeTraversalPagingGraph(t, pathCount)
+	if err := g.ApplyCommit(graph.Commit{
+		ID: "forward-impact", Version: 2,
+		Mutations: graph.Mutations{UpsertRelationTypes: []graph.RelationType{{
+			Name: "runs_on", Directed: true, AllowCrossKind: true, ImpactDirection: "forward",
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ends := make([]string, pathCount)
+	for i := range ends {
+		ends[i] = fmt.Sprintf("host:%04d", i)
+	}
+	patternEnds := slices.Clone(ends)
+	slices.Reverse(patternEnds)
+	sort.Slice(ends, func(i, j int) bool {
+		return graph.CanonicalEdgeIDParts("runs_on", start, ends[i]) <
+			graph.CanonicalEdgeIDParts("runs_on", start, ends[j])
+	})
+	traverseEnds := ends[:pathCap]
+	slices.Sort(traverseEnds)
+	slices.Reverse(traverseEnds)
+
+	for _, tc := range []struct {
+		name  string
+		query Request
+		count int
+		ends  []string
+	}{
+		{"traverse", Request{Op: "traverse", ID: start, Direction: "out"}, pathCap, traverseEnds},
+		{"impact", Request{Op: "impact", ID: start, Depth: 1}, pathCap, traverseEnds},
+		{"pattern by ID", Request{Op: "pattern", Kind: "service", Where: []Filter{{Field: "id", Value: start}}}, pathCount, patternEnds[:pathCap]},
+		{"pattern by kind", Request{Op: "pattern", Kind: "service"}, pathCount, patternEnds[:pathCap]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := tc.query
+			request.Path.MaxPaths = pathCap
+			if request.Op == "pattern" {
+				request.Path.Steps = []PathStep{{Direction: "out", RelationTypes: []string{"runs_on"}}}
+			}
+			request.Sort = []SortSpec{{Field: "end_id", Desc: true}}
+			request.Aggregate = []Aggregation{{Op: "count"}}
+			request.Limit = 200
+			var got []string
+			for page := 1; ; page++ {
+				response, err := Execute(g, request)
+				if err != nil {
+					t.Fatalf("page %d: %v", page, err)
+				}
+				if response.Aggregates["count"] != tc.count {
+					t.Fatalf("page %d count = %v, want %d", page, response.Aggregates["count"], tc.count)
+				}
+				for _, row := range response.Results {
+					got = append(got, pathEnd(*row.Path).ID)
+				}
+				if response.NextCursor == "" {
+					break
+				}
+				if len(got) >= pathCap || page > pathCap/request.Limit+1 {
+					t.Fatalf("page %d returned a cursor after %d paths", page, len(got))
+				}
+				request.Cursor = response.NextCursor
+			}
+			if len(got) != len(tc.ends) {
+				t.Fatalf("returned %d paths, want %d", len(got), len(tc.ends))
+			}
+			for i := range got {
+				if got[i] != tc.ends[i] {
+					t.Fatalf("path %d = %s, want %s", i, got[i], tc.ends[i])
+				}
+			}
+		})
 	}
 }
 

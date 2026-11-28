@@ -56,7 +56,14 @@ func comparePathIdentityOrder(left, right graph.Path) int {
 
 func resultValue(result Result, field string) any {
 	if result.Entity != nil {
-		return entityValue(result.Entity, field)
+		value := entityValue(result.Entity, field)
+		if value != nil || result.Edge == nil || strings.HasPrefix(field, "fields.") || strings.HasPrefix(field, "identity.") {
+			return value
+		}
+		// A null entity field still owns its name when a neighbor also has an edge.
+		if _, exists := entityFilterValue(result.Entity, field); exists {
+			return nil
+		}
 	}
 	if result.Edge != nil {
 		switch field {

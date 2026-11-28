@@ -5,6 +5,19 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-11-28
+
+- Keep HTTP/1.1 request bodies available to sharded Router and Raft forwarding
+  until the upstream transport finishes reading them. This fixes a race that
+  could truncate successful JSON and NDJSON query responses.
+- Honor the path limit consistently across pages when sorting or aggregating
+  traversal and impact results. Pattern aggregates cover all matches with
+  either an ID lookup or a start-entity scan.
+- Resolve sorting, grouping, and aggregation fields from neighbor edges when
+  the associated entities do not define those fields.
+- Include the pagination cursor, aggregations, groups, and profile in the final
+  NDJSON record for partitioned graph queries.
+
 ## [2.7.1] - 2026-11-28
 
 - Publish a new index catalog version only after its reverse catalog is

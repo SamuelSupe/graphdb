@@ -13,7 +13,7 @@ type pathResultCollector struct {
 func newPathResultCollector(request Request) *pathResultCollector {
 	keep := pathPageResultLimit(request)
 	if request.Path.MaxPaths > 0 {
-		keep = min(keep, maxPathResults(request))
+		keep = min(keep, request.Path.MaxPaths)
 	}
 	acc, groups := newQueryAggregators(request)
 	return &pathResultCollector{
@@ -56,11 +56,4 @@ func requiresCompletePathScan(request Request) bool {
 	return len(request.Sort) > 0 ||
 		len(request.Aggregate) > 0 ||
 		len(request.GroupBy) > 0
-}
-
-func completePathScanLimit(request Request) int {
-	if request.Path.MaxPaths > 0 {
-		return maxPathResults(request)
-	}
-	return 0
 }

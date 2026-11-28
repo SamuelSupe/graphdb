@@ -206,16 +206,7 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 func encodeMaterializedQueryStream(stream *queryStreamWriter, r *http.Request, response query.Response) (err error) {
 	ctx, span := startAPIPhase(r.Context(), "encode_stream", queryResponseTraceAttributes(response)...)
 	defer func() { endHTTPSpan(span, err) }()
-	stats := response.Stats
-	if err = stream.write(ctx, query.StreamMeta{
-		Version:    response.Version,
-		NextCursor: response.NextCursor,
-		Stats:      &stats,
-		Aggregates: response.Aggregates,
-		Groups:     response.Groups,
-		Plan:       response.Plan,
-		Profile:    response.Profile,
-	}); err != nil {
+	if err = stream.write(ctx, response.StreamMeta(false)); err != nil {
 		return err
 	}
 	for _, result := range response.Results {
@@ -223,15 +214,7 @@ func encodeMaterializedQueryStream(stream *queryStreamWriter, r *http.Request, r
 			return err
 		}
 	}
-	err = stream.write(ctx, query.StreamMeta{
-		Version:    response.Version,
-		NextCursor: response.NextCursor,
-		Stats:      &stats,
-		Aggregates: response.Aggregates,
-		Groups:     response.Groups,
-		Profile:    response.Profile,
-		Done:       true,
-	})
+	err = stream.write(ctx, response.StreamMeta(true))
 	return err
 }
 

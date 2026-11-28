@@ -64,12 +64,12 @@ func executeCompleteTraverse(
 		func() (int, error) {
 			if request.Path.MaxPaths > 0 {
 				return visitPathsInIdentityOrder(
-					g, start, request, completePathScanLimit(request),
+					g, start, request, request.Path.MaxPaths,
 					budget, collector.add,
 				)
 			}
 			return visitPaths(
-				g, start, request, completePathScanLimit(request),
+				g, start, request, 0,
 				budget, collector.add,
 			)
 		},

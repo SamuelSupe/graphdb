@@ -147,6 +147,9 @@ go run ./cmd/graphdb gql demo query.gql
 独立限制方向、关系类型、目标实体类型/属性和边属性；不支持无界重复、变量
 绑定、可选模式或 join。
 
+`pattern` 的 `path.max_paths` 限制所有分页累计返回的排序结果数，聚合涵盖全部匹配路径。
+`traverse` 和 `impact` 的正数 `path.max_paths` 按默认路径顺序限定参与排序和聚合的匹配集合，翻页时沿用同一集合。
+
 邻居：
 
 ```json
@@ -158,6 +161,9 @@ go run ./cmd/graphdb gql demo query.gql
   "limit": 50
 }
 ```
+
+`neighbors` 的排序、分组和聚合优先使用邻居实体的同名字段。实体没有该字段时，
+使用 `weight` 或 `relation_type` 等边字段。用 `fields.*` 或 `identity.*` 可明确引用实体字段。
 
 遍历：
 
@@ -266,6 +272,9 @@ cursor 视为不透明值。
 使用 `POST /v1/query/stream` 或 `POST /v1/query/gql/stream` 获取
 NDJSON。响应依次输出 meta 行、结果行和最终 done 行。
 读取响应体出错或缺少最终 done 行时，应将结果视为不完整。
+用最终行的 `next_cursor` 继续翻页。最终行也包含统计，以及查询请求的聚合、分组和分析结果。
+
+普通 JSON 查询应读完整个 HTTP 响应体，再将其解析为一个 JSON 文档。
 
 ## Explain 与 Profile
 

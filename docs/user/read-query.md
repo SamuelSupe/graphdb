@@ -148,6 +148,11 @@ step count. Each step can independently constrain direction, relation types,
 destination entity kinds/properties, and edge properties. It does not provide
 unbounded repetition, variable binding, optional patterns, or joins.
 
+For `pattern`, `path.max_paths` caps the sorted paths returned across pages.
+Aggregations include all matching paths. For `traverse` and `impact`, a positive
+`path.max_paths` bounds the matched paths in default path order before sorting
+and aggregation. The same bound applies on every page.
+
 Neighbors:
 
 ```json
@@ -159,6 +164,11 @@ Neighbors:
   "limit": 50
 }
 ```
+
+When sorting, grouping, or aggregating `neighbors`, an unqualified field uses
+the neighbor entity's value when present. Otherwise it uses the edge field, such
+as `weight` or `relation_type`. Use `fields.*` or `identity.*` to reference the
+entity explicitly.
 
 Traverse:
 
@@ -271,6 +281,10 @@ version even when they contain only an offset. Prefer the opaque returned cursor
 Use `POST /v1/query/stream` or `POST /v1/query/gql/stream` for NDJSON output.
 The response emits one meta row, result rows, then a final done row.
 Treat a body read error or a missing final done row as an incomplete result.
+Use `next_cursor` in the final row to continue. That row also carries the final
+statistics and any requested aggregates, groups or profile.
+
+For a JSON query, read the entire HTTP body and decode it as one JSON document.
 
 ## Explain And Profile
 

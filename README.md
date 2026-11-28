@@ -2,7 +2,7 @@
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.7.1) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.7.2) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -13,6 +13,8 @@ storage is optional for snapshot backups.
 [Start](#start) · [Write and query](#write-and-query) · [Choose a deployment](#deployment-options) · [Validation](#validation-and-limits)
 
 ## Releases
+
+**[2.7.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.7.2)** fixes occasional JSON and NDJSON response truncation in tenant-sharded clusters, corrects sorted path pagination and edge-based neighbor aggregations, and completes the final NDJSON record for partitioned graph queries.
 
 **[2.7.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.7.1)** fixes index health reporting after a reverse index catalog write fails during a full rebuild or an incremental update.
 
@@ -26,7 +28,7 @@ storage is optional for snapshot backups.
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** enables durable asynchronous WAL ingestion in standalone Compose and splits oversized index catch-up into ordered incremental updates. Release binaries use **Go 1.27.3**.
 
-| Area | Capabilities in 2.7.1 |
+| Area | Capabilities in 2.7.2 |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
@@ -35,7 +37,7 @@ storage is optional for snapshot backups.
 | Reliability | Durable receipt publication, WAL replay, offline receipt checks, manifest protection, ReadIndex linearizable reads and automatic inode reclamation |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups, with opt-in large-graph partitioning and partitioned WAL |
 
-See [release checks](docs/release-checklist.md#271-qualification) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release checks](docs/release-checklist.md#272-qualification) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -190,7 +192,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.7.1 release checks](docs/release-checklist.md#271-qualification) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.7.2 release checks](docs/release-checklist.md#272-qualification) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 
