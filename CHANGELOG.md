@@ -5,6 +5,12 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-11-28
+
+- Publish a new index catalog version only after its reverse catalog is
+  durable. A failed reverse catalog write during a full rebuild or incremental
+  update now leaves index health stale or missing until a later update succeeds.
+
 ## [2.7.0] - 2026-11-28
 
 ### Architecture & Replication

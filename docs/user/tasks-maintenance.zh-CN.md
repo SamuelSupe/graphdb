@@ -185,6 +185,9 @@ curl -sS "$READER/v1/indexes/health" -H 'X-Tenant-ID: demo'
 curl -sS "$READER/v1/indexes/health?deep=true" -H 'X-Tenant-ID: demo'
 ```
 
+反向索引目录持久化后，新目录版本才对查询和健康检查可见。反向目录写入失败时，
+健康检查报告索引过期或缺失，直至后续更新或重建成功。
+
 重建和删除：
 
 ```sh

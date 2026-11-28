@@ -193,6 +193,10 @@ curl -sS "$READER/v1/indexes/health" -H 'X-Tenant-ID: demo'
 curl -sS "$READER/v1/indexes/health?deep=true" -H 'X-Tenant-ID: demo'
 ```
 
+A new catalog version becomes visible after its reverse catalog is durable.
+If the reverse catalog write fails, the health endpoint reports the index as
+stale or missing until an update or rebuild succeeds.
+
 Rebuild:
 
 ```sh

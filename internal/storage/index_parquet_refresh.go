@@ -53,12 +53,6 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 		return err
 	}
 	mutator := s.catalogMutator()
-	if _, err = mutator.PublishForwardCatalog(ctx, tenantID, catalog, previousMeta, true); err != nil {
-		return err
-	}
-	if err := s.ensureIncrementalIndexCurrent(ctx, tenantID, version); err != nil {
-		return err
-	}
 	reverseCtx := mutator.WithAdjacencyInheritance(ctx, previous, true)
 	if err := s.refreshReverseIndexAfterCommit(
 		reverseCtx,
@@ -81,5 +75,9 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 			return fmt.Errorf("refresh reverse index: %w", err)
 		}
 	}
-	return nil
+	if err := s.ensureIncrementalIndexCurrent(ctx, tenantID, version); err != nil {
+		return err
+	}
+	_, err = mutator.PublishForwardCatalog(ctx, tenantID, catalog, previousMeta, true)
+	return err
 }

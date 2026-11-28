@@ -4,9 +4,19 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
+## 2.7.1 qualification
+
+The [release notes](../release/local-disk.md) describe the index health fix.
+Regression tests inject a reverse catalog write failure during a full rebuild
+and an incremental update. Both paths must leave the current graph version
+unindexed until the reverse catalog is durable.
+
+The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.7.1)
+records the exact-tag gates, the native Linux archive checks and publication.
+
 ## 2.7.0 qualification
 
-The [release notes](../release/local-disk.md) cover upgrades from 2.6.5, including
+The [release notes](https://github.com/SamuelSupe/graphdb/blob/v2.7.0/release/local-disk.md) cover upgrades from 2.6.5, including
 storage/WAL/backup/query-IR convergence, Raft ReadIndex, inline snapshot
 transfer, retained Raft log-tail indexing, Raft protocol 1–14 support, sharded
 copy-on-write adjacency/partition maps, and multi-round stability and
@@ -23,7 +33,7 @@ verification, and automated GitHub Release publication.
 
 ## 2.6.5 qualification
 
-The [release notes](../release/local-disk.md) cover upgrades from 2.6.2, including
+The [release notes](https://github.com/SamuelSupe/graphdb/blob/v2.6.5/release/local-disk.md) cover upgrades from 2.6.2, including
 partition GC recovery and local GC cursor progress during concurrent writes.
 The [tag workflow](https://github.com/SamuelSupe/graphdb/actions/runs/45300753426)
 passed standalone disk and WAL recovery, object backup and restore, and gateway

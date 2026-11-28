@@ -2,11 +2,63 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
+
+func TestIndexCatalogPublicationWaitsForReverseCatalog(t *testing.T) {
+	for _, mode := range []string{"rebuild", "incremental"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = files.Close() })
+			objects := &localIngestPublicationFault{ObjectStore: files, err: ErrObjectStoreUnavailable}
+			store := NewTenantStore(objects, "test")
+			t.Cleanup(func() { _ = store.ShutdownTasks(ctx) })
+			const tenant = "tenant-a"
+			if _, err := store.Commit(ctx, tenant, indexMutations(), CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "incremental" {
+				if _, err := store.RebuildIndexes(ctx, tenant); err != nil {
+					t.Fatal(err)
+				}
+			}
+			objects.key = store.reverseIndexCatalogKey(tenant)
+			objects.failing.Store(true)
+			version := int64(1)
+			if mode == "rebuild" {
+				if _, err := store.RebuildIndexes(ctx, tenant); !errors.Is(err, ErrObjectStoreUnavailable) {
+					t.Fatalf("rebuild error = %v", err)
+				}
+			} else {
+				result, err := store.CommitWithReport(ctx, tenant, graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:new", Kind: "host"}}}, CommitOptions{})
+				if err != nil || result.Version != 2 || len(result.IndexWarnings) == 0 {
+					t.Fatalf("commit result = %+v, err = %v", result, err)
+				}
+				version = result.Version
+			}
+			health, err := store.IndexHealthWithOptions(ctx, tenant, IndexHealthOptions{})
+			if err != nil || health.ManifestVersion != version || health.CatalogVersion >= version || health.Status == "ready" {
+				t.Fatalf("published a ready catalog before the reverse write succeeded: %+v, err = %v", health, err)
+			}
+			objects.failing.Store(false)
+			if _, err := store.RebuildIndexes(ctx, tenant); err != nil {
+				t.Fatal(err)
+			}
+			health, err = store.IndexHealth(ctx, tenant)
+			if err != nil || health.Status != "ready" || health.CatalogVersion != version {
+				t.Fatalf("catalogs did not recover together: %+v, err = %v", health, err)
+			}
+		})
+	}
+}
 
 func TestIndexHealthFailsWhenReverseIndexCatalogIsMissing(t *testing.T) {
 	ctx := context.Background()

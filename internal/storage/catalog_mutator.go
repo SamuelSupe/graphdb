@@ -69,8 +69,8 @@ func (m CatalogMutator) PublishEntityRecords(ctx context.Context, jobs []entityR
 	return m.store.putEntityRecordBatch(ctx, jobs)
 }
 
-// PublishForwardCatalog atomically publishes a forward IndexCatalog and
-// invalidates the cached catalog entry on any CAS/I/O error.
+// PublishForwardCatalog publishes the graph version observed by scans and health
+// checks. When advancing versions, callers must publish the reverse catalog first.
 func (m CatalogMutator) PublishForwardCatalog(ctx context.Context, tenantID string, catalog IndexCatalog, previousMeta ObjectMeta, fast bool) (ObjectMeta, error) {
 	s := m.store
 	var meta ObjectMeta

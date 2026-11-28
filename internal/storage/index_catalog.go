@@ -307,14 +307,14 @@ func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID stri
 			return IndexCatalog{}, err
 		}
 	}
-	if _, err := mutator.PublishForwardCatalog(ctx, tenantID, catalog, previousMeta, false); err != nil {
-		return IndexCatalog{}, err
-	}
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
 	if err := mutator.PublishReverseCatalog(ctx, tenantID, reverseCatalog, manifest.Version, reverseMeta); err != nil {
 		return IndexCatalog{}, fmt.Errorf("rebuild reverse index: %w", err)
+	}
+	if _, err := mutator.PublishForwardCatalog(ctx, tenantID, catalog, previousMeta, false); err != nil {
+		return IndexCatalog{}, err
 	}
 	s.scheduleRangeCompaction(tenantID)
 

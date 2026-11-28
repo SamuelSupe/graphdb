@@ -1,6 +1,6 @@
 # GGraphDB Go SDK
 
-Version **2.7.0**, matching the [server release](../../../release/local-disk.md).
+Version **2.7.1**, matching the [server release](../../../release/local-disk.md).
 
 Import path inside this repository:
 
