@@ -821,7 +821,12 @@ func (n *Node) applyLoop() {
 	minSnapshotIndex := persistedConfIndex
 	var configurationIndex uint64
 	if persistedConfIndex > snapshotIndex {
-		configurationIndex = persistedConfIndex
+		// Only dynamic membership changes (EntryConfChangeV2) require an
+		// immediate post-change snapshot; initial bootstrap EntryConfChange
+		// entries must still respect SnapshotEntries across restarts.
+		if entries, err := n.disk.Entries(persistedConfIndex, persistedConfIndex+1, 1<<20); err == nil && len(entries) == 1 && entries[0].Type == raftpb.EntryConfChangeV2 {
+			configurationIndex = persistedConfIndex
+		}
 	}
 	retry := time.NewTicker(5 * time.Second)
 	defer retry.Stop()

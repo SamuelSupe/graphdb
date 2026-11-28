@@ -1735,3 +1735,136 @@ func TestOpenStoragePreservesValidRetainedTailAndRejectsPartialGap(t *testing.T)
 		t.Fatalf("Entries(13, 16) err = %v, want ErrCompacted", err)
 	}
 }
+
+func TestRestartDoesNotSnapshotBootstrapConfChangeBeforeThreshold(t *testing.T) {
+	dir := t.TempDir()
+	disk, _, err := openStorage(dir, 1, "bootstrap-conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := raftpb.ConfState{Voters: []uint64{1}}
+	bootstrapEntry := raftpb.Entry{Index: 1, Term: 1, Type: raftpb.EntryConfChange}
+	normalEntry := raftpb.Entry{Index: 2, Term: 1, Type: raftpb.EntryNormal}
+	if err := disk.save(raft.Ready{
+		Entries:   []raftpb.Entry{bootstrapEntry, normalEntry},
+		HardState: raftpb.HardState{Term: 1, Vote: 1, Commit: 2},
+	}, nil); err != nil {
+		disk.Close()
+		t.Fatal(err)
+	}
+	if err := disk.saveConf(conf, 1); err != nil {
+		disk.Close()
+		t.Fatal(err)
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err := openStorage(dir, 1, "bootstrap-conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	machine := &round5BatchMachine{}
+	n := &Node{
+		cfg:              Config{ID: 1, Dir: dir, SnapshotEntries: 1000, MaxSnapshotBytes: 1 << 20},
+		disk:             reopened,
+		machine:          machine,
+		ctx:              ctx,
+		cancel:           cancel,
+		stateChanged:     make(chan struct{}),
+		appliedChanged:   make(chan struct{}),
+		application:      make(chan applicationBatch),
+		snapshotRequests: make(chan snapshotRequest, 1),
+		snapshotProbes:   make(chan snapshotProbe),
+		peers:            map[uint64]string{1: "http://one"},
+		metrics:          observability.NewOperationMetrics(),
+	}
+	n.applied.Store(1)
+	n.workers.Add(1)
+	go n.applyLoop()
+	n.application <- applicationBatch{first: 2, last: 2, conf: conf, confIndex: 1}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for n.applied.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n.applied.Load() != 2 {
+		t.Fatalf("applied = %d, want 2", n.applied.Load())
+	}
+	select {
+	case req := <-n.snapshotRequests:
+		t.Fatalf("unexpected snapshot request at index %d for bootstrap EntryConfChange with SnapshotEntries=1000", req.index)
+	case <-time.After(150 * time.Millisecond):
+	}
+	cancel()
+	n.workers.Wait()
+}
+
+func TestRestartSnapshotsPendingDynamicConfChangeV2(t *testing.T) {
+	dir := t.TempDir()
+	disk, _, err := openStorage(dir, 1, "dynamic-conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := raftpb.ConfState{Voters: []uint64{1}}
+	bootstrapEntry := raftpb.Entry{Index: 1, Term: 1, Type: raftpb.EntryConfChange}
+	dynamicEntry := raftpb.Entry{Index: 2, Term: 1, Type: raftpb.EntryConfChangeV2}
+	if err := disk.save(raft.Ready{
+		Entries:   []raftpb.Entry{bootstrapEntry, dynamicEntry},
+		HardState: raftpb.HardState{Term: 1, Vote: 1, Commit: 2},
+	}, nil); err != nil {
+		disk.Close()
+		t.Fatal(err)
+	}
+	if err := disk.saveConf(conf, 2); err != nil {
+		disk.Close()
+		t.Fatal(err)
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err := openStorage(dir, 1, "dynamic-conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	machine := &round5BatchMachine{}
+	n := &Node{
+		cfg:              Config{ID: 1, Dir: dir, SnapshotEntries: 1000, MaxSnapshotBytes: 1 << 20},
+		disk:             reopened,
+		machine:          machine,
+		ctx:              ctx,
+		cancel:           cancel,
+		stateChanged:     make(chan struct{}),
+		appliedChanged:   make(chan struct{}),
+		application:      make(chan applicationBatch),
+		snapshotRequests: make(chan snapshotRequest, 1),
+		snapshotProbes:   make(chan snapshotProbe),
+		peers:            map[uint64]string{1: "http://one"},
+		metrics:          observability.NewOperationMetrics(),
+	}
+	n.applied.Store(1)
+	n.workers.Add(1)
+	go n.applyLoop()
+	n.application <- applicationBatch{first: 2, last: 2, conf: conf, confIndex: 2}
+
+	select {
+	case req := <-n.snapshotRequests:
+		if req.index != 2 {
+			t.Fatalf("snapshot index = %d, want 2", req.index)
+		}
+		req.done <- nil
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected snapshot request after restart with pending EntryConfChangeV2")
+	}
+	cancel()
+	n.workers.Wait()
+}
