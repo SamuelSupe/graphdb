@@ -1,5 +1,7 @@
 package storage
 
+import "github.com/SamuelSupe/graphdb/v2/internal/storage/lease"
+
 type cachedWriterLease struct {
 	lease WriterLease
 	meta  ObjectMeta
@@ -38,11 +40,16 @@ func (s *TenantStore) deleteCachedWriterLease(tenantID string) {
 	delete(s.writerLeaseCache, tenantID)
 }
 
-func (s *TenantStore) cachedWriterLeaseUsable(lease WriterLease) bool {
-	if lease.OwnerID != s.InstanceID {
-		return false
+func (s *TenantStore) evictCachedWriterLeaseIfMatches(tenantID string, expected writerFenceRef) {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	if cached, ok := s.writerLeaseCache[tenantID]; ok && writerLeaseMatchesFence(cached.lease, expected) {
+		delete(s.writerLeaseCache, tenantID)
 	}
-	return lease.FenceToken != "" && lease.FenceEpoch > 0
+}
+
+func (s *TenantStore) cachedWriterLeaseUsable(l WriterLease) bool {
+	return lease.UsableForOwner(l, s.InstanceID)
 }
 
 func (s *TenantStore) invalidateWriterTakeoverState(tenantID string) {
@@ -58,12 +65,19 @@ func (s *TenantStore) invalidateTenantState(tenantID string) {
 	s.invalidateTenantObjectCaches(tenantID)
 }
 
+func (s *TenantStore) InvalidateTenantCaches(tenantID string) {
+	s.invalidateTenantState(tenantID)
+}
+
 func (s *TenantStore) invalidateTenantObjectCaches(tenantID string) {
+	s.invalidateTenantTaskHeaders(tenantID)
 	s.deleteWriteCache(tenantID)
 	s.deleteCachedTenantMetadata(tenantID)
 	s.deleteCachedTenantConfig(tenantID)
 	s.deleteCachedSourcePolicy(tenantID)
 	s.deleteCachedIndexCatalog(tenantID)
+	s.deleteCachedReverseIndexCatalog(tenantID)
+	s.deleteCachedTenantCollectorStatuses(tenantID)
 	s.deleteCachedTenantPurgeTombstone(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {

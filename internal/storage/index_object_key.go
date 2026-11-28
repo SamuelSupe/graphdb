@@ -5,6 +5,20 @@ import (
 	"strings"
 )
 
+// Immutable objects keep their physical version when a newer catalog
+// references them. Legacy keys without a physical version remain scoped to
+// the catalog that supplied them.
+func indexObjectVersion(catalogVersion int64, key string) int64 {
+	for _, marker := range []string{"/indexes/parquet/versions/", "/extensions/v1.1/reverse-index/", "/snapshots/sharded/"} {
+		if i := strings.Index(key, marker); i >= 0 {
+			if version, ok := versionFromObjectKey(key[:i+len(marker)], key); ok && version > 0 && version <= catalogVersion {
+				return version
+			}
+		}
+	}
+	return catalogVersion
+}
+
 func (s *TenantStore) parquetSecondaryIndexIdentityFromKey(tenantID string, key string) (string, string, bool) {
 	version, ok := s.parquetVersionFromKey(tenantID, key)
 	if !ok {

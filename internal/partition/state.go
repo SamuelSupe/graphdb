@@ -24,10 +24,13 @@ type Group struct {
 }
 
 type Graph struct {
+	ConversionAttempt      uint64                        `json:"conversion_attempt,omitempty"`
+	ConversionSource       int64                         `json:"conversion_source_generation,omitempty"`
 	HistoryCutoff          time.Time                     `json:"history_cutoff,omitempty"`
 	SourceCleanupRevision  int                           `json:"source_cleanup_revision,omitempty"`
 	ReadLease              *Pin                          `json:"read_lease,omitempty"`
 	LastGCAt               time.Time                     `json:"last_gc_at,omitempty"`
+	LastRecoveryGCSequence uint64                        `json:"last_recovery_gc_sequence,omitempty"`
 	GC                     *GraphGC                      `json:"gc,omitempty"`
 	Move                   *Move                         `json:"move,omitempty"`
 	SourceRetired          bool                          `json:"source_retired,omitempty"`
@@ -41,6 +44,7 @@ type Graph struct {
 	Sequence               uint64                        `json:"sequence"`
 	State                  string                        `json:"state"`
 	LayoutRevision         uint64                        `json:"layout_revision"`
+	CatalogVersion         uint64                        `json:"catalog_version,omitempty"`
 	Partitions             [256]Placement                `json:"partitions"`
 	Groups                 map[string]Group              `json:"groups"`
 	Roots                  [256]Root                     `json:"roots"`
@@ -84,6 +88,15 @@ type Transaction struct {
 	Error        string                `json:"error,omitempty"`
 }
 
+func (txn Transaction) decided() bool {
+	return txn.State == "committed" || txn.State == "aborted" ||
+		txn.State == "retryable" && txn.ErrorCode == storage.IngestErrorMutationBudget
+}
+
+func (txn Transaction) canRestart(version int64) bool {
+	return txn.State == "retryable" && (txn.ErrorCode != storage.IngestErrorMutationBudget || version > txn.BaseVersion)
+}
+
 type Prepared struct {
 	EdgeTypeDelta map[string]int64 `json:"edge_type_delta,omitempty"`
 	EntityDelta   int64            `json:"entity_delta,omitempty"`
@@ -97,10 +110,11 @@ type Prepared struct {
 }
 
 type DataState struct {
-	CaptureViews []Root            `json:"capture_views,omitempty"`
-	MoveVerify   *MoveVerification `json:"move_verify,omitempty"`
-	GC           *DataGC           `json:"gc,omitempty"`
-	LastGC       string            `json:"last_gc,omitempty"`
+	CaptureViews   []Root            `json:"capture_views,omitempty"`
+	MoveVerify     *MoveVerification `json:"move_verify,omitempty"`
+	GC             *DataGC           `json:"gc,omitempty"`
+	LastGC         string            `json:"last_gc,omitempty"`
+	LastGCRecovery bool              `json:"last_gc_recovery,omitempty"`
 	CaptureRoot  Root              `json:"capture_root"`
 	Capture      string            `json:"capture,omitempty"`
 	Tenant       string            `json:"tenant_id"`
@@ -135,6 +149,17 @@ const BalancedLeafRevision = 7
 
 const IngestHandoffProtocol = 12
 const GCSchedulingProtocol = 12
+const GroupTopologyProtocol = 13
+const ConversionPreflightProtocol = 13
+const ConversionCancellationProtocol = 13
+const LargeFragmentProtocol = 13
+const LargeFragmentRevision = 8
+const MutationBudgetRestartProtocol = 13
+const MutationBudgetRestartRevision = 9
+const RecoveryGCProtocol = 13
+const RecoveryGCRevision = 10
+const BalancedBranchProtocol = 14
+const BalancedBranchRevision = 11
 
 // IngestBegin starts the next durable acceptance after the current one completes.
 // Its tenant and generation are inherited from the completion.
@@ -148,39 +173,42 @@ type IngestBegin struct {
 }
 
 type Action struct {
-	GCSweep         *GCSweepPlan          `json:"gc_sweep,omitempty"`
-	PreparedBatch   map[uint8]Prepared    `json:"prepared_batch,omitempty"`
-	LayoutRevision  uint64                `json:"layout_revision,omitempty"`
-	ReceiptRef      string                `json:"receipt_ref,omitempty"`
-	NextIngest      *IngestBegin          `json:"next_ingest,omitempty"`
-	IngestResult    *storage.IngestResult `json:"ingest_result,omitempty"`
-	Verify          *MoveVerification     `json:"verify,omitempty"`
-	Revision        int                   `json:"revision,omitempty"`
-	Pages           []PageObject          `json:"pages,omitempty"`
-	ErrorCode       string                `json:"error_code,omitempty"`
-	Roots           []Root                `json:"roots,omitempty"`
-	Target          *Group                `json:"target,omitempty"`
-	DataState       *DataState            `json:"data_state,omitempty"`
-	Transactions    []Transaction         `json:"transactions,omitempty"`
-	Purpose         string                `json:"purpose,omitempty"`
-	Phase           string                `json:"phase,omitempty"`
-	Cursor          string                `json:"cursor,omitempty"`
-	ExpectedCursor  string                `json:"expected_cursor,omitempty"`
-	ExpectedVersion *int64                `json:"expected_version,omitempty"`
-	Operation       string                `json:"operation"`
-	Tenant          string                `json:"tenant_id"`
-	Generation      int64                 `json:"generation"`
-	Partition       uint8                 `json:"partition,omitempty"`
-	Epoch           uint64                `json:"epoch,omitempty"`
-	Txn             string                `json:"txn,omitempty"`
-	Sequence        uint64                `json:"sequence,omitempty"`
-	BaseVersion     int64                 `json:"base_version,omitempty"`
-	Base            Root                  `json:"base"`
-	Digest          string                `json:"digest,omitempty"`
-	Identity        string                `json:"identity,omitempty"`
-	At              time.Time             `json:"at,omitempty"`
-	Inputs          []Input               `json:"inputs,omitempty"`
-	Data            []byte                `json:"data,omitempty"`
+	ConversionAttempt uint64                `json:"conversion_attempt,omitempty"`
+	CatalogVersion    uint64                `json:"catalog_version,omitempty"`
+	Groups            map[string]Group      `json:"groups,omitempty"`
+	GCSweep           *GCSweepPlan          `json:"gc_sweep,omitempty"`
+	PreparedBatch     map[uint8]Prepared    `json:"prepared_batch,omitempty"`
+	LayoutRevision    uint64                `json:"layout_revision,omitempty"`
+	ReceiptRef        string                `json:"receipt_ref,omitempty"`
+	NextIngest        *IngestBegin          `json:"next_ingest,omitempty"`
+	IngestResult      *storage.IngestResult `json:"ingest_result,omitempty"`
+	Verify            *MoveVerification     `json:"verify,omitempty"`
+	Revision          int                   `json:"revision,omitempty"`
+	Pages             []PageObject          `json:"pages,omitempty"`
+	ErrorCode         string                `json:"error_code,omitempty"`
+	Roots             []Root                `json:"roots,omitempty"`
+	Target            *Group                `json:"target,omitempty"`
+	DataState         *DataState            `json:"data_state,omitempty"`
+	Transactions      []Transaction         `json:"transactions,omitempty"`
+	Purpose           string                `json:"purpose,omitempty"`
+	Phase             string                `json:"phase,omitempty"`
+	Cursor            string                `json:"cursor,omitempty"`
+	ExpectedCursor    string                `json:"expected_cursor,omitempty"`
+	ExpectedVersion   *int64                `json:"expected_version,omitempty"`
+	Operation         string                `json:"operation"`
+	Tenant            string                `json:"tenant_id"`
+	Generation        int64                 `json:"generation"`
+	Partition         uint8                 `json:"partition,omitempty"`
+	Epoch             uint64                `json:"epoch,omitempty"`
+	Txn               string                `json:"txn,omitempty"`
+	Sequence          uint64                `json:"sequence,omitempty"`
+	BaseVersion       int64                 `json:"base_version,omitempty"`
+	Base              Root                  `json:"base"`
+	Digest            string                `json:"digest,omitempty"`
+	Identity          string                `json:"identity,omitempty"`
+	At                time.Time             `json:"at,omitempty"`
+	Inputs            []Input               `json:"inputs,omitempty"`
+	Data              []byte                `json:"data,omitempty"`
 	// Empty and nil changes have different prepare digests; preserve [] on the wire.
 	Changes       []Row                 `json:"changes"`
 	Graph         *Graph                `json:"graph,omitempty"`
@@ -195,6 +223,7 @@ type Action struct {
 type Store struct {
 	Objects         storage.ObjectStore
 	Prefix          string
+	LogicalDigests  *LogicalDigestCache
 	ReadIngestInput func(context.Context, string, int64, string) ([]byte, error)
 }
 

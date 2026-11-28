@@ -5,10 +5,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -35,7 +38,23 @@ type membershipResult struct {
 	err error
 }
 
+type pendingPeerChange struct {
+	change memberChange
+	index  uint64
+}
+
 func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
+	if !n.membershipMu.TryLock() {
+		http.Error(w, "another membership change is in progress", http.StatusConflict)
+		return
+	}
+	defer n.membershipMu.Unlock()
+	// Raft can turn a second pending configuration entry into a no-op.
+	// Bound the wait so a discarded change does not hold up a drain.
+	timeout := min(5*time.Second, max(2*time.Second, 2*time.Duration(n.cfg.ElectionTicks)*n.cfg.Tick))
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	r = r.WithContext(ctx)
 	if err := n.beginProposal(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -53,12 +72,16 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := n.raft.Status()
+	if status.LeadTransferee != 0 {
+		http.Error(w, "Raft leadership transfer is in progress", http.StatusServiceUnavailable)
+		return
+	}
 	kind := raftpb.ConfChangeAddLearnerNode
 	switch change.Action {
 	case "add_learner":
 		parsed, err := url.Parse(change.URL)
-		if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-			http.Error(w, "member URL must be an HTTP origin on the private Raft network", http.StatusBadRequest)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			http.Error(w, "member URL must be an HTTP or HTTPS origin on the private Raft network", http.StatusBadRequest)
 			return
 		}
 		retired, err := n.memberRetired(change.ID)
@@ -72,6 +95,10 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, exists := status.Progress[change.ID]; exists {
 			http.Error(w, "member ID is already in use", http.StatusConflict)
+			return
+		}
+		if err := n.probeLearnerCompatibility(r.Context(), change.ID, change.URL); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 	case "promote":
@@ -136,7 +163,7 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 		n.mu.Lock()
-		changed := n.changed
+		changed := n.stateChanged
 		n.mu.Unlock()
 		select {
 		case outcome := <-ch:
@@ -157,7 +184,7 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 				return
 			default:
 			}
-			if err := n.available(true); err != nil {
+			if err := n.availableState(true, false); err != nil {
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)
 				return
 			}
@@ -172,9 +199,50 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (n *Node) memberRetired(id uint64) (bool, error) {
-	members, err := n.retiredMembers()
-	_, retired := members[id]
+	_, retired, err := n.memberRetiredAt(id)
 	return retired, err
+}
+
+// probeLearnerCompatibility best-effort probes a reachable learner candidate
+// before admitting it to the Raft configuration so incompatible protocols or
+// mismatched cluster IDs are rejected before receiving snapshots.
+func (n *Node) probeLearnerCompatibility(ctx context.Context, id uint64, address string) error {
+	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(address, "/")+"/raft/status", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+n.cfg.Token)
+	req.Header.Set("X-Raft-Cluster", n.cfg.ClusterID)
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	if !n.protocolCompatible(resp.Header.Get(protocolHeader)) {
+		return fmt.Errorf("learner %d has an incompatible Raft protocol", id)
+	}
+	var peer PeerStatus
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&peer); err != nil {
+		return nil
+	}
+	if (peer.ID != 0 && peer.ID != id) || (peer.ClusterID != "" && peer.ClusterID != n.cfg.ClusterID) {
+		return fmt.Errorf("learner %d returned a mismatched identity or cluster", id)
+	}
+	if max(peer.Protocol, peer.MaxProtocol) < n.protocolVersion() && !(peer.Protocol == 0 && n.cfg.AllowLegacyProtocol && n.protocolVersion() == ProtocolVersion) {
+		return fmt.Errorf("learner %d max protocol %d is below active protocol %d", id, max(peer.Protocol, peer.MaxProtocol), n.protocolVersion())
+	}
+	return nil
+}
+
+func (n *Node) memberRetiredAt(id uint64) (uint64, bool, error) {
+	members, err := n.retiredMembers()
+	removedAt, retired := members[id]
+	return removedAt, retired, err
 }
 
 func (n *Node) retiredMembers() (map[uint64]uint64, error) {
@@ -221,18 +289,18 @@ func (n *Node) cacheRetired(ids []uint64, index uint64) error {
 	}
 }
 
-func (n *Node) applyMembership(change raftpb.ConfChangeV2, current raftpb.ConfState, index uint64) (raftpb.ConfState, membershipResult, error) {
+func (n *Node) applyMembership(change raftpb.ConfChangeV2, current raftpb.ConfState, index uint64, pendingRetired map[uint64]uint64) (raftpb.ConfState, membershipResult, *memberChange, error) {
 	if len(change.Context) == 0 {
-		return *n.raft.ApplyConfChange(change), membershipResult{}, nil
+		return *n.raft.ApplyConfChange(change), membershipResult{}, nil, nil
 	}
 	var proposal memberProposal
 	if err := json.Unmarshal(change.Context, &proposal); err != nil {
-		return current, membershipResult{}, err
+		return current, membershipResult{}, nil, err
 	}
 	outcome := membershipResult{id: proposal.RequestID}
-	reject := func() (raftpb.ConfState, membershipResult, error) {
+	reject := func() (raftpb.ConfState, membershipResult, *memberChange, error) {
 		outcome.err = errMembershipConflict
-		return current, outcome, nil
+		return current, outcome, nil, nil
 	}
 	// Admission can become stale across concurrent requests or a leader change.
 	// Compare membership, rather than local snapshot positions, on every replica.
@@ -243,11 +311,12 @@ func (n *Node) applyMembership(change raftpb.ConfChangeV2, current raftpb.ConfSt
 	learner := slices.Contains(current.Learners, proposal.ID) || slices.Contains(current.LearnersNext, proposal.ID)
 	switch proposal.Action {
 	case "add_learner":
-		retired, err := n.memberRetired(proposal.ID)
+		removedAt, retired, err := n.memberRetiredAt(proposal.ID)
 		if err != nil {
-			return current, outcome, err
+			return current, outcome, nil, err
 		}
-		if voter || learner || retired {
+		retiredBeforeIndex := (retired && (removedAt == 0 || removedAt < index)) || (pendingRetired != nil && pendingRetired[proposal.ID] > 0)
+		if voter || learner || retiredBeforeIndex {
 			return reject()
 		}
 	case "promote":
@@ -263,7 +332,11 @@ func (n *Node) applyMembership(change raftpb.ConfChangeV2, current raftpb.ConfSt
 	}
 	// etcd/raft requires rejected changes to be skipped, without ApplyConfChange.
 	current = *n.raft.ApplyConfChange(change)
-	return current, outcome, n.applyPeerChange(change.Context, index)
+	if proposal.Action == "remove" && pendingRetired != nil {
+		pendingRetired[proposal.ID] = index
+	}
+	applied := proposal.memberChange
+	return current, outcome, &applied, nil
 }
 
 func (n *Node) applyPeerChange(data []byte, index uint64) error {
@@ -272,50 +345,33 @@ func (n *Node) applyPeerChange(data []byte, index uint64) error {
 		return err
 	}
 	n.peerMu.RLock()
-	peers := maps.Clone(n.peers)
+	fallbackPeers := maps.Clone(n.peers)
 	n.peerMu.RUnlock()
-	err := n.disk.db.Update(func(tx *bolt.Tx) error {
-		meta := tx.Bucket([]byte("meta"))
-		// Read the durable table under the writer transaction so the initial
-		// in-memory clone cannot overwrite newer persisted addresses.
-		if data := meta.Get([]byte("peers")); len(data) > 0 {
-			if err := json.Unmarshal(data, &peers); err != nil {
-				return err
-			}
-			if peers == nil {
-				return errors.New("invalid persisted peer table")
-			}
-		}
-		if change.Action == "add_learner" {
-			peers[change.ID] = change.URL
-		}
-		encoded, err := json.Marshal(peers)
-		if err != nil {
-			return err
-		}
-		// Retain removed IDs as tombstones, so they can never be reused.
-		if change.Action == "remove" {
-			if err := persistRetired(tx, []uint64{change.ID}, index); err != nil {
-				return err
-			}
-		}
-		return meta.Put([]byte("peers"), encoded)
-	})
-	if err == nil && change.Action == "remove" {
-		if err := n.cacheRetired([]uint64{change.ID}, index); err != nil {
-			return err
-		}
-	}
-	if err != nil {
+	conf, confIndex := n.disk.confState()
+	peerChanges := []pendingPeerChange{{change: change, index: index}}
+	if err := n.disk.saveConfWithMembership(conf, confIndex, fallbackPeers, peerChanges); err != nil {
 		return err
+	}
+	return n.applyPeerChangesInMemory(peerChanges)
+}
+
+func (n *Node) applyPeerChangesInMemory(peerChanges []pendingPeerChange) error {
+	for _, pc := range peerChanges {
+		if pc.change.Action == "remove" {
+			if err := n.cacheRetired([]uint64{pc.change.ID}, pc.index); err != nil {
+				return err
+			}
+		}
 	}
 	n.peerMu.Lock()
 	defer n.peerMu.Unlock()
-	if change.Action == "add_learner" {
-		n.peers[change.ID] = change.URL
+	for _, pc := range peerChanges {
+		if pc.change.Action == "add_learner" {
+			n.peers[pc.change.ID] = pc.change.URL
+		}
+		if pc.change.Action == "remove" {
+			n.stopPeerSenders(pc.change.ID)
+		}
 	}
-	if change.Action == "remove" {
-		n.stopPeerSenders(change.ID)
-	}
-	return err
+	return nil
 }

@@ -13,7 +13,7 @@ import (
 )
 
 func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (map[string]any, string, error) {
-	replicated, hasReplicated := ctx.Value(replicatedBackupKey{}).(backupstore.Entry)
+	replicated, hasReplicated := ctx.Value(replicatedBackupKey{}).(replicatedBackupPayload)
 	if !hasReplicated && s.Backups == nil {
 		return nil, "", fmt.Errorf("object backups are not configured")
 	}
@@ -25,13 +25,7 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	}
 	release = sync.OnceFunc(release)
 	defer release()
-	backupID := taskCheckpointString(task, "remote_backup_id")
-	if backupID == "" {
-		backupID = task.ID
-		if boolTaskParam(task.Params, "automatic") {
-			backupID = "scheduled-" + backupID
-		}
-	}
+	backupID := objectBackupID(task)
 	uri := replicated.BackupKey
 	if !hasReplicated {
 		uri, err = s.Backups.URI(task.TenantID, backupID)
@@ -89,12 +83,12 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 		return nil, "", err
 	}
 	release()
-	if admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
+	if admission, ok := s.taskAdmissionFromContext(ctx); ok {
 		admission.release()
 	}
 	var entry backupstore.Entry
 	if hasReplicated {
-		entry = replicated
+		entry = replicated.Entry
 		if entry.TenantID != manifest.TenantID || entry.BackupID != manifest.BackupID || entry.Version != manifest.Version {
 			return nil, "", fmt.Errorf("replicated object backup identity mismatch")
 		}
@@ -112,9 +106,13 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	}
 	var automation map[string]any
 	if manifest.Automatic {
-		automation, err = s.finishAutomaticBackup(ctx, task, entry)
-		if err != nil {
-			return nil, "", err
+		if hasReplicated {
+			automation = replicated.Automation
+		} else {
+			automation, err = s.finishAutomaticBackup(ctx, task, entry)
+			if err != nil {
+				return nil, "", err
+			}
 		}
 		// The scheduler reclaims the capture only after observing durable task
 		// success. Automatic backup results reference the remote manifest.
@@ -139,8 +137,19 @@ func (s *TenantStore) ListObjectBackups(ctx context.Context, tenantID, cursor st
 }
 
 func (s *TenantStore) loadObjectBackupInput(ctx context.Context, uri string) (tenantBackupInput, error) {
+	return s.loadObjectBackupInputForTenant(ctx, uri, "")
+}
+
+func (s *TenantStore) loadObjectBackupInputForTenant(ctx context.Context, uri string, requiredSourceTenant string) (tenantBackupInput, error) {
 	if s.Backups == nil {
 		return tenantBackupInput{}, fmt.Errorf("object backups are not configured")
+	}
+	uriTenant, _, err := s.Backups.ParseURI(uri)
+	if err != nil {
+		return tenantBackupInput{}, err
+	}
+	if requiredSourceTenant != "" && uriTenant != requiredSourceTenant {
+		return tenantBackupInput{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
 	}
 	release, err := s.Backups.Pin(uri)
 	if err != nil {
@@ -150,6 +159,9 @@ func (s *TenantStore) loadObjectBackupInput(ctx context.Context, uri string) (te
 	m, err := s.Backups.ReadManifest(ctx, uri)
 	if err != nil {
 		return tenantBackupInput{}, err
+	}
+	if requiredSourceTenant != "" && m.TenantID != requiredSourceTenant {
+		return tenantBackupInput{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
 	}
 	file, closeFile, err := s.backupStagingFile(ctx)
 	if err != nil {

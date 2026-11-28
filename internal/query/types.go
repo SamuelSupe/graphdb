@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -10,6 +11,7 @@ import (
 var ErrInvalid = errors.New("invalid query")
 var ErrLimitExceeded = errors.New("query limit exceeded")
 var ErrIndexUnavailable = errors.New("persisted index unavailable")
+var ErrMaterializedFallback = fmt.Errorf("%w: materialized fallback required", ErrIndexUnavailable)
 
 const (
 	EntityPageOrderIdentity = "identity"
@@ -148,9 +150,11 @@ type PlanStep struct {
 }
 
 type ExecuteOptions struct {
-	PlannerStats PlannerStats
-	IndexLookup  IndexLookup
-	EntityLookup EntityLookup
+	PlannerStats              PlannerStats
+	IndexLookup               IndexLookup
+	EntityLookup              EntityLookup
+	AuthoritativeEntityLookup bool
+	EntityPredicate           func(graph.Entity) bool
 }
 
 type IndexLookup interface {

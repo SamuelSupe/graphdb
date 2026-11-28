@@ -6,7 +6,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/compress"
 )
 
-func DataWriterProperties(schema *arrow.Schema) *parquet.WriterProperties {
+func DataWriterProperties(schema *arrow.Schema, extra ...parquet.WriterProperty) *parquet.WriterProperties {
 	options := []parquet.WriterProperty{
 		parquet.WithCompression(compress.Codecs.Snappy),
 		parquet.WithDictionaryDefault(false),
@@ -21,7 +21,7 @@ func DataWriterProperties(schema *arrow.Schema) *parquet.WriterProperties {
 			options = append(options, parquet.WithDictionaryFor(field.Name, true))
 		}
 	}
-	return parquet.NewWriterProperties(options...)
+	return parquet.NewWriterProperties(append(options, extra...)...)
 }
 
 const MaxParquetMetadataRowGroupRows int64 = 1024

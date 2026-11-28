@@ -40,10 +40,23 @@ func (s *FileStore) isReceiptDB(key string) bool {
 // Logical receipt operations hold a directory IO permit and pin the handle,
 // so a tenant rename, purge or shutdown cannot leave a writer on an old inode.
 func (s *FileStore) withReceiptDB(ctx context.Context, key string, write bool, operation func(*bolt.DB) error) (err error) {
+	return s.withReceiptDBMode(ctx, key, write, false, operation)
+}
+
+func (s *FileStore) withReceiptDBLocked(ctx context.Context, key string, write bool, operation func(*bolt.DB) error) (err error) {
+	return s.withReceiptDBMode(ctx, key, write, true, operation)
+}
+
+func (s *FileStore) withReceiptDBMode(ctx context.Context, key string, write bool, objectLocked bool, operation func(*bolt.DB) error) (err error) {
 	if write && s.receiptReadOnly {
 		return fmt.Errorf("packed receipts are read-only for this command")
 	}
-	h, err := s.acquireReceiptDB(ctx, key, write)
+	var h *receiptDBHandle
+	if objectLocked {
+		h, err = s.acquireReceiptDBLocked(ctx, key, write)
+	} else {
+		h, err = s.acquireReceiptDB(ctx, key, write)
+	}
 	if err != nil {
 		return err
 	}
@@ -112,6 +125,10 @@ func (s *FileStore) acquireReceiptDB(ctx context.Context, key string, write bool
 		return nil, err
 	}
 	defer unlock()
+	return s.acquireReceiptDBLocked(ctx, key, write)
+}
+
+func (s *FileStore) acquireReceiptDBLocked(ctx context.Context, key string, write bool) (*receiptDBHandle, error) {
 	for {
 		s.receiptMu.Lock()
 		h := s.receiptDBs[key]
@@ -268,6 +285,10 @@ func (s *FileStore) releaseReceiptDB(h *receiptDBHandle) {
 	s.receiptMu.Lock()
 	h.users--
 	if h.users == 0 {
+		if h.err != nil && h.db != nil {
+			_ = h.close()
+			h.db, h.file, h.writer = nil, nil, nil
+		}
 		close(h.idle)
 		h.lastUsed = time.Now()
 	}
@@ -288,7 +309,7 @@ func (s *FileStore) trimReceiptDBs() {
 		if h.db != nil && h.closing == nil {
 			open++
 		}
-		if h.users == 0 && h.err == nil && h.closing == nil && (oldest == nil || h.lastUsed.Before(oldest.lastUsed)) {
+		if h.db != nil && h.users == 0 && h.closing == nil && (oldest == nil || h.lastUsed.Before(oldest.lastUsed)) {
 			oldestKey, oldest = key, h
 		}
 	}

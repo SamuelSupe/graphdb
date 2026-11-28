@@ -49,6 +49,39 @@ func TestIngestDurableBatchPublishesOneSegmentAndManifest(t *testing.T) {
 	}
 }
 
+func TestIngestDurableBatchDerivedCollectorTotalsMatchHistoryAfterRestart(t *testing.T) {
+	ctx := t.Context()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	store.MaterializeCollectorStatus = false
+	const tenant = "tenant-a"
+	const source = "agent"
+	const collector = "collector-a"
+	for _, first := range []int{1, 3} {
+		entries := make([]IngestBatchEntry, 0, 2)
+		for i := first; i < first+2; i++ {
+			request := ingestEntityRequest(fmt.Sprintf("batch-%d", i), fmt.Sprintf("host:%d", i))
+			entries = append(entries, IngestBatchEntry{Request: request})
+		}
+		if _, err := store.IngestDurableBatch(ctx, tenant, entries); err != nil {
+			t.Fatal(err)
+		}
+		status, err := store.GetCollectorStatus(ctx, tenant, source, collector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restarted := NewTenantStore(objects, "test")
+		restarted.MaterializeCollectorStatus = false
+		derived, err := restarted.GetCollectorStatus(ctx, tenant, source, collector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != derived || derived.AppliedTotal != first+1 || derived.LastBatchID != entries[1].Request.BatchID {
+			t.Fatalf("collector status after %d requests: cached=%+v restarted=%+v", first+1, status, derived)
+		}
+	}
+}
+
 func TestIngestDurableBatchMetadataAggregatesCollectorStatusUpdates(t *testing.T) {
 	objects := newIngestBatchCountingStore(NewMemoryStore())
 	store := NewTenantStore(objects, "test")
@@ -1399,6 +1432,36 @@ func TestIngestDurableBatchRejectsProjectedCommitTailOverflow(t *testing.T) {
 	}
 	if manifest.Version != 0 || len(manifest.CommitSegments) != 0 {
 		t.Fatalf("manifest after rejected flush = %#v", manifest)
+	}
+}
+
+func TestPreparedIngestFinalizesAfterTenantDisabled(t *testing.T) {
+	ctx := t.Context()
+	objects := &failIngestRecordOnceStore{ObjectStore: NewMemoryStore()}
+	store := NewTenantStore(objects, "test")
+	tenant := "tenant-a"
+	request := ingestEntityRequest("prepared", "host:prepared")
+	entry := IngestBatchEntry{Request: request, AcceptedAt: time.Now().UTC()}
+	objects.failKey = store.ingestBatchKey(tenant, request.Source, request.CollectorID, request.BatchID)
+	_, err := store.IngestDurableBatchWithHooks(ctx, tenant, []IngestBatchEntry{entry}, IngestBatchHooks{
+		Prepared: func(_ context.Context, plans []*IngestPreparedRequest) error {
+			entry.Prepared = plans[0]
+			return nil
+		},
+	})
+	if err == nil || entry.Prepared == nil {
+		t.Fatalf("expected a durable prepared plan and incomplete metadata, got %v", err)
+	}
+	if _, err := store.SetTenantStatus(ctx, tenant, TenantStatusDisabled); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.ResolveIngestFailure(ctx, tenant, entry, failedIngestResult(request, ErrTenantDisabled), time.Now().UTC())
+	if err != nil || result.Applied != 1 || result.Failed != 0 || result.Version != 1 {
+		t.Fatalf("resolved ingest result = %+v, %v", result, err)
+	}
+	record, err := store.GetIngestBatch(ctx, tenant, request.Source, request.CollectorID, request.BatchID)
+	if err != nil || record.Result.Applied != 1 || record.Result.Failed != 0 || record.Result.Version != 1 {
+		t.Fatalf("stored ingest receipt = %+v, %v", record, err)
 	}
 }
 

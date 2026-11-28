@@ -274,49 +274,15 @@ func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.Reade
 	return index, nil
 }
 
-func (l *PersistedIndexLookup) matchParquetFieldIndex(ctx context.Context, spec IndexSpec, values []any) ([]string, bool, error) {
-	if spec.ContentHash == "" {
+func (l *PersistedIndexLookup) ScanFieldIndex(ctx context.Context, kind string, field string) (map[string][]string, bool, error) {
+	if l == nil || l.Catalog.Version != l.Version {
 		return nil, false, nil
 	}
-	if shards, hasShards := secondaryIndexShardObjectMap(spec.Objects); hasShards {
-		seen := map[string]struct{}{}
-		for _, value := range values {
-			keys, ok := secondaryIndexLookupKeys(value)
-			if !ok {
-				return nil, false, nil
-			}
-			for _, key := range keys {
-				objects := make([]IndexObject, 0, 1)
-				for shardID, object := range shards {
-					if secondaryIndexShardMayContainValue(shardID, key) {
-						objects = append(objects, object)
-					}
-				}
-				for _, object := range uniqueIndexObjects(objects) {
-					index, ok, err := l.Store.loadParquetSecondaryIndexShardObject(ctx, l.TenantID, l.Version, spec, object)
-					if err != nil {
-						if ctx.Err() != nil {
-							return nil, false, err
-						}
-						return nil, false, nil
-					}
-					if !ok {
-						return nil, false, nil
-					}
-					for _, id := range index.Values[key] {
-						seen[id] = struct{}{}
-					}
-				}
-			}
-		}
-		ids := make([]string, 0, len(seen))
-		for id := range seen {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		return ids, true, nil
+	spec, ok := l.catalogFieldSpec(kind, field)
+	if !ok || specFormat(spec.Format) != IndexFormatParquet {
+		return nil, false, nil
 	}
-	index, ok, err := l.Store.loadParquetSecondaryIndexObject(ctx, l.TenantID, l.Version, spec)
+	postings, ok, err := l.fieldPostings(ctx, spec, IndexObject{}, false)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, false, err
@@ -326,52 +292,8 @@ func (l *PersistedIndexLookup) matchParquetFieldIndex(ctx context.Context, spec 
 	if !ok {
 		return nil, false, nil
 	}
-	if !indexTenantMatches(index.TenantID, l.TenantID) {
-		return nil, false, nil
-	}
-	if !fieldIndexMatchesCatalog(index, spec, l.Version) {
-		return nil, false, nil
-	}
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		keys, ok := secondaryIndexLookupKeys(value)
-		if !ok {
-			return nil, false, nil
-		}
-		for _, key := range keys {
-			for _, id := range index.Values[key] {
-				seen[id] = struct{}{}
-			}
-		}
-	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids, true, nil
-}
-
-func (l *PersistedIndexLookup) ScanFieldIndex(ctx context.Context, kind string, field string) (map[string][]string, bool, error) {
-	if l == nil || l.Catalog.Version != l.Version {
-		return nil, false, nil
-	}
-	spec, ok := l.catalogFieldSpec(kind, field)
-	if !ok || specFormat(spec.Format) != IndexFormatParquet {
-		return nil, false, nil
-	}
-	index, ok, err := l.Store.loadParquetSecondaryIndexObject(ctx, l.TenantID, l.Version, spec)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, false, err
-		}
-		return nil, false, nil
-	}
-	if !ok || !indexTenantMatches(index.TenantID, l.TenantID) || !fieldIndexMatchesCatalog(index, spec, l.Version) {
-		return nil, false, nil
-	}
-	out := make(map[string][]string, len(index.Values))
-	for value, ids := range index.Values {
+	out := make(map[string][]string, len(postings))
+	for value, ids := range postings {
 		out[value] = append([]string(nil), ids...)
 	}
 	return out, true, nil
@@ -397,7 +319,7 @@ func (l *PersistedIndexLookup) ScanFieldIndexWithFilters(ctx context.Context, ki
 	}
 	out := map[string][]string{}
 	for _, object := range uniqueIndexObjects(objects) {
-		index, ok, err := l.Store.loadParquetSecondaryIndexShardObject(ctx, l.TenantID, l.Version, spec, object)
+		postings, ok, err := l.fieldPostings(ctx, spec, object, true)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, false, err
@@ -407,7 +329,7 @@ func (l *PersistedIndexLookup) ScanFieldIndexWithFilters(ctx context.Context, ki
 		if !ok {
 			return l.ScanFieldIndex(ctx, kind, field)
 		}
-		for value, ids := range index.Values {
+		for value, ids := range postings {
 			out[value] = append(out[value], ids...)
 		}
 	}

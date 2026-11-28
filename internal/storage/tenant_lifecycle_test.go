@@ -626,6 +626,36 @@ func TestObjectBackupAutomationReopenRetryRetentionAndDrill(t *testing.T) {
 	}
 }
 
+func TestObjectBackupRetentionStopsOnInvalidManifest(t *testing.T) {
+	var deletes atomic.Int32
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			deletes.Add(1)
+		case r.URL.Query().Get("list-type") == "2":
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>backups/source/broken/manifest.json</Key></Contents></ListBucketResult>")
+		default:
+			io.WriteString(w, "{invalid")
+		}
+	}))
+	t.Cleanup(s3.Close)
+	ctx := t.Context()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	repository, err := backupstore.New(ctx, backupstore.Config{
+		Endpoint: s3.URL, Bucket: "test-bucket", Prefix: "backups", PathStyle: true,
+		AccessKeyID: "test", SecretAccessKey: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Backups = repository
+	deleted, err := store.retainObjectBackups(ctx, Task{TenantID: "source", Params: map[string]any{"keep_count": 1}}, backupstore.Entry{})
+	if err == nil || !strings.Contains(err.Error(), "invalid manifest") || deleted != 0 || deletes.Load() != 0 {
+		t.Fatalf("invalid listing allowed retention: %d deleted (%v)", deleted, err)
+	}
+}
+
 func TestObjectBackupRetentionStopsListingAtDeleteBudget(t *testing.T) {
 	endpoint := os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT")
 	if endpoint == "" {

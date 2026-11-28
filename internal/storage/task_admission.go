@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -57,7 +58,7 @@ func (s *TenantStore) TryAcquireMaintenanceContext(ctx context.Context, tenantID
 	}
 	select {
 	case s.taskExecutionSlots <- struct{}{}:
-		admission := &taskExecutionAdmission{tenant: tenantSlot, execution: s.taskExecutionSlots, held: true}
+		admission := &taskExecutionAdmission{store: s, tenant: tenantSlot, execution: s.taskExecutionSlots, held: true}
 		return context.WithValue(ctx, taskIngestAdmissionKey{}, admission), admission.release, nil
 	default:
 		releaseTaskSlot(tenantSlot)
@@ -136,7 +137,7 @@ func (s *TenantStore) runTaskAdmitted(ctx context.Context, cancel context.Cancel
 		}
 		defer releaseTaskSlot(s.taskResidentSlots)
 	}
-	admission := &taskExecutionAdmission{tenant: s.taskTenantSlot(task.TenantID), execution: s.taskExecutionSlots}
+	admission := &taskExecutionAdmission{store: s, tenant: s.taskTenantSlot(task.TenantID), execution: s.taskExecutionSlots}
 	if !admission.acquire(ctx) {
 		s.persistQueuedTaskCancellation(ctx, task)
 		return
@@ -157,14 +158,39 @@ func taskRetainsDataDuringWALWait(taskType string) bool {
 
 type taskIngestAdmissionKey struct{}
 
-// Used only by the task's sequential execution path. GC batches omit the tenant
-// slot because their read-view and tenant locks already serialize each batch.
+func (s *TenantStore) taskAdmissionFromContext(ctx context.Context) (*taskExecutionAdmission, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission)
+	if !ok || admission == nil {
+		return nil, false
+	}
+	if admission.store != nil && admission.store != s {
+		return nil, false
+	}
+	return admission, true
+}
+
+// Used by task execution paths to yield/reacquire bounded execution slots.
+// Protected by mu so concurrent/deferred paths cannot race on held state.
 type taskExecutionAdmission struct {
+	mu                sync.Mutex
+	store             *TenantStore
 	tenant, execution chan struct{}
 	held              bool
+	gen               uint64
 }
 
 func (a *taskExecutionAdmission) acquire(ctx context.Context) bool {
+	a.mu.Lock()
+	if a.held {
+		a.mu.Unlock()
+		return true
+	}
+	gen := a.gen
+	a.mu.Unlock()
+
 	if a.tenant != nil && !acquireTaskSlot(ctx, a.tenant) {
 		return false
 	}
@@ -174,17 +200,35 @@ func (a *taskExecutionAdmission) acquire(ctx context.Context) bool {
 		}
 		return false
 	}
-	a.held = true
-	return true
-}
 
-func (a *taskExecutionAdmission) release() {
-	if a.held {
+	a.mu.Lock()
+	if a.held || a.gen != gen {
+		held := a.held
+		a.mu.Unlock()
 		releaseTaskSlot(a.execution)
 		if a.tenant != nil {
 			releaseTaskSlot(a.tenant)
 		}
-		a.held = false
+		return held
+	}
+	a.held = true
+	a.mu.Unlock()
+	return true
+}
+
+func (a *taskExecutionAdmission) release() {
+	a.mu.Lock()
+	a.gen++
+	if !a.held {
+		a.mu.Unlock()
+		return
+	}
+	a.held = false
+	a.mu.Unlock()
+
+	releaseTaskSlot(a.execution)
+	if a.tenant != nil {
+		releaseTaskSlot(a.tenant)
 	}
 }
 

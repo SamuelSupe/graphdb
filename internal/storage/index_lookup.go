@@ -45,17 +45,15 @@ type PersistedIndexLookup struct {
 }
 
 func (l *PersistedIndexLookup) MatchFieldIndex(ctx context.Context, kind string, field string, values []any) ([]string, bool, error) {
-	if l == nil || l.Catalog.Version != l.Version {
-		return nil, false, nil
+	ids := []string{}
+	ok, err := l.VisitFieldIndex(ctx, kind, field, values, "", func(id string) (bool, error) {
+		ids = append(ids, id)
+		return true, nil
+	})
+	if !ok || err != nil {
+		return nil, ok, err
 	}
-	spec, ok := l.catalogFieldSpec(kind, field)
-	if !ok {
-		return nil, false, nil
-	}
-	if specFormat(spec.Format) == IndexFormatParquet {
-		return l.matchParquetFieldIndex(ctx, spec, values)
-	}
-	return nil, false, nil
+	return ids, true, nil
 }
 
 func (l *PersistedIndexLookup) OutEdges(ctx context.Context, from string, allowed map[string]struct{}) ([]graph.Edge, bool, error) {

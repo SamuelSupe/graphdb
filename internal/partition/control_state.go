@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"path"
 	"slices"
@@ -25,6 +26,13 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		}
 		if a.Graph == nil || a.Graph.Tenant != a.Tenant || a.Graph.Generation != a.Generation || a.Graph.Format != FormatVersion || a.Graph.Version < 0 || a.Graph.Active != nil {
 			return nil, invalid("invalid initial graph descriptor")
+		}
+		last, err := s.LastConversionCancellation(ctx, a.Tenant)
+		if err != nil {
+			return nil, err
+		}
+		if last.Generation > 0 && (a.Graph.ConversionAttempt <= last.Attempt || a.Generation <= last.Generation) {
+			return nil, conflict("graph conversion attempt has been cancelled")
 		}
 		g = *a.Graph
 		for _, p := range g.Partitions {
@@ -51,12 +59,20 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 	}
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
+			if abandoned, markerErr := s.isAbandoned(ctx, a.Tenant, a.Generation); markerErr != nil {
+				return nil, markerErr
+			} else if abandoned {
+				return nil, conflict("graph conversion was cancelled")
+			}
 			return nil, fmt.Errorf("required graph control state is missing")
 		}
 		return nil, err
 	}
 	if g.Generation != a.Generation {
 		return nil, conflict("graph generation changed")
+	}
+	if a.Operation == "sync_groups" {
+		return s.syncGroups(ctx, g, a)
 	}
 	if strings.HasPrefix(a.Operation, "graph_gc_") {
 		return s.applyGraphGC(ctx, g, a)
@@ -171,7 +187,7 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 			if previous.Digest != a.Digest {
 				return nil, conflict("idempotency identity was used with different content")
 			}
-			if previous.State != "retryable" {
+			if !previous.canRestart(g.Version) {
 				return previous, nil
 			}
 		}
@@ -219,6 +235,9 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		return nil, conflict("active graph transaction changed")
 	}
 	txn := g.Active
+	if g.GC != nil && g.GC.RecoverySequence != 0 && (a.Operation == "commit" || a.Operation == "abort") {
+		return nil, ErrGraphBusy
+	}
 	switch a.Operation {
 	case "participants":
 		if txn.State != "preparing" || len(a.Participants) == 0 {
@@ -341,6 +360,9 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		txn.Inputs = nil
 		txn.Prepared = nil
 		txn.Participants = nil
+		if a.Revision >= MutationBudgetRestartRevision && txn.State == "aborted" && txn.Purpose == "commit" && txn.ErrorCode == storage.IngestErrorMutationBudget {
+			txn.State = "retryable"
+		}
 		if a.ReceiptRef == "" {
 			if err := s.save(ctx, s.txnKey(a.Tenant, a.Generation, txn.Identity), txn); err != nil {
 				return nil, err
@@ -366,6 +388,73 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		return nil, invalid("unsupported graph action")
 	}
 	return *txn, s.saveGraphTransaction(ctx, g)
+}
+
+func (s Store) syncGroups(ctx context.Context, g Graph, a Action) (Graph, error) {
+	pruning := a.Target != nil && a.Target.ID != ""
+	if a.CatalogVersion == 0 || (!pruning && len(a.Groups) == 0) || len(a.Groups) > 258 {
+		return Graph{}, invalid("invalid catalog topology")
+	}
+	if a.CatalogVersion < g.CatalogVersion {
+		if pruning {
+			return Graph{}, conflict("stale catalog topology")
+		}
+		return g, nil
+	}
+	if pruning {
+		if g.Move != nil && (g.Move.Source.ID == a.Target.ID || g.Move.Target.ID == a.Target.ID) {
+			return Graph{}, conflict("graph group is used by an active partition move")
+		}
+		for _, part := range g.Partitions {
+			if part.Group == a.Target.ID {
+				return Graph{}, conflict("graph group still owns partitions")
+			}
+		}
+	}
+	update := func(group Group) (Group, error) {
+		current, exists := a.Groups[group.ID]
+		if !exists {
+			return group, nil
+		}
+		if group.ID != current.ID || group.ClusterID != current.ClusterID || len(current.Peers) < 3 {
+			return Group{}, conflict("catalog cannot replace the identity of a graph group")
+		}
+		return current, nil
+	}
+	changed := false
+	if pruning {
+		if _, exists := g.Groups[a.Target.ID]; exists {
+			delete(g.Groups, a.Target.ID)
+			changed = true
+		}
+	}
+	for id, group := range g.Groups {
+		current, err := update(group)
+		if err != nil {
+			return Graph{}, err
+		}
+		if !maps.Equal(group.Peers, current.Peers) {
+			g.Groups[id] = current
+			changed = true
+		}
+	}
+	if g.Move != nil {
+		for _, group := range []*Group{&g.Move.Source, &g.Move.Target} {
+			current, err := update(*group)
+			if err != nil {
+				return Graph{}, err
+			}
+			if !maps.Equal(group.Peers, current.Peers) {
+				*group = current
+				changed = true
+			}
+		}
+	}
+	if !changed && a.CatalogVersion == g.CatalogVersion {
+		return g, nil
+	}
+	g.CatalogVersion = a.CatalogVersion
+	return g, s.save(ctx, s.graphKey(g.Tenant), g)
 }
 
 func (s Store) saveGraphTransaction(ctx context.Context, g Graph) error {

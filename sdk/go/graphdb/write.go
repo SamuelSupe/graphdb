@@ -3,9 +3,11 @@ package graphdb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,19 +24,25 @@ type CommitRequest struct {
 }
 
 type CommitResult struct {
-	TenantID          string                   `json:"tenant_id,omitempty"`
-	Version           int64                    `json:"version"`
-	HeadCommitID      string                   `json:"head_commit_id,omitempty"`
-	SnapshotVersion   int64                    `json:"snapshot_version,omitempty"`
-	ReadableVersion   int64                    `json:"readable_version,omitempty"`
-	ReadAfterCommitID string                   `json:"read_after_commit_id,omitempty"`
-	Skipped           bool                     `json:"skipped,omitempty"`
-	IdempotentReplay  bool                     `json:"idempotent_replay,omitempty"`
-	DataHash          string                   `json:"data_hash,omitempty"`
-	Suppressed        []FieldConflict          `json:"suppressed,omitempty"`
-	CanonicalEntities []EntityCanonicalization `json:"canonical_entities,omitempty"`
-	CanonicalEdges    []EdgeCanonicalization   `json:"canonical_edges,omitempty"`
-	IndexWarnings     []string                 `json:"index_warnings,omitempty"`
+	TenantID           string                   `json:"tenant_id,omitempty"`
+	Version            int64                    `json:"version"`
+	HeadCommitID       string                   `json:"head_commit_id,omitempty"`
+	SnapshotKey        string                   `json:"snapshot_key,omitempty"`
+	SnapshotCatalogKey string                   `json:"snapshot_catalog_key,omitempty"`
+	SnapshotVersion    int64                    `json:"snapshot_version,omitempty"`
+	CommitKeys         []string                 `json:"commit_keys,omitempty"`
+	ContentHash        string                   `json:"content_hash,omitempty"`
+	SchemaHash         string                   `json:"schema_hash,omitempty"`
+	UpdatedAt          time.Time                `json:"updated_at,omitempty"`
+	ReadableVersion    int64                    `json:"readable_version,omitempty"`
+	ReadAfterCommitID  string                   `json:"read_after_commit_id,omitempty"`
+	Skipped            bool                     `json:"skipped,omitempty"`
+	IdempotentReplay   bool                     `json:"idempotent_replay,omitempty"`
+	DataHash           string                   `json:"data_hash,omitempty"`
+	Suppressed         []FieldConflict          `json:"suppressed,omitempty"`
+	CanonicalEntities  []EntityCanonicalization `json:"canonical_entities,omitempty"`
+	CanonicalEdges     []EdgeCanonicalization   `json:"canonical_edges,omitempty"`
+	IndexWarnings      []string                 `json:"index_warnings,omitempty"`
 }
 
 type EntityCanonicalization struct {
@@ -142,6 +150,7 @@ type IngestBatchStatus struct {
 	AcceptedAt       time.Time     `json:"accepted_at,omitempty"`
 	EstimatedFlushAt time.Time     `json:"estimated_flush_at,omitempty"`
 	FinishedAt       time.Time     `json:"finished_at,omitempty"`
+	ReceiptExpiresAt *time.Time    `json:"receipt_expires_at,omitempty"`
 	Result           *IngestResult `json:"result,omitempty"`
 	LastError        string        `json:"last_error,omitempty"`
 	RecoveryPending  bool          `json:"recovery_pending,omitempty"`
@@ -195,7 +204,49 @@ func (c *Client) Ingest(ctx context.Context, request IngestRequest) (out IngestR
 	if status.Result == nil {
 		return out, fmt.Errorf("graphdb: terminal ingest status %q has no result", status.State)
 	}
+	// Partial-failure batches (Applied > 0, ErrorCode == "") return HTTP 207
+	// Multi-Status synchronously; match that contract on async status polling.
+	if status.State == "failed" && (status.Result.ErrorCode != "" || status.Result.Applied == 0) {
+		apiErr := ingestResultAPIError(*status.Result)
+		if apiErr.Message == "ingest request failed" && status.LastError != "" {
+			apiErr.Message = status.LastError
+		}
+		return *status.Result, apiErr
+	}
 	return *status.Result, nil
+}
+
+func ingestResultAPIError(result IngestResult) *APIError {
+	statusCode := http.StatusUnprocessableEntity
+	code := result.ErrorCode
+	if code == "" {
+		code = ErrorCodeInternal
+		statusCode = http.StatusInternalServerError
+	}
+	switch result.ErrorCode {
+	case "version_conflict", "atomic_suppressed", "idempotency_conflict":
+		statusCode = http.StatusConflict
+	case "precondition_failed":
+		statusCode = http.StatusPreconditionFailed
+	case "atomic_validation_failed", "mutation_budget_exceeded":
+		statusCode = http.StatusUnprocessableEntity
+	}
+	message := "ingest request failed"
+	if len(result.Conflicts) > 0 && result.Conflicts[len(result.Conflicts)-1].Message != "" {
+		message = result.Conflicts[len(result.Conflicts)-1].Message
+	} else if len(result.Failures) > 0 && result.Failures[0].Error != "" {
+		message = result.Failures[0].Error
+	}
+	rawDetail, _ := json.Marshal(result)
+	var detail map[string]any
+	_ = json.Unmarshal(rawDetail, &detail)
+	return &APIError{
+		StatusCode: statusCode,
+		Code:       code,
+		Message:    message,
+		Detail:     detail,
+		Body:       rawDetail,
+	}
 }
 
 func (c *Client) SubmitIngest(ctx context.Context, request IngestRequest) (IngestSubmission, error) {
@@ -228,7 +279,7 @@ func (c *Client) submitIngest(ctx context.Context, request IngestRequest, waitCo
 		if accepted.CollectorID == "" {
 			accepted.CollectorID = request.CollectorID
 		}
-		if _, err := validateIngestStatusURL(accepted.StatusURL); err != nil {
+		if _, _, err := validateIngestStatusURL(accepted.StatusURL); err != nil {
 			return IngestSubmission{}, err
 		}
 		return IngestSubmission{StatusCode: statusCode, Accepted: &accepted}, nil
@@ -241,11 +292,11 @@ func (c *Client) submitIngest(ctx context.Context, request IngestRequest, waitCo
 }
 
 func (c *Client) GetIngestStatus(ctx context.Context, statusURL string) (out IngestBatchStatus, err error) {
-	path, err := validateIngestStatusURL(statusURL)
+	path, query, err := validateIngestStatusURL(statusURL)
 	if err != nil {
 		return out, err
 	}
-	err = c.doJSON(ctx, http.MethodGet, path, "", nil, nil, &out)
+	err = c.doJSON(ctx, http.MethodGet, path, "", query, nil, &out)
 	return out, err
 }
 
@@ -262,6 +313,23 @@ func (c *Client) WaitIngest(ctx context.Context, statusURL string, options *Inge
 	for {
 		status, err := c.GetIngestStatus(ctx, statusURL)
 		if err != nil {
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode == http.StatusServiceUnavailable) {
+				delay := interval
+				if apiErr.RetryAfter > 0 {
+					delay = apiErr.RetryAfter
+				}
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					return IngestBatchStatus{}, ctx.Err()
+				case <-timer.C:
+					continue
+				}
+			}
 			return IngestBatchStatus{}, err
 		}
 		switch status.State {
@@ -283,32 +351,56 @@ func (c *Client) WaitIngest(ctx context.Context, statusURL string, options *Inge
 	}
 }
 
-func validateIngestStatusURL(statusURL string) (string, error) {
+func validateIngestStatusURL(statusURL string) (string, url.Values, error) {
 	statusURL = strings.TrimSpace(statusURL)
 	parsed, err := url.ParseRequestURI(statusURL)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || strings.Contains(statusURL, "#") {
+		return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
 	}
 	path := parsed.EscapedPath()
 	prefix := "/v1/ingest/batches/"
-	partCount := 3
+	isWriter := false
 	if strings.HasPrefix(path, "/v1/ingest/writers/") {
 		prefix = "/v1/ingest/writers/"
-		partCount = 4
+		isWriter = true
 	} else if !strings.HasPrefix(path, prefix) {
-		return "", fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+		return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
 	}
 	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
-	if len(parts) != partCount {
-		return "", fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+	decoded := make([]string, len(parts))
+	for i, part := range parts {
+		value, decodeErr := url.PathUnescape(part)
+		if decodeErr != nil || value == "" || value == "." || value == ".." {
+			return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+		}
+		decoded[i] = value
 	}
-	for _, part := range parts {
-		decoded, decodeErr := url.PathUnescape(part)
-		if decodeErr != nil || decoded == "" || decoded == "." || decoded == ".." {
-			return "", fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+	// Support both current 5-segment (/writers/{id}/batches/{src}/{col}/{batch})
+	// and legacy 4-segment (/writers/{id}/{src}/{col}/{batch}) writer URLs.
+	if isWriter {
+		if len(parts) != 4 && !(len(parts) == 5 && decoded[1] == "batches") {
+			return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+		}
+	} else if len(parts) != 3 {
+		return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+	}
+	var query url.Values
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		query, err = url.ParseQuery(parsed.RawQuery)
+		if err != nil || !query.Has("accepted_lsn") {
+			return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+		}
+		for key, values := range query {
+			if (key != "accepted_lsn" && key != "accepted_epoch") || len(values) != 1 {
+				return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+			}
+			value, err := strconv.ParseUint(values[0], 10, 64)
+			if err != nil || value == 0 || strconv.FormatUint(value, 10) != values[0] {
+				return "", nil, fmt.Errorf("graphdb: invalid ingest status URL %q", statusURL)
+			}
 		}
 	}
-	return path, nil
+	return path, query, nil
 }
 
 type SourcePolicyResponse struct {

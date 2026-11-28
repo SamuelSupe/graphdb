@@ -88,15 +88,26 @@ func (r *Router) graphMove(w http.ResponseWriter, request *http.Request, state C
 			r.writeError(w, err)
 			return true
 		}
+		var freshState Catalog
+		if err := r.Client.JSON(request.Context(), r.Catalog, http.MethodGet, "/cluster/catalog", nil, &freshState); err != nil {
+			r.writeError(w, err)
+			return true
+		}
+		freshTarget, ok := freshState.Shards[input.Target]
+		if !ok || freshTarget.Draining {
+			r.writeJSON(w, http.StatusConflict, map[string]any{"error": "choose a different registered active target group"})
+			return true
+		}
 		var random [16]byte
 		if _, err := rand.Read(random[:]); err != nil {
 			r.writeError(w, err)
 			return true
 		}
-		targetGroup := groupDescriptor(target)
+		targetGroup := groupDescriptor(freshTarget)
 		action.Operation = "graph_move_begin"
 		action.Txn = hex.EncodeToString(random[:])
 		action.Target = &targetGroup
+		action.CatalogVersion = freshState.Version
 	}
 	var updated partition.Graph
 	if err := remote.Action(request.Context(), home, action, &updated); err != nil {

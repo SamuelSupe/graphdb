@@ -51,12 +51,21 @@ func (s *TenantStore) saveIngestBatchResultMetadataWithFailures(
 		recordJobs = append(recordJobs, func() error {
 			defer group.records.Done()
 			var result error
-			if err := s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{
+			var receipt *ReplicatedIngestReceipt
+			if candidate.replicatedReceipt != nil && candidate.result.BatchID == candidate.request.BatchID &&
+				candidate.result.SkipReason != IngestSkipReasonIdempotentReplay {
+				value := *candidate.replicatedReceipt
+				value.SkipReason = candidate.result.SkipReason
+				receipt = &value
+			}
+			stored, err := s.saveIngestBatchRecord(ctx, tenantID, IngestBatchRecord{
 				Request: candidate.request, Result: candidate.result,
-				StartedAt: candidate.started, FinishedAt: finished,
-			}); err != nil {
+				StartedAt: candidate.started, FinishedAt: finished, ReplicatedReceipt: receipt,
+			})
+			if err != nil {
 				result = errors.Join(result, fmt.Errorf("save ingest batch: %w", err))
 			}
+			candidate.receiptStored = receipt != nil && stored
 			if saveFailures && candidate.result.Failed > 0 {
 				if err := s.saveDeadLetter(ctx, tenantID, candidate.request, candidate.result); err != nil {
 					result = errors.Join(result, fmt.Errorf("save dead letter: %w", err))

@@ -9,7 +9,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func runQuery(args []string, store *storage.TenantStore) error {
+func runQuery(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb query <tenant-id> <query.json>")
 	}
@@ -17,10 +17,10 @@ func runQuery(args []string, store *storage.TenantStore) error {
 	if err := readJSONFile(args[1], &request); err != nil {
 		return err
 	}
-	return executeQuery(store, args[0], request)
+	return executeQuery(ctx, store, args[0], request)
 }
 
-func runGraphQL(args []string, store *storage.TenantStore) error {
+func runGraphQL(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb graphql <tenant-id> <graphql-request.json>")
 	}
@@ -32,11 +32,11 @@ func runGraphQL(args []string, store *storage.TenantStore) error {
 	if len(requestErrors) > 0 {
 		return requestErrors
 	}
-	g, _, err := store.Load(context.Background(), args[0])
+	g, _, err := store.Load(ctx, args[0])
 	if err != nil {
 		return err
 	}
-	response, err := query.Execute(g, plan.Request)
+	response, err := query.ExecuteContext(ctx, g, plan.Request)
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func runGraphQL(args []string, store *storage.TenantStore) error {
 
 // runGQL preserves the 1.0 FIND/MATCH text DSL compatibility command.
 // It does not parse GraphQL documents.
-func runGQL(args []string, store *storage.TenantStore) error {
+func runGQL(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb gql <tenant-id> <query.gql>")
 	}
@@ -57,10 +57,10 @@ func runGQL(args []string, store *storage.TenantStore) error {
 	if err != nil {
 		return err
 	}
-	return executeQuery(store, args[0], request)
+	return executeQuery(ctx, store, args[0], request)
 }
 
-func saveQuery(args []string, store *storage.TenantStore) error {
+func saveQuery(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb save-query <tenant-id> <saved-query.json>")
 	}
@@ -68,41 +68,41 @@ func saveQuery(args []string, store *storage.TenantStore) error {
 	if err := readJSONFile(args[1], &saved); err != nil {
 		return err
 	}
-	saved, err := store.SaveQuery(context.Background(), args[0], saved)
+	saved, err := store.SaveQuery(ctx, args[0], saved)
 	if err != nil {
 		return err
 	}
 	return printJSON(saved)
 }
 
-func listQueries(args []string, store *storage.TenantStore) error {
+func listQueries(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb list-queries <tenant-id>")
 	}
-	queries, err := store.ListSavedQueries(context.Background(), args[0])
+	queries, err := store.ListSavedQueries(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(map[string]any{"queries": queries})
 }
 
-func runSavedQuery(args []string, store *storage.TenantStore) error {
+func runSavedQuery(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb run-saved-query <tenant-id> <name>")
 	}
-	saved, err := store.GetSavedQuery(context.Background(), args[0], args[1])
+	saved, err := store.GetSavedQuery(ctx, args[0], args[1])
 	if err != nil {
 		return err
 	}
-	return executeQuery(store, args[0], saved.Request)
+	return executeQuery(ctx, store, args[0], saved.Request)
 }
 
-func executeQuery(store *storage.TenantStore, tenantID string, request query.Request) error {
-	g, _, err := store.Load(context.Background(), tenantID)
+func executeQuery(ctx context.Context, store *storage.TenantStore, tenantID string, request query.Request) error {
+	g, _, err := store.Load(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	response, err := query.Execute(g, request)
+	response, err := query.ExecuteContext(ctx, g, request)
 	if err != nil {
 		return err
 	}

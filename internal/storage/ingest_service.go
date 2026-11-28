@@ -70,6 +70,9 @@ func (c IngestServiceConfig) validate() error {
 	if reserve == 0 {
 		reserve = defaultIngestWALControlReserve(c.WAL)
 	}
+	if reserve < ingestTerminalFrameBytes || c.WAL.SegmentBytes < ingestTerminalFrameBytes {
+		return fmt.Errorf("ingest WAL segment and control reserve must hold a terminal frame")
+	}
 	if c.QueueMemoryBytes >= c.WAL.MaxBytes-reserve {
 		return fmt.Errorf("ingest memory queue must be smaller than WAL payload capacity")
 	}
@@ -135,7 +138,7 @@ type ingestFailureStore interface {
 }
 
 type ingestFailureResolver interface {
-	ResolveIngestFailure(context.Context, string, IngestRequest, IngestResult, time.Time, time.Time) (IngestResult, error)
+	ResolveIngestFailure(context.Context, string, IngestBatchEntry, IngestResult, time.Time) (IngestResult, error)
 }
 
 type ingestAttemptFailureStore interface {
@@ -274,8 +277,8 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 	)
 	config.WAL.Observer = config.Observer
 	config.WAL.Logger = config.Logger
-	var recovery ingestRecovery
-	wal, err := OpenIngestWAL(config.WAL, recovery.apply)
+	recovery := ingestRecovery{live: make(ingestWALLiveRecords)}
+	wal, err := openIngestWAL(config.WAL, recovery.apply, recovery.live)
 	if err != nil {
 		recordIngestRecovery(config, "error", 0, 0, 0, recoveryStarted, err)
 		endStorageSpan(recoverySpan, err)
@@ -310,7 +313,7 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 		return nil, err
 	}
 	if wal.recoveredSegmentsNeedPruning {
-		if err := service.prune(context.Background()); err != nil {
+		if err := service.prune(context.Background()); err != nil && !errors.Is(err, ErrIngestWALFull) {
 			recordIngestRecovery(config, "error", recovery.records, len(recovered), 0, recoveryStarted, err)
 			endStorageSpan(recoverySpan, err)
 			cancel()

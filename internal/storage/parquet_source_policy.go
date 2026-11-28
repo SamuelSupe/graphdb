@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
@@ -251,14 +252,14 @@ func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRe
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
 			if rows == 0 {
-				record.TenantID = tenantColumn.Value(i)
+				record.TenantID = strings.Clone(tenantColumn.Value(i))
 				record.DefaultPriority = int(defaultPriorityColumn.Value(i))
 				sourceCount = sourceCountColumn.Value(i)
 				fieldAliasCount = fieldAliasCountColumn.Value(i)
 				if hasFieldPriorities {
 					fieldPriorityCount = fieldPriorityCountColumn.Value(i)
 				}
-				expectedHash = hashColumn.Value(i)
+				expectedHash = strings.Clone(hashColumn.Value(i))
 			}
 			if record.TenantID != tenantColumn.Value(i) || int64(record.DefaultPriority) != defaultPriorityColumn.Value(i) || sourceCount != sourceCountColumn.Value(i) ||
 				fieldAliasCount != fieldAliasCountColumn.Value(i) || expectedHash != hashColumn.Value(i) ||
@@ -267,19 +268,19 @@ func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRe
 			}
 			switch rowKindColumn.Value(i) {
 			case "", sourcePolicyRowSource:
-				name := sourceNameColumn.Value(i)
+				name := strings.Clone(sourceNameColumn.Value(i))
 				if name != "" {
 					record.Sources = append(record.Sources, graph.SourcePolicyItem{
 						Name:        name,
 						Priority:    int(sourcePriorityColumn.Value(i)),
-						Description: sourceDescriptionColumn.Value(i),
+						Description: strings.Clone(sourceDescriptionColumn.Value(i)),
 					})
 				}
 			case sourcePolicyRowFieldAlias:
-				source := aliasSourceColumn.Value(i)
-				kind := aliasKindColumn.Value(i)
-				alias := aliasNameColumn.Value(i)
-				target := aliasTargetColumn.Value(i)
+				source := strings.Clone(aliasSourceColumn.Value(i))
+				kind := strings.Clone(aliasKindColumn.Value(i))
+				alias := strings.Clone(aliasNameColumn.Value(i))
+				target := strings.Clone(aliasTargetColumn.Value(i))
 				if source != "" && alias != "" && target != "" {
 					key := source + "\x00" + kind
 					rule := aliasRules[key]
@@ -295,9 +296,9 @@ func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRe
 				if !hasFieldPriorities {
 					return sourcePolicyRecord{}, fmt.Errorf("source policy field priority row requires newer schema")
 				}
-				source := prioritySourceColumn.Value(i)
-				kind := priorityKindColumn.Value(i)
-				field := priorityFieldColumn.Value(i)
+				source := strings.Clone(prioritySourceColumn.Value(i))
+				kind := strings.Clone(priorityKindColumn.Value(i))
+				field := strings.Clone(priorityFieldColumn.Value(i))
 				priority := int(priorityValueColumn.Value(i))
 				if source != "" && field != "" {
 					key := source + "\x00" + kind

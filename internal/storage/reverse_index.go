@@ -49,7 +49,7 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 	if err != nil {
 		return err
 	}
-	return s.putReverseIndexCatalogWithMeta(ctx, tenantID, catalog, meta)
+	return s.catalogMutator().PublishReverseCatalog(ctx, tenantID, catalog, version, meta)
 }
 
 func (s *TenantStore) prepareReverseIndex(ctx context.Context, tenantID string, g *graph.Graph, version int64) (ReverseIndexCatalog, ObjectMeta, error) {
@@ -121,12 +121,16 @@ func (s *TenantStore) putReverseIndexCatalogWithMeta(
 }
 
 func (s *TenantStore) getReverseIndexCatalogWithMeta(ctx context.Context, tenantID string) (ReverseIndexCatalog, ObjectMeta, error) {
+	return s.readReverseIndexCatalog(ctx, s.Objects, tenantID)
+}
+
+func (s *TenantStore) readReverseIndexCatalog(ctx context.Context, objects ObjectStore, tenantID string) (ReverseIndexCatalog, ObjectMeta, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return ReverseIndexCatalog{}, ObjectMeta{}, err
 	}
 	key := s.reverseIndexCatalogKey(tenantID)
 
-	data, meta, err := s.Objects.GetWithMeta(ctx, key)
+	data, meta, err := objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return ReverseIndexCatalog{}, ObjectMeta{Key: key}, ErrNotFound
 	}

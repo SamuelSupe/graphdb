@@ -53,6 +53,44 @@ func (s *Server) listTenants(w http.ResponseWriter, r *http.Request) {
 		writeErrorErr(w, http.StatusBadRequest, err)
 		return
 	}
+	scope := r.Header.Get("X-Tenant-ID")
+	if scope == "" && s.RequireTenantScope && storage.EnforceTenantScope(r.Context()) && !isAdminAuthRequest(r.Context()) {
+		writeError(w, http.StatusForbidden, "tenant scope header X-Tenant-ID is required")
+		return
+	}
+	if scope != "" && storage.EnforceTenantScope(r.Context()) {
+		if err := storage.ValidateTenantID(scope); err != nil {
+			writeErrorErr(w, http.StatusBadRequest, err)
+			return
+		}
+		var tenants []storage.TenantInfo
+		info, err := s.Store.GetTenantInfo(r.Context(), scope)
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			writeTenantLifecycleError(w, err)
+			return
+		}
+		if err == nil {
+			tenants = []storage.TenantInfo{info}
+		}
+		if options.Limit > 0 {
+			ids := []string{}
+			if len(tenants) == 1 {
+				ids = []string{scope}
+			}
+			pageIDs, total, next := storage.PageTenantIDs(ids, options)
+			items := make([]storage.TenantInfo, 0, len(pageIDs))
+			if len(pageIDs) == 1 && len(tenants) == 1 {
+				items = append(items, tenants[0])
+			}
+			writeJSON(w, http.StatusOK, storage.TenantInfoPage{Tenants: items, Total: total, NextCursor: next})
+			return
+		}
+		if tenants == nil {
+			tenants = []storage.TenantInfo{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
+		return
+	}
 	if options.Limit > 0 {
 		page, err := s.Store.ListTenantInfoPage(r.Context(), options)
 		if err != nil {
@@ -90,7 +128,7 @@ func (s *Server) createTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "tenant_id is required")
 		return
 	}
-	if !tenantScopeAllows(w, r, request.TenantID) {
+	if !s.tenantScopeAllows(w, r, request.TenantID) {
 		return
 	}
 	info, err := s.Store.CreateTenant(r.Context(), request.TenantID, storage.TenantCreateOptions{
@@ -106,7 +144,7 @@ func (s *Server) createTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) tenantInfo(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 1, "tenant path must be /v1/tenants/{tenant-id}")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 1, "tenant path must be /v1/tenants/{tenant-id}")
 	if !ok {
 		return
 	}
@@ -123,7 +161,7 @@ func (s *Server) updateTenantMetadata(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "tenant metadata updates are disabled in reader mode")
 		return
 	}
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 1, "tenant path must be /v1/tenants/{tenant-id}")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 1, "tenant path must be /v1/tenants/{tenant-id}")
 	if !ok {
 		return
 	}
@@ -148,7 +186,7 @@ func (s *Server) setTenantLifecycleStatus(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusMethodNotAllowed, "tenant status updates are disabled in reader mode")
 		return
 	}
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "tenant status path must be /v1/tenants/{tenant-id}/{action}")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 2, "tenant status path must be /v1/tenants/{tenant-id}/{action}")
 	if !ok {
 		return
 	}
@@ -168,7 +206,7 @@ func (s *Server) softDeleteTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "tenant delete is disabled in reader mode")
 		return
 	}
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 1, "tenant path must be /v1/tenants/{tenant-id}")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 1, "tenant path must be /v1/tenants/{tenant-id}")
 	if !ok {
 		return
 	}
@@ -188,7 +226,7 @@ func (s *Server) purgeTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "tenant purge is disabled in reader mode")
 		return
 	}
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "tenant purge path must be /v1/tenants/{tenant-id}/purge")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 2, "tenant purge path must be /v1/tenants/{tenant-id}/purge")
 	if !ok {
 		return
 	}
@@ -210,7 +248,7 @@ func (s *Server) cloneTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "tenant clone is disabled in reader mode")
 		return
 	}
-	sourceTenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "tenant clone path must be /v1/tenants/{tenant-id}/clone")
+	sourceTenantID, ok := s.tenantIDFromLifecyclePath(w, r, 2, "tenant clone path must be /v1/tenants/{tenant-id}/clone")
 	if !ok {
 		return
 	}
@@ -218,7 +256,7 @@ func (s *Server) cloneTenant(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
 		return
 	}
-	if !tenantScopeAllows(w, r, request.TargetTenantID) {
+	if !s.tenantScopeAllows(w, r, request.TargetTenantID) {
 		return
 	}
 	info, err := s.Store.CloneTenant(r.Context(), sourceTenantID, storage.TenantCloneOptions{
@@ -242,14 +280,14 @@ func (s *Server) backupTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "tenant backup is disabled in reader mode")
 		return
 	}
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "tenant backup path must be /v1/tenants/{tenant-id}/backup")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 2, "tenant backup path must be /v1/tenants/{tenant-id}/backup")
 	if !ok {
 		return
 	}
 	var request struct {
 		Destination string `json:"destination,omitempty"`
 	}
-	if r.ContentLength != 0 && !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
+	if !decodeOptionalJSONBody(w, r, &request, maxConfigRequestBytes) {
 		return
 	}
 	task, err := s.Store.StartTask(r.Context(), tenantID, storage.TaskTypeTenantBackup, map[string]any{"destination": request.Destination})
@@ -267,7 +305,7 @@ func (s *Server) restoreTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "tenant restore is disabled in reader mode")
 		return
 	}
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "tenant restore path must be /v1/tenants/{tenant-id}/restore")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 2, "tenant restore path must be /v1/tenants/{tenant-id}/restore")
 	if !ok {
 		return
 	}
@@ -299,7 +337,7 @@ func (s *Server) restoreTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listTenantObjectBackups(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "backup list path must be /v1/tenants/{tenant-id}/backups")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 2, "backup list path must be /v1/tenants/{tenant-id}/backups")
 	if !ok {
 		return
 	}
@@ -325,15 +363,13 @@ func (s *Server) restoreDrillTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "tenant restore drill is disabled in reader mode")
 		return
 	}
-	tenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "tenant restore drill path must be /v1/tenants/{tenant-id}/restore-drill")
+	tenantID, ok := s.tenantIDFromLifecyclePath(w, r, 2, "tenant restore drill path must be /v1/tenants/{tenant-id}/restore-drill")
 	if !ok {
 		return
 	}
 	var request tenantRestoreDrillRequest
-	if r.ContentLength != 0 {
-		if !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
-			return
-		}
+	if !decodeOptionalJSONBody(w, r, &request, maxConfigRequestBytes) {
+		return
 	}
 	params := map[string]any{
 		"backup_key":             request.BackupKey,
@@ -369,32 +405,53 @@ func (s *Server) restoreDrillTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) tenantLifecycle(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.URL.Path == "/v1/tenants" && r.Method == http.MethodGet:
-		s.listTenants(w, r)
-	case r.URL.Path == "/v1/tenants" && r.Method == http.MethodPost:
-		s.createTenant(w, r)
-	case strings.HasSuffix(r.URL.Path, "/disable") && r.Method == http.MethodPost:
-		s.setTenantLifecycleStatus(w, r, storage.TenantStatusDisabled)
-	case strings.HasSuffix(r.URL.Path, "/enable") && r.Method == http.MethodPost:
-		s.setTenantLifecycleStatus(w, r, storage.TenantStatusActive)
-	case strings.HasSuffix(r.URL.Path, "/purge") && r.Method == http.MethodPost:
-		s.purgeTenant(w, r)
-	case strings.HasSuffix(r.URL.Path, "/clone") && r.Method == http.MethodPost:
-		s.cloneTenant(w, r)
-	case strings.HasSuffix(r.URL.Path, "/backup") && r.Method == http.MethodPost:
-		s.backupTenant(w, r)
-	case strings.HasSuffix(r.URL.Path, "/backups") && r.Method == http.MethodGet:
-		s.listTenantObjectBackups(w, r)
-	case strings.HasSuffix(r.URL.Path, "/restore") && r.Method == http.MethodPost:
-		s.restoreTenant(w, r)
-	case strings.HasSuffix(r.URL.Path, "/restore-drill") && r.Method == http.MethodPost:
-		s.restoreDrillTenant(w, r)
-	case r.Method == http.MethodGet:
+	if r.URL.Path == "/v1/tenants" {
+		switch r.Method {
+		case http.MethodGet:
+			s.listTenants(w, r)
+		case http.MethodPost:
+			s.createTenant(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+	escaped := strings.TrimPrefix(r.URL.EscapedPath(), "/v1/tenants/")
+	parts := strings.Split(escaped, "/")
+	if len(parts) == 2 && parts[0] != "" {
+		switch {
+		case parts[1] == "disable" && r.Method == http.MethodPost:
+			s.setTenantLifecycleStatus(w, r, storage.TenantStatusDisabled)
+			return
+		case parts[1] == "enable" && r.Method == http.MethodPost:
+			s.setTenantLifecycleStatus(w, r, storage.TenantStatusActive)
+			return
+		case parts[1] == "purge" && r.Method == http.MethodPost:
+			s.purgeTenant(w, r)
+			return
+		case parts[1] == "clone" && r.Method == http.MethodPost:
+			s.cloneTenant(w, r)
+			return
+		case parts[1] == "backup" && r.Method == http.MethodPost:
+			s.backupTenant(w, r)
+			return
+		case parts[1] == "backups" && r.Method == http.MethodGet:
+			s.listTenantObjectBackups(w, r)
+			return
+		case parts[1] == "restore" && r.Method == http.MethodPost:
+			s.restoreTenant(w, r)
+			return
+		case parts[1] == "restore-drill" && r.Method == http.MethodPost:
+			s.restoreDrillTenant(w, r)
+			return
+		}
+	}
+	switch r.Method {
+	case http.MethodGet:
 		s.tenantInfo(w, r)
-	case r.Method == http.MethodPut:
+	case http.MethodPut:
 		s.updateTenantMetadata(w, r)
-	case r.Method == http.MethodDelete:
+	case http.MethodDelete:
 		s.softDeleteTenant(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -452,7 +509,7 @@ func (s *Server) tenantLifecycleGate(mutation bool, next http.Handler) http.Hand
 	})
 }
 
-func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int, message string) (string, bool) {
+func (s *Server) tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int, message string) (string, bool) {
 	_, span := startAPIPhase(r.Context(), "resolve_tenant")
 	parts, err := escapedPathParts(r, "/v1/tenants/", count)
 	if err != nil || len(parts) != count || parts[0] == "" {
@@ -468,7 +525,7 @@ func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int
 		writeError(w, http.StatusBadRequest, err.Error())
 		return "", false
 	}
-	if !tenantScopeAllows(w, r, parts[0]) {
+	if !s.tenantScopeAllows(w, r, parts[0]) {
 		endHTTPSpan(span, traceError("tenant scope forbidden"))
 		return "", false
 	}
@@ -503,11 +560,16 @@ func writeTenantLifecycleError(w http.ResponseWriter, err error) {
 
 // An authenticated tenant header scopes every tenant named by a lifecycle
 // operation. Trusted platform operators use the private API without this header.
-func tenantScopeAllows(w http.ResponseWriter, r *http.Request, target string) bool {
+func (s *Server) tenantScopeAllows(w http.ResponseWriter, r *http.Request, target string) bool {
 	if !storage.EnforceTenantScope(r.Context()) {
 		return true
 	}
-	if scope := r.Header.Get("X-Tenant-ID"); scope != "" && scope != target {
+	scope := r.Header.Get("X-Tenant-ID")
+	if scope == "" && s.RequireTenantScope && !isAdminAuthRequest(r.Context()) {
+		writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "X-Tenant-ID scope header is required", false, nil)
+		return false
+	}
+	if scope != "" && scope != target {
 		writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "tenant scope does not authorize the requested tenant", false, nil)
 		return false
 	}

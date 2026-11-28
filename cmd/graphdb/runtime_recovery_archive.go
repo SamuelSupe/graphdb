@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -15,7 +16,7 @@ type runtimeArchiveContents struct {
 	Files []string
 }
 
-func inspectRuntimeArchive(input io.ReadSeeker, roots map[string]string, expected runtimeArchiveManifest, limit int64) (*runtimeArchiveContents, error) {
+func inspectRuntimeArchive(ctx context.Context, input io.ReadSeeker, roots map[string]string, expected runtimeArchiveManifest, limit int64) (*runtimeArchiveContents, error) {
 	if _, err := input.Seek(sha256.Size, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -24,7 +25,7 @@ func inspectRuntimeArchive(input io.ReadSeeker, roots map[string]string, expecte
 		return nil, err
 	}
 	defer compressed.Close()
-	limited := &io.LimitedReader{R: compressed, N: limit + 1}
+	limited := &io.LimitedReader{R: runtimeArchiveReader{ctx: ctx, reader: compressed}, N: limit + 1}
 	archive := tar.NewReader(limited)
 	header, err := archive.Next()
 	if err != nil || header.Name != "manifest.json" || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > 1<<20 {
@@ -80,6 +81,18 @@ func inspectRuntimeArchive(input io.ReadSeeker, roots map[string]string, expecte
 		return nil, fmt.Errorf("runtime archive exceeds uncompressed byte budget")
 	}
 	return contents, nil
+}
+
+type runtimeArchiveReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r runtimeArchiveReader) Read(data []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(data)
 }
 
 type runtimeBudgetWriter struct {

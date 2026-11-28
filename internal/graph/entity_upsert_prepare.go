@@ -29,7 +29,7 @@ func (g *Graph) prepareEntityUpsert(
 	if err != nil {
 		return preparedEntityUpsert{}, err
 	}
-	if err := g.applyEntitySchemaWithSpecs(&normalized, fields); err != nil {
+	if err := g.validateExplicitEntityFieldsWithSpecs(&normalized, fields); err != nil {
 		return preparedEntityUpsert{}, err
 	}
 	incomingID := normalized.ID
@@ -69,6 +69,9 @@ func (g *Graph) prepareEntityUpsert(
 			version,
 			updatedAt,
 		)
+		if err := g.applyEntitySchemaWithSpecs(&normalized, fields); err != nil {
+			return preparedEntityUpsert{}, err
+		}
 		prepared.suppressed = append(
 			prepared.suppressed,
 			mergeReport.Suppressed...,
@@ -78,8 +81,13 @@ func (g *Graph) prepareEntityUpsert(
 		}
 		prepared.previous = previous
 		prepared.existed = true
-	} else if normalized.CreatedAt.IsZero() {
-		normalized.CreatedAt = updatedAt
+	} else {
+		if err := g.applyEntitySchemaWithSpecs(&normalized, fields); err != nil {
+			return preparedEntityUpsert{}, err
+		}
+		if normalized.CreatedAt.IsZero() {
+			normalized.CreatedAt = updatedAt
+		}
 	}
 	prepared.entity = normalized
 	return prepared, nil

@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -20,10 +21,17 @@ import (
 
 const snapshotStreamHeader = "X-GraphDB-Snapshot-Format"
 const snapshotMetadataLimit = 1 << 20
+const snapshotPayloadDigestProtocol = 13
 
 type SnapshotSource interface {
 	WriteTo(context.Context, io.WriteSeeker) error
 	Close() error
+}
+
+// A payload digest source writes a 32-byte SHA-256 prefix followed by the
+// bytes it has already hashed. Only sources with this layout can skip rehashing.
+type snapshotPayloadDigestSource interface {
+	WriteToWithPayloadDigest(context.Context, io.WriteSeeker) ([sha256.Size]byte, error)
 }
 
 type StreamingStateMachine interface {
@@ -32,8 +40,9 @@ type StreamingStateMachine interface {
 }
 
 type snapshotFile struct {
-	SHA256 string `json:"sha256"`
-	Bytes  int64  `json:"bytes"`
+	SHA256        string `json:"sha256"`
+	Bytes         int64  `json:"bytes"`
+	PayloadDigest bool   `json:"payload_digest,omitempty"`
 }
 
 func (s snapshotFile) valid() bool {
@@ -43,6 +52,33 @@ func (s snapshotFile) valid() bool {
 
 func snapshotPath(dir string, index uint64, file snapshotFile) string {
 	return filepath.Join(dir, "snapshots", fmt.Sprintf("%020d-%s.snap", index, file.SHA256))
+}
+
+func copySnapshotFile(output io.Writer, source io.Reader, payloadDigest bool) (snapshotFile, error) {
+	result := snapshotFile{PayloadDigest: payloadDigest}
+	var prefix [sha256.Size]byte
+	if payloadDigest {
+		if _, err := io.ReadFull(source, prefix[:]); err != nil {
+			return result, err
+		}
+		n, err := io.Copy(output, bytes.NewReader(prefix[:]))
+		result.Bytes = n
+		if err != nil {
+			return result, err
+		}
+	}
+	digest := sha256.New()
+	size, err := io.Copy(io.MultiWriter(output, digest), source)
+	result.Bytes += size
+	if err != nil {
+		return result, err
+	}
+	checksum := digest.Sum(nil)
+	if payloadDigest && !bytes.Equal(prefix[:], checksum) {
+		return result, fmt.Errorf("snapshot payload digest mismatch")
+	}
+	result.SHA256 = hex.EncodeToString(checksum)
+	return result, nil
 }
 
 func persistSnapshotFile(dir string, index uint64, source io.Reader, expected *snapshotFile, maxBytes int64) (result snapshotFile, err error) {
@@ -55,32 +91,99 @@ func persistSnapshotFile(dir string, index uint64, source io.Reader, expected *s
 		return result, err
 	}
 	defer func() { file.Close(); os.Remove(file.Name()) }()
-	digest := sha256.New()
-	result.Bytes, err = io.Copy(io.MultiWriter(file, digest), io.LimitReader(source, maxBytes+1))
-	if err != nil {
-		return result, err
-	}
+	result, err = copySnapshotFile(file, io.LimitReader(source, maxBytes+1), expected != nil && expected.PayloadDigest)
 	if result.Bytes > maxBytes {
 		return result, ErrSnapshotTooLarge
 	}
-	result.SHA256 = hex.EncodeToString(digest.Sum(nil))
-	if !result.valid() || (expected != nil && result != *expected) {
-		return result, fmt.Errorf("snapshot file integrity failed")
-	}
-	if err := file.Sync(); err != nil {
-		return result, err
-	}
-	if err := file.Close(); err != nil {
-		return result, err
-	}
-	if err := os.Rename(file.Name(), snapshotPath(dir, index, result)); err != nil {
-		return result, err
-	}
-	directory, err := os.Open(targetDir)
 	if err != nil {
 		return result, err
 	}
-	return result, errors.Join(directory.Sync(), directory.Close())
+	if !result.valid() || (expected != nil && result != *expected) {
+		return result, fmt.Errorf("snapshot file integrity failed")
+	}
+	return result, publishSnapshotFile(dir, index, file, result)
+}
+
+func publishSnapshotFile(dir string, index uint64, file *os.File, descriptor snapshotFile) error {
+	_, err := publishSnapshotFileExclusive(dir, index, file, descriptor)
+	return err
+}
+
+func publishSnapshotFileExclusive(dir string, index uint64, file *os.File, descriptor snapshotFile) (bool, error) {
+	if err := file.Sync(); err != nil {
+		return false, err
+	}
+	if err := file.Close(); err != nil {
+		return false, err
+	}
+	target := snapshotPath(dir, index, descriptor)
+	created := false
+	if err := os.Link(file.Name(), target); err != nil {
+		if !os.IsExist(err) {
+			if _, statErr := os.Stat(target); statErr == nil {
+				return false, nil
+			}
+			if renameErr := os.Rename(file.Name(), target); renameErr != nil {
+				return false, renameErr
+			}
+			created = true
+		}
+	} else {
+		created = true
+	}
+	directory, err := os.Open(filepath.Join(dir, "snapshots"))
+	if err != nil {
+		return created, err
+	}
+	return created, errors.Join(directory.Sync(), directory.Close())
+}
+
+func stageSnapshotFile(dir string, source io.Reader, expected *snapshotFile, maxBytes int64) (file *os.File, result snapshotFile, err error) {
+	targetDir := filepath.Join(dir, "snapshots")
+	if err := prepareSnapshotDirectory(dir); err != nil {
+		return nil, result, err
+	}
+	file, err = os.CreateTemp(targetDir, ".snapshot-")
+	if err != nil {
+		return nil, result, err
+	}
+	result, err = copySnapshotFile(file, io.LimitReader(source, maxBytes+1), expected != nil && expected.PayloadDigest)
+	if result.Bytes > maxBytes {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, result, ErrSnapshotTooLarge
+	}
+	if err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, result, err
+	}
+	if !result.valid() || (expected != nil && result != *expected) {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, result, fmt.Errorf("snapshot file integrity failed")
+	}
+	return file, result, nil
+}
+
+func (n *Node) stepReceivedSnapshot(ctx context.Context, message raftpb.Message, staged *os.File, descriptor snapshotFile) error {
+	index := message.Snapshot.Metadata.Index
+	n.snapshotReceiveMu.Lock()
+	defer n.snapshotReceiveMu.Unlock()
+	if index <= n.committed.Load() || index <= n.snapshotIndex.Load() {
+		return nil
+	}
+	created, err := publishSnapshotFileExclusive(n.cfg.Dir, index, staged, descriptor)
+	if err != nil {
+		return err
+	}
+	if err := n.raft.Step(ctx, message); err != nil {
+		if created && index > n.snapshotIndex.Load() {
+			_ = os.Remove(snapshotPath(n.cfg.Dir, index, descriptor))
+		}
+		return err
+	}
+	return nil
 }
 
 func restoreSnapshot(ctx context.Context, machine StateMachine, dir string, snapshot raftpb.Snapshot) error {
@@ -100,13 +203,8 @@ func restoreSnapshot(ctx context.Context, machine StateMachine, dir string, snap
 		return err
 	}
 	defer file.Close()
-	digest := sha256.New()
-	size, err := io.Copy(digest, file)
-	if err != nil {
+	if err := verifySnapshotFile(file, *envelope.File); err != nil {
 		return err
-	}
-	if size != envelope.File.Bytes || hex.EncodeToString(digest.Sum(nil)) != envelope.File.SHA256 {
-		return fmt.Errorf("persisted snapshot file integrity failed")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -136,7 +234,7 @@ func (n *Node) startStreamSnapshot(conf raftpb.ConfState) (result chan snapshotB
 	return building, nil
 }
 
-func sealSnapshotFile(dir string, index uint64, file *os.File, maxBytes int64) (snapshotFile, error) {
+func sealSnapshotFile(dir string, index uint64, file *os.File, maxBytes int64, payloadDigest *[sha256.Size]byte) (snapshotFile, error) {
 	info, err := file.Stat()
 	if err != nil {
 		return snapshotFile{}, err
@@ -144,29 +242,26 @@ func sealSnapshotFile(dir string, index uint64, file *os.File, maxBytes int64) (
 	if info.Size() > maxBytes {
 		return snapshotFile{}, ErrSnapshotTooLarge
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return snapshotFile{}, err
+	var stored snapshotFile
+	if payloadDigest != nil {
+		var prefix [sha256.Size]byte
+		if _, err := file.ReadAt(prefix[:], 0); err != nil {
+			return stored, err
+		}
+		if prefix != *payloadDigest {
+			return stored, fmt.Errorf("snapshot prefix does not match archive digest")
+		}
+		stored = snapshotFile{SHA256: hex.EncodeToString(prefix[:]), Bytes: info.Size(), PayloadDigest: true}
+	} else {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return stored, err
+		}
+		stored, err = copySnapshotFile(io.Discard, file, false)
+		if err != nil {
+			return stored, err
+		}
 	}
-	digest := sha256.New()
-	size, err := io.Copy(digest, file)
-	if err != nil {
-		return snapshotFile{}, err
-	}
-	stored := snapshotFile{SHA256: hex.EncodeToString(digest.Sum(nil)), Bytes: size}
-	if err := file.Sync(); err != nil {
-		return stored, err
-	}
-	if err := file.Close(); err != nil {
-		return stored, err
-	}
-	if err := os.Rename(file.Name(), snapshotPath(dir, index, stored)); err != nil {
-		return stored, err
-	}
-	directory, err := os.Open(filepath.Join(dir, "snapshots"))
-	if err != nil {
-		return stored, err
-	}
-	return stored, errors.Join(directory.Sync(), directory.Close())
+	return stored, publishSnapshotFile(dir, index, file, stored)
 }
 
 func validateSnapshotFile(dir string, index uint64, descriptor snapshotFile) error {
@@ -175,12 +270,15 @@ func validateSnapshotFile(dir string, index uint64, descriptor snapshotFile) err
 		return err
 	}
 	defer file.Close()
-	digest := sha256.New()
-	size, err := io.Copy(digest, file)
+	return verifySnapshotFile(file, descriptor)
+}
+
+func verifySnapshotFile(file io.Reader, descriptor snapshotFile) error {
+	actual, err := copySnapshotFile(io.Discard, file, descriptor.PayloadDigest)
 	if err != nil {
 		return err
 	}
-	if size != descriptor.Bytes || hex.EncodeToString(digest.Sum(nil)) != descriptor.SHA256 {
+	if actual != descriptor {
 		return fmt.Errorf("persisted snapshot file integrity failed")
 	}
 	return nil
@@ -199,6 +297,7 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 		file, createErr := os.CreateTemp(dir, ".build-")
 		err = createErr
 		if err == nil {
+			var payloadDigest *[sha256.Size]byte
 			if n.cfg.SnapshotPreflight != nil {
 				bytes := n.cfg.MaxSnapshotBytes + (32 << 20)
 				if estimated, ok := source.(interface{ SnapshotBytes() int64 }); ok {
@@ -207,7 +306,13 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 				err = n.cfg.SnapshotPreflight(n.ctx, bytes)
 			}
 			if err == nil {
-				err = source.WriteTo(n.ctx, file)
+				if digested, ok := source.(snapshotPayloadDigestSource); ok && envelope.Protocol >= snapshotPayloadDigestProtocol {
+					var checksum [sha256.Size]byte
+					checksum, err = digested.WriteToWithPayloadDigest(n.ctx, file)
+					payloadDigest = &checksum
+				} else {
+					err = source.WriteTo(n.ctx, file)
+				}
 			}
 			if err == nil && !n.cfg.StreamSnapshots {
 				info, statErr := file.Stat()
@@ -219,20 +324,15 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 				}
 			}
 			if err == nil {
-				_, err = file.Seek(0, io.SeekStart)
-			}
-			if err == nil {
 				var stored snapshotFile
-				stored, err = sealSnapshotFile(n.cfg.Dir, index, file, n.cfg.MaxSnapshotBytes+(32<<20))
+				stored, err = sealSnapshotFile(n.cfg.Dir, index, file, n.cfg.MaxSnapshotBytes+(32<<20), payloadDigest)
 				if err == nil {
 					// Only the descriptor enters Raft persistence. Default-mode
 					// transport expands the file for format-1 peers off that loop.
 					envelope.Version = 2
 					envelope.State = nil
 					envelope.File = &stored
-					if err == nil {
-						data, err = json.Marshal(envelope)
-					}
+					data, err = json.Marshal(envelope)
 				}
 			}
 			file.Close()
@@ -304,17 +404,27 @@ func (n *Node) receiveSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	if message.Snapshot.Metadata.Index <= n.committed.Load() || message.Snapshot.Metadata.Index <= n.snapshotIndex.Load() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, envelope.File.Bytes+1))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if n.cfg.SnapshotPreflight != nil {
 		if err := n.cfg.SnapshotPreflight(r.Context(), envelope.File.Bytes); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 	}
-	if _, err := persistSnapshotFile(n.cfg.Dir, message.Snapshot.Metadata.Index, r.Body, envelope.File, n.cfg.MaxSnapshotBytes+(32<<20)); err != nil {
+	staged, persisted, err := stageSnapshotFile(n.cfg.Dir, r.Body, envelope.File, n.cfg.MaxSnapshotBytes+(32<<20))
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := n.raft.Step(r.Context(), message); err != nil {
+	defer func() {
+		_ = staged.Close()
+		_ = os.Remove(staged.Name())
+	}()
+	if err := n.stepReceivedSnapshot(r.Context(), message, staged, persisted); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}

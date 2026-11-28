@@ -12,11 +12,15 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type forwardHopKey struct{}
 
-const forwardHopHeader = "X-GraphDB-Raft-Forward-Hop"
+const (
+	forwardHopHeader = "X-GraphDB-Raft-Forward-Hop"
+	raftAdminHeader  = "X-GraphDB-Raft-Admin"
+)
 
 func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, private, mutation bool) {
 	hops, _ := r.Context().Value(forwardHopKey{}).(int)
@@ -39,6 +43,13 @@ func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, p
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
 	}
+	if !private {
+		// A leader can change after local routing. The forwarded response owns
+		// the routing headers, including the generation of any accepted batch.
+		w.Header().Del("X-GraphDB-Shard-ID")
+		w.Header().Del(sharding.EpochHeader)
+		w.Header().Del("X-GraphDB-Tenant-Generation")
+	}
 	proxy := &httputil.ReverseProxy{Transport: c.shards.HTTP.Transport, FlushInterval: -1,
 		Rewrite: func(p *httputil.ProxyRequest) {
 			p.SetURL(target)
@@ -52,6 +63,11 @@ func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, p
 			p.Out.Header.Set("Authorization", "Bearer "+c.config.Token)
 			p.Out.Header.Set("X-Raft-Cluster", c.config.ClusterID)
 			p.Out.Header.Set(forwardHopHeader, strconv.Itoa(hops+1))
+			if storage.IsAdminAuthorized(p.In.Context()) {
+				p.Out.Header.Set(raftAdminHeader, "1")
+			} else {
+				p.Out.Header.Del(raftAdminHeader)
+			}
 			if mutation {
 				sharding.PreventMutationReplay(p.Out)
 			}

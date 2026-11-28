@@ -5,6 +5,40 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-28
+
+### Architecture & Replication
+- Converged storage backend, WAL, catalog, lease, task, backup, and query IR
+  subsystems with stricter execution boundaries and contract guards.
+- Added Raft ReadIndex linearizable read support, inline snapshot transfer,
+  retained Raft log tail indexing across compactions, and Raft protocol support
+  up to protocol 14 (with protocol 13 enabling retained checkpoints, ingest
+  queue checkpoints, snapshot payload digests, JSON payload framing, partition
+  conversion cancellation/rollback, and managed WAL receipt migration; Raft
+  still defaults to protocol 1).
+- Hardened Raft/HA snapshot recovery, durable metadata persistence, leader
+  fencing, partition 2PC commit/rollback, sharded transfer staging, and lock
+  ordering under concurrent maintenance, failover, and restart scenarios.
+
+### Storage, WAL, Parquet & Backup
+- Introduced sharded copy-on-write adjacency and entity-partition maps to reduce
+  write-path memory amplification and lock contention.
+- Hardened local-disk durability, manifest protection, crash-safe file
+  immutability handling, sparse Parquet ingestion, Parquet column/row-group
+  scans, and bounded object/task caches.
+- Improved WAL checkpoint reuse, ordinary/partition receipt expiry indexing,
+  background maintenance cancellation, and S3 object backup/restore fault
+  tolerance and concurrency safety.
+
+### Query, HTTP API, Console & SDKs
+- Added query IR capability validation, materialized shortest-path execution,
+  optimized source scans, differential fuzz coverage, and stricter resource and
+  cancellation budgets across JSON DSL, GraphQL, and streaming queries.
+- Hardened HTTP admission control, error contract consistency, streaming
+  backpressure/cancellation, AdminUI boundary checks, and CLI recovery safety.
+- Expanded Go and Python SDK connection pooling, retry/timeout handling, stream
+  completeness checks, error-code parity, and operational helper coverage.
+
 ## [2.6.5] - 2026-11-24
 
 - When index roots change during local GC, defer the affected orphan and resume

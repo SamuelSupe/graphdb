@@ -15,11 +15,12 @@ func newPathResultCollector(request Request) *pathResultCollector {
 	if request.Path.MaxPaths > 0 {
 		keep = min(keep, maxPathResults(request))
 	}
+	acc, groups := newQueryAggregators(request)
 	return &pathResultCollector{
 		request: request,
 		sorted:  newBoundedResults(request.Sort, keep),
-		acc:     newAggregateAccumulator(request.Aggregate),
-		groups:  newGroupAccumulator(request.GroupBy, request.Aggregate),
+		acc:     acc,
+		groups:  groups,
 	}
 }
 

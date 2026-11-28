@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -60,7 +61,8 @@ func (s *TenantStore) retainedAdjacencyKeys(ctx context.Context, tenant string, 
 			return nil, err
 		}
 	}
-	err = scanObjectPrefix(ctx, s.Objects, s.parquetVersionRootPrefix(tenant), func(objects []ObjectInfo) error {
+	markCtx := WithFileListPageCache(context.WithValue(ctx, fileListBeforeKey{}, time.Time{}))
+	err = scanObjectPrefix(markCtx, s.Objects, s.parquetVersionRootPrefix(tenant), func(objects []ObjectInfo) error {
 		for _, o := range objects {
 			if !isVersionedIndexCatalogKey(o.Key) {
 				continue

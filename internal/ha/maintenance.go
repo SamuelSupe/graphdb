@@ -21,7 +21,7 @@ func (c *Cluster) replicateMaintenance(ctx context.Context, task storage.Task, i
 		return err
 	}
 	if size <= 0 || size > c.App.MaxSnapshotBytes {
-		return fmt.Errorf("prepared maintenance exceeds snapshot budget")
+		return fmt.Errorf("%w: prepared maintenance exceeds snapshot budget", storage.ErrReplicationSnapshotTooLarge)
 	}
 	if task.Type != storage.TaskTypeGC {
 		if err := c.App.Store.CheckWriteDiskSpace(ctx, size*2); err != nil {
@@ -45,7 +45,11 @@ func (c *Cluster) replicateMaintenance(ctx context.Context, task storage.Task, i
 		command.Tenant = task.TenantID
 		command.IDs = []string{task.ID}
 		command.ExpectedGeneration = generation
-		if _, err := c.propose(ctx, command); err != nil {
+		resp, err := c.propose(ctx, command)
+		if err != nil {
+			return err
+		}
+		if err := checkProposalConflict(resp); err != nil {
 			return err
 		}
 	}
@@ -94,14 +98,21 @@ func (c *Cluster) replicateMaintenance(ctx context.Context, task storage.Task, i
 		}
 		if part == 0 {
 			// Establish the manifest before later parts can arrive out of order.
-			if _, err := c.propose(transfer, command); err != nil {
+			resp, err := c.propose(transfer, command)
+			if err == nil {
+				err = checkProposalConflict(resp)
+			}
+			if err != nil {
 				inputErr = err
 				break
 			}
 		} else {
 			group.Go(func() error {
-				_, err := c.propose(transfer, command)
-				return err
+				resp, err := c.propose(transfer, command)
+				if err != nil {
+					return err
+				}
+				return checkProposalConflict(resp)
 			})
 		}
 	}

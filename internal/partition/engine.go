@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -92,6 +93,12 @@ func (e Engine) updateTransaction(ctx context.Context, g Graph, a Action, txn *T
 }
 
 func (e Engine) Submit(ctx context.Context, request CommitRequest) (storage.CommitResult, error) {
+	return e.SubmitWithGraph(ctx, request, nil)
+}
+
+// SubmitWithGraph can reuse the caller's descriptor from the current request.
+// The transaction lookup and begin still check the durable generation and base.
+func (e Engine) SubmitWithGraph(ctx context.Context, request CommitRequest, initial *Graph) (storage.CommitResult, error) {
 	canonical := storage.NormalizeDirectCommitRequest(storage.DirectCommitRequest{Mutations: request.Mutations, ExpectedVersion: request.ExpectedVersion, IdempotencyKey: request.IdempotencyKey})
 	request.Mutations = canonical.Mutations
 	request.IdempotencyKey = canonical.IdempotencyKey
@@ -103,10 +110,10 @@ func (e Engine) Submit(ctx context.Context, request CommitRequest) (storage.Comm
 	if request.IdempotencyKey != "" {
 		identity = "direct:" + request.IdempotencyKey
 	}
-	return e.submitInput(ctx, data, identity, request.ExpectedVersion, "commit", "", nil)
+	return e.submitInput(ctx, data, identity, request.ExpectedVersion, "commit", "", nil, initial)
 }
 
-func (e Engine) submitInput(ctx context.Context, data []byte, identity string, expected *int64, purpose, acceptance string, finished *Transaction) (storage.CommitResult, error) {
+func (e Engine) submitInput(ctx context.Context, data []byte, identity string, expected *int64, purpose, acceptance string, finished *Transaction, initial *Graph) (storage.CommitResult, error) {
 	if len(data) > MaxChangeBytes {
 		return storage.CommitResult{}, invalid("graph transaction exceeds its input budget")
 	}
@@ -128,10 +135,19 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 	var plannedTxn string
 	var stagedGeneration int64
 	for {
-		g, err = e.Remote.Describe(ctx, e.Home, e.Tenant)
-		if err != nil {
-			return storage.CommitResult{}, err
+		useInitial := initial != nil && initial.Tenant == e.Tenant && initial.State == "active" &&
+			initial.Generation > 0 && (e.Generation == 0 || initial.Generation == e.Generation) &&
+			initial.Active == nil && !initial.GC.BlocksWrites() && !initial.Move.BlocksWrites() &&
+			(expected == nil || *expected == initial.Version)
+		if useInitial {
+			g = *initial
+		} else {
+			g, err = e.Remote.Describe(ctx, e.Home, e.Tenant)
+			if err != nil {
+				return storage.CommitResult{}, err
+			}
 		}
+		initial = nil
 		if e.Generation > 0 && e.Generation != g.Generation || stagedGeneration > 0 && stagedGeneration != g.Generation {
 			return storage.CommitResult{}, conflict("tenant generation changed")
 		}
@@ -140,7 +156,10 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 			if previous.Digest != digest {
 				return storage.CommitResult{}, conflict("idempotency key was used with different content")
 			}
-			if previous.State != "retryable" {
+			if !previous.canRestart(g.Version) {
+				if useInitial && (previous.State == "retryable" || !previous.decided() || len(previous.Inputs) > 0 || len(previous.Participants) > 0) {
+					continue
+				}
 				if err := e.waitToPublish(ctx); err != nil {
 					return storage.CommitResult{}, err
 				}
@@ -220,12 +239,15 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 		if !errors.Is(err, storage.ErrConflict) {
 			return storage.CommitResult{}, &OutcomeUnknownError{Txn: id, Cause: err}
 		}
+		if useInitial {
+			continue
+		}
 		if err := waitWriter(ctx); err != nil {
 			return storage.CommitResult{}, err
 		}
 	}
 	replay := txn.ID != id
-	for txn.State != "committed" && txn.State != "aborted" {
+	for !txn.decided() {
 		var resolved Transaction
 		var resumeErr error
 		if planned != nil && plannedTxn == txn.ID {
@@ -244,7 +266,7 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 			if txn.Digest != digest {
 				return storage.CommitResult{}, fmt.Errorf("durable transaction digest changed")
 			}
-			if txn.State == "committed" || txn.State == "aborted" {
+			if txn.decided() {
 				break
 			}
 		}
@@ -259,7 +281,11 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 		}
 	}
 	if len(txn.Inputs) > 0 || len(txn.Participants) > 0 {
-		completed, finishErr := e.finish(ctx, g, txn)
+		finishGraph := g
+		if latestGraph, descErr := e.Remote.Describe(ctx, e.Home, e.Tenant); descErr == nil && latestGraph.Generation == g.Generation {
+			finishGraph = latestGraph
+		}
+		completed, finishErr := e.finish(ctx, finishGraph, txn)
 		if finishErr != nil {
 			latest, lookupErr := e.Remote.Transaction(ctx, e.Home, e.Tenant, g.Generation, identity)
 			if lookupErr != nil || latest.ID != txn.ID || len(latest.Inputs) > 0 || len(latest.Participants) > 0 {
@@ -271,6 +297,9 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 	}
 	if finished != nil {
 		*finished = txn
+	}
+	if txn.ErrorCode == storage.IngestErrorMutationBudget {
+		return storage.CommitResult{}, &MutationBudgetError{Reason: txn.Error}
 	}
 	if txn.State == "aborted" {
 		if txn.ErrorCode == "quota_exceeded" {
@@ -301,6 +330,9 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 }
 
 func (e Engine) resume(ctx context.Context, g Graph, txn Transaction, encoded []byte, planned *Plan) (Transaction, error) {
+	if g.GC != nil && g.GC.RecoverySequence != 0 {
+		return txn, ErrGraphBusy
+	}
 	if txn.State == "preparing" {
 		if encoded == nil {
 			for _, input := range txn.Inputs {
@@ -339,12 +371,16 @@ func (e Engine) resume(ctx context.Context, g Graph, txn Transaction, encoded []
 		}
 
 		if err != nil {
-			if !errors.Is(err, storage.ErrInvalidArgument) && !errors.Is(err, ErrReadBudget) && !errors.Is(err, ErrQuotaExceeded) {
-				return txn, err
-			}
 			code := ""
-			if errors.Is(err, ErrQuotaExceeded) {
+			switch {
+			case mutationBudgetExceeded(err):
+				code = storage.IngestErrorMutationBudget
+			case errors.Is(err, ErrQuotaExceeded):
 				code = "quota_exceeded"
+			case errors.Is(err, storage.ErrInvalidArgument):
+			case txn.Purpose == "build" && errors.Is(err, storage.ErrConflict):
+			default:
+				return txn, err
 			}
 			if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), ErrorCode: code, IngestResult: failedIngestResult(input.Ingest, err)}, &txn); abortErr != nil {
 				return txn, abortErr
@@ -384,8 +420,12 @@ func (e Engine) resume(ctx context.Context, g Graph, txn Transaction, encoded []
 			err = e.prepareLegacy(ctx, g, actions)
 		}
 		if err != nil {
-			if errors.Is(err, storage.ErrInvalidArgument) || errors.Is(err, storage.ErrConflict) {
-				if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), IngestResult: failedIngestResult(input.Ingest, err)}, &txn); abortErr != nil {
+			if errors.Is(err, storage.ErrInvalidArgument) || mutationBudgetExceeded(err) {
+				code := ""
+				if mutationBudgetExceeded(err) || strings.Contains(err.Error(), "budget") {
+					code = storage.IngestErrorMutationBudget
+				}
+				if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), ErrorCode: code, IngestResult: failedIngestResult(input.Ingest, err)}, &txn); abortErr != nil {
 					return txn, abortErr
 				}
 				return e.finish(ctx, g, txn)

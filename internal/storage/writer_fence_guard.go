@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/lease"
 )
 
 type writerFenceContextKey struct{}
@@ -102,15 +104,19 @@ func (s *TenantStore) putTenantConditionalIfBound(ctx context.Context, tenantID 
 
 func (s *TenantStore) writerFenceStillCurrent(ctx context.Context, tenantID string, expected writerFenceRef) error {
 	key := s.writerLeaseKey(tenantID)
-	s.clearWriterObjectKey(key)
+	if s.localFileStore() == nil {
+		s.clearWriterObjectKey(key)
+	}
 	lease, _, err := s.getWriterLease(ctx, tenantID, key)
 	if errors.Is(err, ErrNotFound) {
+		s.evictCachedWriterLeaseIfMatches(tenantID, expected)
 		return fmt.Errorf("%w: tenant %q writer fence was removed", ErrLeaseHeld, tenantID)
 	}
 	if err != nil {
 		return err
 	}
 	if !writerLeaseMatchesFence(lease, expected) {
+		s.evictCachedWriterLeaseIfMatches(tenantID, expected)
 		return fmt.Errorf("%w: tenant %q writer fence changed", ErrLeaseHeld, tenantID)
 	}
 	return nil
@@ -120,8 +126,12 @@ func (s *TenantStore) ensureBoundWriterLease(ctx context.Context, tenantID strin
 	return s.writerFenceStillCurrent(ctx, tenantID, expected)
 }
 
-func writerLeaseMatchesFence(lease WriterLease, expected writerFenceRef) bool {
-	return lease.OwnerID == expected.ownerID && lease.FenceToken == expected.token && lease.FenceEpoch == expected.epoch
+func writerLeaseMatchesFence(l WriterLease, expected writerFenceRef) bool {
+	return lease.MatchesFence(l, lease.FenceRef{
+		OwnerID: expected.ownerID,
+		Token:   expected.token,
+		Epoch:   expected.epoch,
+	})
 }
 
 func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
@@ -135,8 +145,8 @@ func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string,
 	var previous []byte
 	var previousMeta ObjectMeta
 	if !condition.IfNoneMatch {
-		if condition.previous != nil && condition.previous.meta.Exists && condition.IfMatch == condition.previous.meta.ETag {
-			previous, previousMeta = condition.previous.data, condition.previous.meta
+		if before := condition.BeforeImage(); before != nil && before.Meta.Exists && condition.IfMatch == before.Meta.ETag {
+			previous, previousMeta = before.Data, before.Meta
 		} else {
 			previous, previousMeta, err = s.Objects.GetWithMeta(ctx, key)
 		}
@@ -151,7 +161,7 @@ func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string,
 			condition.IfNoneMatch = true
 		}
 	}
-	condition.previous = nil
+	condition = condition.ClearBeforeImage()
 	meta, err := s.Objects.PutConditional(ctx, key, data, condition)
 	if err != nil {
 		return meta, err
@@ -185,8 +195,8 @@ func (s *TenantStore) putTenantGenerationConditional(ctx context.Context, tenant
 	var previous []byte
 	var previousMeta ObjectMeta
 	if !condition.IfNoneMatch {
-		if condition.previous != nil && condition.previous.meta.Exists && condition.IfMatch == condition.previous.meta.ETag {
-			previous, previousMeta = condition.previous.data, condition.previous.meta
+		if before := condition.BeforeImage(); before != nil && before.Meta.Exists && condition.IfMatch == before.Meta.ETag {
+			previous, previousMeta = before.Data, before.Meta
 		} else {
 			previous, previousMeta, err = s.Objects.GetWithMeta(ctx, key)
 		}
@@ -201,7 +211,7 @@ func (s *TenantStore) putTenantGenerationConditional(ctx context.Context, tenant
 			condition.IfNoneMatch = true
 		}
 	}
-	condition.previous = nil
+	condition = condition.ClearBeforeImage()
 	meta, err := s.Objects.PutConditional(ctx, key, data, condition)
 	if err != nil {
 		return meta, err

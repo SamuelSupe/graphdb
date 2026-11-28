@@ -5,7 +5,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
+
+// PartitionEntitySourceReference returns the authoritative distributed identity
+// constraint key for a source-identity delete request without applying entity
+// schema required-field checks or defaults.
+func (g *Graph) PartitionEntitySourceReference(kind, source, externalID string) (string, error) {
+	kind = strings.TrimSpace(kind)
+	source = strings.TrimSpace(source)
+	externalID = strings.TrimSpace(externalID)
+	if kind == "" || source == "" || externalID == "" {
+		return "", fmt.Errorf("delete entity request requires kind, source and external_id when using source identity")
+	}
+	return identityTuple("identity", kind, g.sourceIdentitySignature(EntitySource{Source: source, ExternalID: externalID}).Value), nil
+}
 
 // PartitionEntityReferences uses the same normalization, identity confidence
 // thresholds and inherited unique fields as commit validation. The returned

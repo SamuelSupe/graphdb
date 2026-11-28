@@ -12,7 +12,7 @@ import (
 
 func (c *Cluster) copyPartitionedGraph(ctx context.Context, initial partition.Graph) (partition.Graph, error) {
 	remote := sharding.GraphRemote{Client: c.shards}
-	engine := partition.Engine{Remote: remote, Home: c.graphHome(), Tenant: initial.Tenant, Generation: initial.Generation}
+	engine := c.partitionEngine(initial.Tenant, initial.Generation, c.config.Protocol >= partition.BatchProtocol)
 	for {
 		g, err := remote.Describe(ctx, c.graphHome(), initial.Tenant)
 		if err != nil {
@@ -55,7 +55,7 @@ func (c *Cluster) copyPartitionedGraph(ctx context.Context, initial partition.Gr
 				nextPhase = "identities"
 			}
 		case "entities":
-			batch, err := c.App.Store.ListEntities(ctx, g.Tenant, storage.EntityScanOptions{Limit: 128, Cursor: cursor, MinVersion: g.Version, SkipGraphFallback: true})
+			batch, err := c.App.Store.ListEntities(ctx, g.Tenant, storage.EntityScanOptions{Limit: 1024, Cursor: cursor, MinVersion: g.Version, SkipGraphFallback: true})
 			if err != nil {
 				return g, err
 			}
@@ -93,7 +93,7 @@ func (c *Cluster) copyPartitionedGraph(ctx context.Context, initial partition.Gr
 				nextPhase = "edges"
 			}
 		case "edges":
-			batch, err := c.App.Store.ListEdges(ctx, g.Tenant, storage.EdgeScanOptions{Limit: 128, Cursor: cursor, MinVersion: g.Version, SkipGraphFallback: true})
+			batch, err := c.App.Store.ListEdges(ctx, g.Tenant, storage.EdgeScanOptions{Limit: 1024, Cursor: cursor, MinVersion: g.Version, SkipGraphFallback: true})
 			if err != nil {
 				return g, err
 			}

@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/subtle"
@@ -176,6 +177,7 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 					return fmt.Errorf("no address for Raft peer %d", id)
 				}
 				var body io.Reader = bytes.NewReader(packet.data)
+				var contentLength int64
 				endpoint := "/raft/message"
 				if packet.file != nil {
 					peer, err := n.peerStatus(sender.ctx, id)
@@ -187,31 +189,10 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 						if err := message.Unmarshal(packet.data); err != nil {
 							return err
 						}
-						envelope, err := decodeSnapshot(message.Snapshot.Data)
+						body, contentLength, err = inlineSnapshotBody(message, packet.file, n.cfg.MaxSnapshotBytes)
 						if err != nil {
 							return err
 						}
-						envelope.State, err = io.ReadAll(io.LimitReader(packet.file, n.cfg.MaxSnapshotBytes+1))
-						if err != nil {
-							return err
-						}
-						if int64(len(envelope.State)) > n.cfg.MaxSnapshotBytes {
-							return ErrSnapshotTooLarge
-						}
-						envelope.Version = 1
-						envelope.File = nil
-						message.Snapshot.Data, err = json.Marshal(envelope)
-						if err != nil {
-							return err
-						}
-						if int64(len(message.Snapshot.Data)) > inlineSnapshotLimit(n.cfg.MaxSnapshotBytes) {
-							return ErrSnapshotTooLarge
-						}
-						data, err := message.Marshal()
-						if err != nil {
-							return err
-						}
-						body = bytes.NewReader(data)
 					} else {
 						var prefix [4]byte
 						binary.BigEndian.PutUint32(prefix[:], uint32(len(packet.data)))
@@ -223,6 +204,9 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 				if err != nil {
 					return err
 				}
+				if contentLength > 0 {
+					request.ContentLength = contentLength
+				}
 				request.Header.Set("Authorization", "Bearer "+n.cfg.Token)
 				request.Header.Set("X-Raft-Cluster", n.cfg.ClusterID)
 				request.Header.Set(protocolHeader, fmt.Sprint(ProtocolVersion))
@@ -230,7 +214,7 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 					request.Header.Set(snapshotStreamHeader, "2")
 				}
 				client := n.client.Client
-				if endpoint == "/raft/snapshot" {
+				if packet.snapshot {
 					streamClient := *client
 					streamClient.Timeout = 10 * time.Minute
 					client = &streamClient
@@ -275,14 +259,53 @@ func (n *Node) Handler() http.Handler {
 			http.Error(w, "incompatible Raft protocol", http.StatusUpgradeRequired)
 			return
 		}
-		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, max(inlineSnapshotLimit(n.cfg.MaxSnapshotBytes), MaxProposalBytes)+(32<<20)))
+		const appendLimit = MaxProposalBytes + (32 << 20)
+		limit := max(inlineSnapshotLimit(n.cfg.MaxSnapshotBytes)+(32<<20), appendLimit)
+		if r.ContentLength > limit {
+			http.Error(w, "Raft message exceeds the receive byte limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		// Compatibility snapshots can be much larger than append messages.
+		// Admit only one large or unframed receive without occupying a slot
+		// for normal replication and quorum heartbeats.
+		large := r.ContentLength < 0 || r.ContentLength > 2<<20
+		if n.receiveLargeMessage != nil && large {
+			select {
+			case n.receiveLargeMessage <- struct{}{}:
+				defer func() { <-n.receiveLargeMessage }()
+			default:
+				http.Error(w, "large Raft message receiver is busy", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		var body io.Reader = http.MaxBytesReader(w, r.Body, limit)
+		_, streaming := n.machine.(StreamingStateMachine)
+		if streaming && large {
+			reader := bufio.NewReaderSize(body, 32<<10)
+			body = reader
+			// GraphDB's raftpb encoders put the message type first.
+			if tag, _ := reader.Peek(2); len(tag) == 2 && tag[0] == 1<<3 && tag[1] == byte(raftpb.MsgSnap) {
+				n.receiveInlineSnapshot(w, r, reader)
+				return
+			}
+			body = io.LimitReader(reader, appendLimit+1)
+		}
+		data, err := io.ReadAll(body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		if streaming && int64(len(data)) > appendLimit {
+			http.Error(w, "Raft message exceeds the append byte limit", http.StatusRequestEntityTooLarge)
 			return
 		}
 		var message raftpb.Message
 		if err := message.Unmarshal(data); err != nil {
 			http.Error(w, "invalid Raft message", http.StatusBadRequest)
+			return
+		}
+		if len(data) > appendLimit && message.Type != raftpb.MsgSnap {
+			http.Error(w, "Raft message exceeds the append byte limit", http.StatusRequestEntityTooLarge)
 			return
 		}
 		n.peerMu.RLock()
@@ -301,6 +324,14 @@ func (n *Node) Handler() http.Handler {
 			return
 		}
 		if message.Type == raftpb.MsgSnap && message.Snapshot != nil {
+			if message.Snapshot.Metadata.Index == 0 {
+				http.Error(w, "invalid inline snapshot index", http.StatusBadRequest)
+				return
+			}
+			if message.Snapshot.Metadata.Index <= n.committed.Load() || message.Snapshot.Metadata.Index <= n.snapshotIndex.Load() {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			envelope, err := decodeSnapshot(message.Snapshot.Data)
 			if err != nil || envelope.Version != 1 || int64(len(envelope.State)) > n.cfg.MaxSnapshotBytes || int64(len(message.Snapshot.Data)) > inlineSnapshotLimit(n.cfg.MaxSnapshotBytes) {
 				http.Error(w, "invalid inline snapshot envelope", http.StatusBadRequest)
@@ -313,17 +344,27 @@ func (n *Node) Handler() http.Handler {
 						return
 					}
 				}
-				stored, err := persistSnapshotFile(n.cfg.Dir, message.Snapshot.Metadata.Index, bytes.NewReader(envelope.State), nil, n.cfg.MaxSnapshotBytes)
+				staged, stored, err := stageSnapshotFile(n.cfg.Dir, bytes.NewReader(envelope.State), nil, n.cfg.MaxSnapshotBytes)
 				if err != nil {
 					http.Error(w, "persist inline snapshot failed", http.StatusServiceUnavailable)
 					return
 				}
+				defer func() {
+					_ = staged.Close()
+					_ = os.Remove(staged.Name())
+				}()
 				envelope.Version, envelope.State, envelope.File = 2, nil, &stored
 				message.Snapshot.Data, err = json.Marshal(envelope)
 				if err != nil {
 					http.Error(w, "encode snapshot metadata failed", http.StatusInternalServerError)
 					return
 				}
+				if err := n.stepReceivedSnapshot(r.Context(), message, staged, stored); err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
 			}
 		}
 		if err := n.raft.Step(r.Context(), message); err != nil {

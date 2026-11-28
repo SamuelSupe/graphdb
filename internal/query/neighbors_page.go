@@ -6,9 +6,11 @@ func canPageNeighborsEarly(request Request) bool {
 	return len(request.Sort) == 0 && len(request.Aggregate) == 0 && len(request.GroupBy) == 0
 }
 
-func executeNeighborsPage(g *graph.Graph, request Request, cursor cursorState, budget *budget) (Response, error) {
+func executeNeighborsPage(g *graph.Graph, startID string, request Request, cursor cursorState, budget *budget) (Response, error) {
+	lookupReq := request
+	lookupReq.ID = startID
 	if results, state, ok, err := pageDirectedNeighborsFromShard(
-		g, request, cursor, budget,
+		g, lookupReq, cursor, budget,
 	); ok || err != nil {
 		if err != nil {
 			return Response{}, err
@@ -19,12 +21,12 @@ func executeNeighborsPage(g *graph.Graph, request Request, cursor cursorState, b
 		return pageResponse(g.Version, results, state.hasNext, request, budget), nil
 	}
 	if budget.lookup == nil {
-		return pageMaterializedNeighbors(g, request, cursor, budget)
+		return pageMaterializedNeighbors(g, startID, request, cursor, budget)
 	}
 	var neighbors []graph.Neighbor
 	if err := budget.measure("expand-neighbors", directionDetail(request), 0, func() (int, error) {
 		var err error
-		neighbors, err = neighborsForBudget(g, request.ID, request, budget)
+		neighbors, err = neighborsForBudget(g, startID, request, budget)
 		return len(neighbors), err
 	}); err != nil {
 		return Response{}, err
@@ -32,7 +34,7 @@ func executeNeighborsPage(g *graph.Graph, request Request, cursor cursorState, b
 	return pageNeighborSlice(g, request, cursor, budget, neighbors)
 }
 
-func pageMaterializedNeighbors(g *graph.Graph, request Request, cursor cursorState, budget *budget) (Response, error) {
+func pageMaterializedNeighbors(g *graph.Graph, startID string, request Request, cursor cursorState, budget *budget) (Response, error) {
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	_, startEdgeID, _ := cursorNeighborEdge(cursor)
@@ -42,9 +44,12 @@ func pageMaterializedNeighbors(g *graph.Graph, request Request, cursor cursorSta
 		direction = "both"
 	}
 	err := budget.measure("expand-neighbors", directionDetail(request), 0, func() (int, error) {
-		err := g.VisitNeighborsByEdgeID(request.ID, direction, relationTypeSet(request), request.Path.NodeKinds, impact, startEdgeID, func() error { return budget.add(1) }, func(neighbor graph.Neighbor) (bool, error) {
+		err := g.VisitNeighborsByEdgeID(startID, direction, relationTypeSet(request), request.Path.NodeKinds, impact, startEdgeID, func() error { return budget.add(1) }, func(neighbor graph.Neighbor) (bool, error) {
 			if cursor.After != "" && !state.pastCursor && neighbor.Edge.ID > startEdgeID {
 				return false, invalidCursorAfter(cursor)
+			}
+			if !budget.allowsEntity(neighbor.Entity) {
+				return true, nil
 			}
 			stop, err := appendPageNeighbor(&results, neighbor, request, cursor, state, budget)
 			return !stop, err
@@ -123,6 +128,9 @@ func pageDirectedNeighborsFromShard(
 	cursorEdgeID, skipByEdgeID := cursorDirectedEdgeID(
 		cursor, request.Direction,
 	)
+	if !cursor.Legacy && cursor.After != "" && !skipByEdgeID {
+		return nil, state, true, invalidCursorAfter(cursor)
+	}
 	err := budget.measure("filter-project", "", len(edges), func() (int, error) {
 		startVisited := budget.visited
 		for _, edge := range edges {
@@ -141,6 +149,10 @@ func pageDirectedNeighborsFromShard(
 			if err := budget.add(1); err != nil {
 				return budget.visited - startVisited, err
 			}
+			if !requestEdgeMatches(request, edge) {
+				budget.visited++
+				continue
+			}
 			entity, ok, err := materializeEntity(
 				g, directedNeighborID(edge, request.Direction), request, budget,
 			)
@@ -153,7 +165,7 @@ func pageDirectedNeighborsFromShard(
 				}
 				continue
 			}
-			if !pathAllowsKind(entity.Kind, request.Path) {
+			if !budget.allowsEntity(entity) || !pathAllowsKind(entity.Kind, request.Path) {
 				continue
 			}
 			neighbor := graph.Neighbor{
@@ -194,7 +206,7 @@ func pageNeighborSlice(g *graph.Graph, request Request, cursor cursorState, budg
 func appendPageNeighbor(results *[]Result, neighbor graph.Neighbor, request Request, cursor cursorState, state *matchPageState, budget *budget) (bool, error) {
 	budget.visited++
 	entity := neighbor.Entity
-	if !requestEntityMatches(&request, &entity) || !requestEdgeMatches(request, neighbor.Edge) {
+	if !budget.allowsEntity(entity) || !requestEntityMatches(&request, &entity) || !requestEdgeMatches(request, neighbor.Edge) {
 		return false, nil
 	}
 	edge := neighbor.Edge

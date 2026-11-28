@@ -34,16 +34,16 @@ func TestEdgeTypeIndexCopyOnWriteIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(next.edgeTypeIndex["first"]) != 0 {
-		t.Fatalf("next first index = %#v", next.edgeTypeIndex["first"])
+	if next.edgeTypeIndex.At("first").Len() != 0 {
+		t.Fatalf("next first index = %#v", next.edgeTypeIndex.At("first"))
 	}
-	if len(next.edgeTypeIndex["second"]) != 1 {
-		t.Fatalf("next second index = %#v", next.edgeTypeIndex["second"])
+	if next.edgeTypeIndex.At("second").Len() != 1 {
+		t.Fatalf("next second index = %#v", next.edgeTypeIndex.At("second"))
 	}
-	if len(g.edgeTypeIndex["first"]) != 1 {
-		t.Fatalf("source first index changed: %#v", g.edgeTypeIndex["first"])
+	if g.edgeTypeIndex.At("first").Len() != 1 {
+		t.Fatalf("source first index changed: %#v", g.edgeTypeIndex.At("first"))
 	}
-	if len(g.edgeTypeIndex["second"]) != 1 {
-		t.Fatalf("source second index changed: %#v", g.edgeTypeIndex["second"])
+	if g.edgeTypeIndex.At("second").Len() != 1 {
+		t.Fatalf("source second index changed: %#v", g.edgeTypeIndex.At("second"))
 	}
 }

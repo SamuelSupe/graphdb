@@ -122,6 +122,9 @@ func (s *TenantStore) publishLocalTenantLifecycle(ctx context.Context, tenantID 
 	if err := files.syncPendingDirectories(); err != nil {
 		return TenantInfo{}, err
 	}
+	if err := files.syncPendingDeleteDirectories(); err != nil {
+		return TenantInfo{}, err
+	}
 	target, err := files.path(targetKey)
 	if err != nil {
 		return TenantInfo{}, err

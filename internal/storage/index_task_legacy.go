@@ -59,7 +59,9 @@ func (s *TenantStore) getIndexTaskObjectWithMeta(
 	taskID string,
 ) (IndexTask, ObjectMeta, error) {
 	key := s.indexTaskKey(tenantID, taskID)
-	s.clearWriterObjectKey(key)
+	if s.localFileStore() == nil {
+		s.clearWriterObjectKey(key)
+	}
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return IndexTask{}, meta, err

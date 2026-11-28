@@ -20,19 +20,30 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/adminui"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 type Router struct {
-	Catalog            Shard
-	Client             *Client
-	mu                 sync.Mutex
-	placements         map[string]cachedPlacement
-	draining           atomic.Bool
-	metrics            *observability.OperationMetrics
-	catalogVerified    atomic.Bool
-	catalogUnavailable atomic.Bool
-	catalogRetryAt     atomic.Int64
-	catalogLastSuccess atomic.Int64
+	Catalog              Shard
+	Client               *Client
+	AuthToken            string
+	AdminToken           string
+	RequireTenantScope   bool
+	mu                   sync.Mutex
+	placements           map[string]cachedPlacement
+	placementEpochs      map[string]uint64
+	placementGlobalEpoch uint64
+	placementFlight      singleflight.Group
+	proxies              map[string]*httputil.ReverseProxy
+	draining             atomic.Bool
+	metrics              *observability.OperationMetrics
+	catalogVerified      atomic.Bool
+	catalogStateMu       sync.Mutex
+	catalogStateAt       int64
+	catalogUnavailable   atomic.Bool
+	catalogRetryAt       atomic.Int64
+	catalogLastSuccess   atomic.Int64
 }
 
 type cachedPlacement struct {
@@ -42,10 +53,51 @@ type cachedPlacement struct {
 }
 
 func NewRouter(catalog Shard, token string) *Router {
-	return &Router{Catalog: catalog, Client: NewClient(token), metrics: observability.NewOperationMetrics()}
+	return NewRouterWithGraphLimits(catalog, token, DefaultGraphAdmissionLimits())
+}
+
+func NewRouterWithGraphLimits(catalog Shard, token string, limits GraphAdmissionLimits) *Router {
+	client := NewClient(token)
+	client.graphAdmission.limits = limits
+	return &Router{Catalog: catalog, Client: client, metrics: observability.NewOperationMetrics()}
+}
+
+func hasPathTraversal(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	if strings.Contains(u.Path, "\\") || strings.Contains(u.RawPath, "\\") {
+		return true
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if segment == "." || segment == ".." {
+			return true
+		}
+	}
+	for _, rawSegment := range strings.Split(u.EscapedPath(), "/") {
+		decoded, err := url.PathUnescape(rawSegment)
+		if err != nil {
+			return true
+		}
+		if decoded == "." || decoded == ".." || strings.Contains(decoded, "\\") {
+			return true
+		}
+		if strings.Contains(decoded, "/") {
+			for _, sub := range strings.Split(decoded, "/") {
+				if sub == "." || sub == ".." {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	if hasPathTraversal(request.URL) {
+		http.Error(w, "invalid request path", http.StatusBadRequest)
+		return
+	}
 	if request.URL.Path == "/ui" || strings.HasPrefix(request.URL.Path, "/ui/") {
 		adminui.Handler().ServeHTTP(w, request)
 		return
@@ -74,17 +126,40 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	case "/v1/health", "/v1/readiness":
 		r.health(w, request)
 		return
-	case "/v1/tenants":
-		if request.Method == http.MethodGet {
-			r.listTenants(w, request)
-			return
-		}
 	case "/openapi.yaml":
 		r.proxy(w, request, r.Catalog, 0, "")
 		return
 	}
-	if !publicDataRoute(request) && subtle.ConstantTimeCompare([]byte(request.Header.Get("Authorization")), []byte("Bearer "+r.Client.Token)) != 1 {
-		http.Error(w, "administrative routing requires the operator token", http.StatusForbidden)
+	authHeader := request.Header.Get("Authorization")
+	bearerToken := ""
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		bearerToken = strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	operatorMatch := r.Client.Token != "" && subtle.ConstantTimeCompare([]byte(bearerToken), []byte(r.Client.Token)) == 1
+	adminMatch := r.AdminToken != "" && subtle.ConstantTimeCompare([]byte(bearerToken), []byte(r.AdminToken)) == 1
+	authMatch := r.AuthToken != "" && subtle.ConstantTimeCompare([]byte(bearerToken), []byte(r.AuthToken)) == 1
+	isAdminCaller := operatorMatch || adminMatch
+	if !publicDataRoute(request) {
+		if !isAdminCaller {
+			http.Error(w, "administrative routing requires the operator token", http.StatusForbidden)
+			return
+		}
+	} else if r.AuthToken != "" || r.AdminToken != "" {
+		if !authMatch && !isAdminCaller {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="graphdb"`)
+			http.Error(w, "valid bearer token is required", http.StatusUnauthorized)
+			return
+		}
+	}
+	if isAdminCaller {
+		request = request.WithContext(storage.WithAdminAuthorized(request.Context()))
+	}
+	if request.URL.Path == "/v1/tenants" && request.Method == http.MethodGet {
+		if r.RequireTenantScope && request.Header.Get("X-Tenant-ID") == "" && !isAdminCaller {
+			http.Error(w, "tenant scope header X-Tenant-ID is required", http.StatusForbidden)
+			return
+		}
+		r.listTenants(w, request)
 		return
 	}
 	tenant := request.Header.Get("X-Tenant-ID")
@@ -98,7 +173,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		tenant = decoded
 	}
 	create := request.Method == http.MethodPost && request.URL.Path == "/v1/tenants"
-	clone := request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/clone")
+	clone := request.Method == http.MethodPost &&
+		strings.HasPrefix(request.URL.Path, "/v1/tenants/") &&
+		strings.HasSuffix(request.URL.Path, "/clone") &&
+		strings.Count(strings.TrimPrefix(request.URL.Path, "/v1/tenants/"), "/") == 1
 	var target string
 	if create || clone {
 		body, err := io.ReadAll(http.MaxBytesReader(w, request.Body, 1<<20))
@@ -171,6 +249,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 func (r *Router) resolve(ctx context.Context, tenant string) (resolution Resolution, err error) {
 	finish := r.metrics.Start("placement_lookup")
 	defer func() { finish(err) }()
+	if err := ctx.Err(); err != nil {
+		return Resolution{}, err
+	}
 	r.mu.Lock()
 	cached := r.placements[tenant]
 	r.mu.Unlock()
@@ -179,45 +260,95 @@ func (r *Router) resolve(ctx context.Context, tenant string) (resolution Resolut
 		return cached.resolution, nil
 	}
 	r.metrics.Event("placement_cache_miss")
-	err = r.catalogRead(ctx, "/cluster/placement/"+url.PathEscape(tenant), &resolution)
-	if err != nil && ctx.Err() == nil && r.catalogVerified.Load() && catalogUnavailable(err) && time.Now().Before(cached.retainUntil) {
-		r.metrics.Event("placement_stale_fallback")
-		return cached.resolution, nil
-	}
-	if err == nil && resolution.Placement.State != "active" {
-		err = &HTTPError{Status: http.StatusServiceUnavailable, Body: "tenant assignment or migration is in progress"}
-		r.forgetPlacement(tenant)
-	}
-	if err == nil {
+	flight := r.placementFlight.DoChan(tenant, func() (any, error) {
+		r.mu.Lock()
+		startGlobalEpoch := r.placementGlobalEpoch
+		startTenantEpoch := r.placementEpochs[tenant]
+		r.mu.Unlock()
+		lookupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var res Resolution
+		lookupErr := r.catalogRead(lookupCtx, "/cluster/placement/"+url.PathEscape(tenant), &res)
+		if lookupErr != nil {
+			if catalogUnavailable(lookupErr) {
+				r.mu.Lock()
+				stale := r.placements[tenant]
+				now := time.Now()
+				if r.catalogVerified.Load() && now.Before(stale.retainUntil) {
+					// Extend short grace window so fallback does not hammer the catalog on every request.
+					grace := now.Add(time.Second)
+					if grace.After(stale.retainUntil) {
+						grace = stale.retainUntil
+					}
+					if grace.After(stale.expires) {
+						stale.expires = grace
+						r.placements[tenant] = stale
+					}
+					r.mu.Unlock()
+					r.metrics.Event("placement_stale_fallback")
+					return stale.resolution, nil
+				}
+				r.mu.Unlock()
+			} else {
+				r.forgetPlacement(tenant)
+			}
+			return Resolution{}, lookupErr
+		}
+		if res.Placement.State != "active" {
+			r.forgetPlacement(tenant)
+			return Resolution{}, &HTTPError{Status: http.StatusServiceUnavailable, Body: "tenant assignment or migration is in progress"}
+		}
 		r.catalogVerified.Store(true)
 		r.mu.Lock()
-		if r.placements == nil {
-			r.placements = make(map[string]cachedPlacement)
-		}
-		if len(r.placements) >= 4096 {
-			oldest := ""
-			var expiry time.Time
-			for id, entry := range r.placements {
-				if oldest == "" || entry.expires.Before(expiry) {
-					oldest, expiry = id, entry.expires
-				}
+		if r.placementGlobalEpoch == startGlobalEpoch && r.placementEpochs[tenant] == startTenantEpoch {
+			if r.placements == nil {
+				r.placements = make(map[string]cachedPlacement)
 			}
-			delete(r.placements, oldest)
+			if len(r.placements) >= 4096 {
+				oldest := ""
+				var expiry time.Time
+				for id, entry := range r.placements {
+					if oldest == "" || entry.expires.Before(expiry) {
+						oldest, expiry = id, entry.expires
+					}
+				}
+				delete(r.placements, oldest)
+			}
+			now := time.Now()
+			r.placements[tenant] = cachedPlacement{resolution: res, expires: now.Add(5 * time.Second), retainUntil: now.Add(placementFallbackTTL)}
 		}
-		now := time.Now()
-		r.placements[tenant] = cachedPlacement{resolution: resolution, expires: now.Add(5 * time.Second), retainUntil: now.Add(placementFallbackTTL)}
 		r.mu.Unlock()
-	} else if !catalogUnavailable(err) {
-		r.forgetPlacement(tenant)
+		return res, nil
+	})
+	select {
+	case <-ctx.Done():
+		return Resolution{}, ctx.Err()
+	case result := <-flight:
+		if result.Err != nil {
+			return Resolution{}, result.Err
+		}
+		return result.Val.(Resolution), nil
 	}
-	return resolution, err
 }
 
 func (r *Router) forgetPlacement(tenant string) {
 	r.metrics.Event("placement_cache_invalidation")
 	r.mu.Lock()
-	delete(r.placements, tenant)
+	if r.placementEpochs == nil {
+		r.placementEpochs = make(map[string]uint64)
+	}
+	if _, exists := r.placementEpochs[tenant]; !exists && len(r.placementEpochs) >= 4096 {
+		// Bound memory under arbitrary/unknown X-Tenant-ID probing while keeping
+		// monotonic epoch fencing for all in-flight lookups.
+		clear(r.placementEpochs)
+		clear(r.placements)
+		r.placementGlobalEpoch++
+	} else {
+		r.placementEpochs[tenant]++
+		delete(r.placements, tenant)
+	}
 	r.mu.Unlock()
+	r.placementFlight.Forget(tenant)
 }
 
 func (r *Router) assign(ctx context.Context, tenant, shard string) (Resolution, error) {
@@ -244,35 +375,27 @@ func (r *Router) assign(ctx context.Context, tenant, shard string) (Resolution, 
 	}
 }
 
-func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard, epoch uint64, tenant string) {
-	operation := "proxy_write"
-	if readRequest(request) {
-		operation = "proxy_read"
+type proxyCallKey struct{}
+
+type proxyCallState struct {
+	shard  Shard
+	epoch  uint64
+	tenant string
+	isRead bool
+	err    error
+}
+
+func (r *Router) reverseProxyFor(origin string, target *url.URL) *httputil.ReverseProxy {
+	r.mu.Lock()
+	if p, ok := r.proxies[origin]; ok {
+		r.mu.Unlock()
+		return p
 	}
-	finish := r.metrics.Start(operation)
-	origin, err := r.Client.Leader(request.Context(), shard)
-	defer func() {
-		if aborted := recover(); aborted != nil {
-			failure := request.Context().Err()
-			if failure == nil {
-				failure = fmt.Errorf("proxy response aborted")
-			}
-			finish(failure)
-			panic(aborted)
-		}
-		finish(err)
-	}()
-	if err != nil {
-		r.writeError(w, err)
-		return
-	}
-	target, err := url.Parse(origin)
-	if err != nil {
-		r.writeError(w, err)
-		return
-	}
-	proxy := &httputil.ReverseProxy{Transport: r.Client.HTTP.Transport, FlushInterval: -1,
+	p := &httputil.ReverseProxy{
+		Transport:     r.Client.HTTP.Transport,
+		FlushInterval: -1,
 		Rewrite: func(p *httputil.ProxyRequest) {
+			state, _ := p.In.Context().Value(proxyCallKey{}).(*proxyCallState)
 			p.SetURL(target)
 			p.Out.Host = p.In.Host
 			p.Out.URL.Path = "/cluster/data" + p.In.URL.Path
@@ -280,25 +403,35 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 				p.Out.URL.RawPath = "/cluster/data" + p.In.URL.RawPath
 			}
 			p.Out.Header.Set("Authorization", "Bearer "+r.Client.Token)
-			p.Out.Header.Set("X-Raft-Cluster", shard.ClusterID)
-			p.Out.Header.Set(EpochHeader, fmt.Sprint(epoch))
+			if storage.IsAdminAuthorized(p.In.Context()) {
+				p.Out.Header.Set("X-GraphDB-Raft-Admin", "1")
+			} else {
+				p.Out.Header.Del("X-GraphDB-Raft-Admin")
+			}
+			if state != nil {
+				p.Out.Header.Set("X-Raft-Cluster", state.shard.ClusterID)
+				p.Out.Header.Set(EpochHeader, fmt.Sprint(state.epoch))
+				if !strings.HasPrefix(p.In.URL.Path, "/v1/tenants") {
+					p.Out.Header.Set("X-Tenant-ID", state.tenant)
+				}
+			}
 			if !readRequest(p.In) {
 				PreventMutationReplay(p.Out)
 			}
-			if !strings.HasPrefix(p.In.URL.Path, "/v1/tenants") {
-				p.Out.Header.Set("X-Tenant-ID", tenant)
-			}
 		},
 		ModifyResponse: func(response *http.Response) error {
-			if response.StatusCode >= 500 {
-				r.forgetPlacement(tenant)
-			}
-			if response.StatusCode == http.StatusServiceUnavailable {
-				r.Client.ForgetLeader(shard)
-			}
-			if response.StatusCode == http.StatusConflict && tenant != "" {
-				if err := r.migrationResponse(request.Context(), response, tenant); err != nil {
-					return err
+			state, _ := response.Request.Context().Value(proxyCallKey{}).(*proxyCallState)
+			if state != nil {
+				if response.StatusCode >= 500 && response.StatusCode != http.StatusGatewayTimeout && !isApplication503(response) {
+					r.forgetPlacement(state.tenant)
+				}
+				if response.StatusCode == http.StatusServiceUnavailable && !isApplication503(response) {
+					r.Client.ForgetLeader(state.shard)
+				}
+				if response.StatusCode == http.StatusConflict && state.tenant != "" {
+					if err := r.migrationResponse(response.Request.Context(), response, state.tenant); err != nil {
+						return err
+					}
 				}
 			}
 			switch {
@@ -311,20 +444,29 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			default:
 				r.metrics.Event("proxy_response_5xx")
 			}
-			if response.StatusCode >= 400 {
-				err = &HTTPError{Status: response.StatusCode}
+			if response.StatusCode >= 400 && state != nil {
+				state.err = &HTTPError{Status: response.StatusCode}
 			}
 			if response.StatusCode == http.StatusTooManyRequests {
 				r.metrics.Event("proxy_backpressure")
 			}
 			return nil
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, failure error) {
-			err = failure
+		ErrorHandler: func(w http.ResponseWriter, req *http.Request, failure error) {
+			state, _ := req.Context().Value(proxyCallKey{}).(*proxyCallState)
+			if state != nil {
+				state.err = failure
+				if !errors.Is(failure, context.Canceled) {
+					r.Client.ForgetLeader(state.shard)
+					r.forgetPlacement(state.tenant)
+				}
+			}
 			r.metrics.Event("proxy_transport_failure")
-			r.Client.ForgetLeader(shard)
-			r.forgetPlacement(tenant)
-			if !readRequest(request) {
+			isRead := readRequest(req)
+			if state != nil {
+				isRead = state.isRead
+			}
+			if !isRead {
 				message := "the write response was lost; check its status or reuse the same idempotency key"
 				r.writeJSON(w, http.StatusBadGateway, map[string]any{"code": "write_outcome_unknown", "error": message, "message": message, "retryable": false})
 			} else {
@@ -332,7 +474,51 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			}
 		},
 	}
-	proxy.ServeHTTP(w, request)
+	if r.proxies == nil {
+		r.proxies = make(map[string]*httputil.ReverseProxy)
+	}
+	if len(r.proxies) >= 256 {
+		clear(r.proxies)
+	}
+	r.proxies[origin] = p
+	r.mu.Unlock()
+	return p
+}
+
+func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard, epoch uint64, tenant string) {
+	isRead := readRequest(request)
+	operation := "proxy_write"
+	if isRead {
+		operation = "proxy_read"
+	}
+	finish := r.metrics.Start(operation)
+	origin, err := r.Client.Leader(request.Context(), shard)
+	state := &proxyCallState{shard: shard, epoch: epoch, tenant: tenant, isRead: isRead}
+	defer func() {
+		if aborted := recover(); aborted != nil {
+			failure := request.Context().Err()
+			if failure == nil {
+				failure = fmt.Errorf("proxy response aborted")
+			}
+			finish(failure)
+			panic(aborted)
+		}
+		if err == nil {
+			err = state.err
+		}
+		finish(err)
+	}()
+	if err != nil {
+		r.writeError(w, err)
+		return
+	}
+	target, err := url.Parse(origin)
+	if err != nil {
+		r.writeError(w, err)
+		return
+	}
+	proxy := r.reverseProxyFor(origin, target)
+	proxy.ServeHTTP(w, request.WithContext(context.WithValue(request.Context(), proxyCallKey{}, state)))
 }
 
 func (r *Router) migrationResponse(ctx context.Context, response *http.Response, tenant string) error {
@@ -464,9 +650,15 @@ func (r *Router) admin(w http.ResponseWriter, request *http.Request) {
 		r.writeError(w, err)
 		return
 	}
-	r.mu.Lock()
-	r.placements = nil
-	r.mu.Unlock()
+	if action.Tenant != "" {
+		r.forgetPlacement(action.Tenant)
+	} else {
+		r.mu.Lock()
+		r.placementGlobalEpoch++
+		r.placements = nil
+		clear(r.placementEpochs)
+		r.mu.Unlock()
+	}
 	r.writeJSON(w, http.StatusAccepted, result)
 }
 
@@ -482,27 +674,7 @@ func (r *Router) listTenants(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if options.Limit > 0 {
-		ids := make([]string, 0, len(state.Tenants))
-		for id := range state.Tenants {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		page, total, next := storage.PageTenantIDs(ids, options)
-		items := make([]storage.TenantInfo, 0, len(page))
-		for _, id := range page {
-			shard, ok := state.Shards[state.Tenants[id].Shard]
-			if !ok {
-				r.writeError(w, fmt.Errorf("tenant %s has an unavailable shard", id))
-				return
-			}
-			var info storage.TenantInfo
-			if err := r.Client.JSON(request.Context(), shard, http.MethodGet, "/cluster/data/v1/tenants/"+url.PathEscape(id), nil, &info, http.Header{"X-Tenant-ID": {id}, EpochHeader: {fmt.Sprint(state.Tenants[id].Epoch)}}); err != nil {
-				r.writeError(w, err)
-				return
-			}
-			items = append(items, info)
-		}
-		r.writeJSON(w, http.StatusOK, storage.TenantInfoPage{Tenants: items, Total: total, NextCursor: next})
+		r.listTenantPage(w, request, state, options)
 		return
 	}
 	var tenants []storage.TenantInfo
@@ -511,22 +683,143 @@ func (r *Router) listTenants(w http.ResponseWriter, request *http.Request) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for _, id := range ids {
-		var result struct {
-			Tenants []storage.TenantInfo `json:"tenants"`
-		}
-		if err := r.Client.JSON(request.Context(), state.Shards[id], http.MethodGet, "/cluster/data"+request.URL.RequestURI(), nil, &result); err != nil {
-			r.writeError(w, err)
-			return
-		}
-		for _, tenant := range result.Tenants {
-			if placement, ok := state.Tenants[tenant.TenantID]; ok && placement.Shard == id {
-				tenants = append(tenants, tenant)
+	privatePath := "/cluster/data/v1/tenants"
+	if options.IncludeLegacy {
+		privatePath += "?include_legacy=true"
+	}
+	var headers []http.Header
+	if storage.IsAdminAuthorized(request.Context()) {
+		headers = []http.Header{{"X-GraphDB-Raft-Admin": {"1"}}}
+	}
+	perShard := make([][]storage.TenantInfo, len(ids))
+	group, gctx := errgroup.WithContext(request.Context())
+	group.SetLimit(8)
+	for i, id := range ids {
+		group.Go(func() error {
+			var result struct {
+				Tenants []storage.TenantInfo `json:"tenants"`
 			}
-		}
+			if err := r.Client.JSON(gctx, state.Shards[id], http.MethodGet, privatePath, nil, &result, headers...); err != nil {
+				return err
+			}
+			filtered := make([]storage.TenantInfo, 0, len(result.Tenants))
+			for _, tenant := range result.Tenants {
+				if placement, ok := state.Tenants[tenant.TenantID]; ok && placement.Shard == id {
+					filtered = append(filtered, tenant)
+				}
+			}
+			perShard[i] = filtered
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		r.writeError(w, err)
+		return
+	}
+	for _, list := range perShard {
+		tenants = append(tenants, list...)
 	}
 	sort.Slice(tenants, func(i, j int) bool { return tenants[i].TenantID < tenants[j].TenantID })
 	r.writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
+}
+
+func (r *Router) listTenantPage(w http.ResponseWriter, request *http.Request, state Catalog, options storage.TenantListOptions) {
+	ctx := request.Context()
+	registryPath := "/cluster/tenant-ids"
+	if options.IncludeLegacy {
+		registryPath += "?include_legacy=true"
+	}
+	active := func(p Placement) bool { return p.State == "" || p.State == "active" }
+	shardIDs := make([]string, 0, len(state.Shards))
+	for shardID := range state.Shards {
+		shardIDs = append(shardIDs, shardID)
+	}
+	sort.Strings(shardIDs)
+	shardResults := make([][]string, len(shardIDs))
+	shardGroup, shardCtx := errgroup.WithContext(ctx)
+	shardGroup.SetLimit(8)
+	for i, shardID := range shardIDs {
+		shard := state.Shards[shardID]
+		shardGroup.Go(func() error {
+			var storedIDs []string
+			if err := r.Client.JSON(shardCtx, shard, http.MethodGet, registryPath, nil, &storedIDs); err != nil {
+				var response *HTTPError
+				if !errors.As(err, &response) || response.Status != http.StatusNotFound {
+					return err
+				}
+				var fallback []string
+				for id, placement := range state.Tenants {
+					if placement.Shard == shardID && active(placement) {
+						fallback = append(fallback, id)
+					}
+				}
+				shardResults[i] = fallback
+				return nil
+			}
+			var matched []string
+			for _, id := range storedIDs {
+				if placement := state.Tenants[id]; placement.Shard == shardID && active(placement) {
+					matched = append(matched, id)
+				}
+			}
+			shardResults[i] = matched
+			return nil
+		})
+	}
+	if err := shardGroup.Wait(); err != nil {
+		r.writeError(w, err)
+		return
+	}
+	var ids []string
+	for _, list := range shardResults {
+		ids = append(ids, list...)
+	}
+	sort.Strings(ids)
+	page, total, next := storage.PageTenantIDs(ids, options)
+	type pageEntry struct {
+		info storage.TenantInfo
+		ok   bool
+		skip bool
+	}
+	entries := make([]pageEntry, len(page))
+	pageGroup, pageCtx := errgroup.WithContext(ctx)
+	pageGroup.SetLimit(8)
+	for i, id := range page {
+		p := state.Tenants[id]
+		pageGroup.Go(func() error {
+			var info storage.TenantInfo
+			reqHeader := http.Header{"X-Tenant-ID": {id}, EpochHeader: {fmt.Sprint(p.Epoch)}}
+			if storage.IsAdminAuthorized(request.Context()) {
+				reqHeader.Set("X-GraphDB-Raft-Admin", "1")
+			}
+			err := r.Client.JSON(pageCtx, state.Shards[p.Shard], http.MethodGet, "/cluster/data/v1/tenants/"+url.PathEscape(id), nil, &info, reqHeader)
+			var response *HTTPError
+			if errors.As(err, &response) && (response.Status == http.StatusNotFound || response.Status == http.StatusConflict) {
+				entries[i] = pageEntry{skip: true}
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			entries[i] = pageEntry{info: info, ok: true}
+			return nil
+		})
+	}
+	if err := pageGroup.Wait(); err != nil {
+		r.writeError(w, err)
+		return
+	}
+	items := make([]storage.TenantInfo, 0, len(page))
+	for _, entry := range entries {
+		if entry.skip {
+			total--
+			continue
+		}
+		if entry.ok {
+			items = append(items, entry.info)
+		}
+	}
+	r.writeJSON(w, http.StatusOK, storage.TenantInfoPage{Tenants: items, Total: total, NextCursor: next})
 }
 
 func (r *Router) writeJSON(w http.ResponseWriter, status int, value any) {

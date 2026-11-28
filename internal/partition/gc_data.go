@@ -11,14 +11,15 @@ import (
 )
 
 type DataGC struct {
-	ID       string   `json:"id"`
-	Phase    string   `json:"phase"`
-	Stack    []Root   `json:"stack,omitempty"`
-	Marked   Root     `json:"marked"`
-	Seen     Root     `json:"seen"`
-	Cursor   string   `json:"cursor,omitempty"`
-	Buffered bool     `json:"buffered,omitempty"`
-	Pending  []string `json:"pending,omitempty"`
+	RecoverySequence uint64   `json:"recovery_sequence,omitempty"`
+	ID               string   `json:"id"`
+	Phase            string   `json:"phase"`
+	Stack            []Root   `json:"stack,omitempty"`
+	Marked           Root     `json:"marked"`
+	Seen             Root     `json:"seen"`
+	Cursor           string   `json:"cursor,omitempty"`
+	Buffered         bool     `json:"buffered,omitempty"`
+	Pending          []string `json:"pending,omitempty"`
 }
 
 const gcPendingLimit = 128
@@ -133,15 +134,20 @@ func (s Store) applyDataGCState(ctx context.Context, a Action, state DataState) 
 		if a.Revision != 0 {
 			maxRoots = 65536
 		}
-		if state.Prepared != nil || len(a.Roots) > maxRoots {
+		if a.Sequence != 0 && a.Revision < RecoveryGCRevision || len(a.Roots) > maxRoots ||
+			state.Prepared != nil && (a.Sequence == 0 || state.Prepared.Sequence != a.Sequence) {
 			return nil, conflict("resolve partition transaction before GC")
 		}
 		roots := append(append([]Root(nil), a.Roots...), state.Root)
-		state.GC = &DataGC{ID: a.Txn, Phase: "mark", Stack: roots, Buffered: a.Revision >= BufferedGCRevision}
+		if state.Prepared != nil && state.Prepared.Root != state.Root {
+			roots = append(roots, state.Prepared.Root)
+		}
+		state.GC = &DataGC{ID: a.Txn, Phase: "mark", Stack: roots, Buffered: a.Revision >= BufferedGCRevision, RecoverySequence: a.Sequence}
 	} else {
 		if a.Operation == "data_gc_step" && a.Purpose == "cancel" {
 			if state.GC == nil {
 				state.LastGC = a.Txn
+				state.LastGCRecovery = a.Sequence != 0
 				return state, s.save(ctx, s.dataKey(a.Tenant, a.Generation, a.Partition), state)
 			}
 			if state.GC.ID != a.Txn || state.GC.Phase == "sweep" {
@@ -274,6 +280,7 @@ func (s Store) applyDataGCState(ctx context.Context, a Action, state DataState) 
 			}
 			if len(objects) == 0 || gc.Buffered && next == "" {
 				state.LastGC = gc.ID
+				state.LastGCRecovery = gc.RecoverySequence != 0
 				state.GC = nil
 			}
 		default:

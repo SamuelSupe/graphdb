@@ -12,6 +12,12 @@ class NDJSONStream:
         self._require_done = require_done
 
     def __iter__(self) -> Iterator[dict]:
+        try:
+            yield from self._items()
+        finally:
+            self.close()
+
+    def _items(self) -> Iterator[dict]:
         done = False
         for line in self._response:
             if not line:
@@ -19,14 +25,14 @@ class NDJSONStream:
             text = line.decode("utf-8").strip()
             if text:
                 item = json.loads(text)
+                if not isinstance(item, dict):
+                    raise ValueError("expected JSON object in NDJSON stream")
                 done = done or item.get("done") is True
                 if item.get("done") is True and item.get("error"):
-                    error = GraphDBAPIError(
+                    raise GraphDBAPIError(
                         200, code=item.get("code", ""), message=item.get("message") or item["error"],
                         retryable=bool(item.get("retryable")), detail=item.get("detail"), body=line,
                     )
-                    yield item
-                    raise error
                 yield item
         if self._require_done and not done:
             raise EOFError("stream ended without a done marker")

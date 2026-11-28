@@ -2,13 +2,16 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 )
 
 func (s *TenantStore) auditSnapshotCatalog(ctx context.Context, tenantID string, manifest Manifest, report *IntegrityAuditReport) {
-	if manifest.SnapshotCatalogKey == "" {
+	protected := manifest.ProtectedSnapshotSelector()
+	if protected.SnapshotCatalogKey == "" {
 		report.addIssue("snapshot_catalog_missing", "error", "snapshot_catalog", "", "", "manifest does not point to a snapshot catalog")
 		return
 	}
@@ -148,6 +151,43 @@ func (s *TenantStore) auditIndexCatalog(ctx context.Context, tenantID string, ma
 	s.auditEntityRecords(ctx, tenantID, catalog.Version, expectedRecords, report)
 }
 
+func (s *TenantStore) auditReverseIndexCatalog(ctx context.Context, tenantID string, manifest Manifest, options IntegrityAuditOptions, report *IntegrityAuditReport) {
+	key := s.reverseIndexCatalogKey(tenantID)
+	data, _, err := s.Objects.GetWithMeta(ctx, key)
+	if errors.Is(err, ErrNotFound) {
+		return
+	}
+	if err != nil {
+		report.addIssue("reverse_index_catalog_read_failed", "error", "reverse_index_catalog", "", key, err.Error())
+		return
+	}
+	report.Objects++
+	report.Bytes += int64(len(data))
+	report.Checks = append(report.Checks, IntegrityObjectCheck{
+		Role:   "reverse_index_catalog",
+		Key:    key,
+		Status: "ok",
+		Bytes:  int64(len(data)),
+	})
+	var catalog ReverseIndexCatalog
+	if err := json.Unmarshal(data, &catalog); err != nil {
+		report.addIssue("reverse_index_catalog_decode_failed", "error", "reverse_index_catalog", "", key, err.Error())
+		return
+	}
+	if catalog.TenantID != "" && catalog.TenantID != tenantID {
+		report.addIssue("reverse_index_catalog_tenant_mismatch", "error", "reverse_index_catalog", "", key, "reverse index catalog tenant does not match")
+	}
+	if catalog.Version != manifest.Version {
+		report.addIssue("reverse_index_stale", "error", "reverse_index_catalog", "", key, "reverse index catalog version does not match manifest")
+	}
+	if !options.Deep {
+		return
+	}
+	for _, shard := range catalog.EdgeShards {
+		s.auditIndexEdgeShardObjects(ctx, tenantID, catalog.Version, shard, report)
+	}
+}
+
 func (s *TenantStore) auditSecondaryIndexObjects(ctx context.Context, tenantID string, version int64, spec IndexSpec, report *IntegrityAuditReport) {
 	for _, object := range spec.Objects {
 		data, _, ok := s.auditReadObject(ctx, object.Key, "secondary_index", true, report)
@@ -201,6 +241,18 @@ func (s *TenantStore) auditIndexEdgeShardObjects(ctx context.Context, tenantID s
 		}
 		if object.ContentHash != "" && contentHash != object.ContentHash {
 			report.addIssue("edge_shard_content_hash_mismatch", "error", "edge_shard", resourceID, object.Key, "edge shard content hash does not match catalog object")
+		}
+	}
+	if spec.AdjacencyRoot != nil {
+		seen := make(map[string]struct{})
+		count := 0
+		if err := s.walkAdjacency(ctx, tenantID, *spec.AdjacencyRoot, seen, func(adjacencyKey) error {
+			count++
+			return nil
+		}); err != nil {
+			report.addIssue("adjacency_tree_invalid", "error", "adjacency_tree", resourceID, s.adjacencyObjectKey(*spec.AdjacencyRoot), err.Error())
+		} else if count != spec.EdgeCount {
+			report.addIssue("adjacency_tree_count_mismatch", "error", "adjacency_tree", resourceID, s.adjacencyObjectKey(*spec.AdjacencyRoot), fmt.Sprintf("adjacency tree entry count %d does not match edge shard count %d", count, spec.EdgeCount))
 		}
 	}
 }

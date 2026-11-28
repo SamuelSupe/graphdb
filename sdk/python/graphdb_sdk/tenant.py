@@ -26,6 +26,9 @@ class TenantMixin:
     def get_tenant(self, tenant_id: str) -> dict:
         return self._json("GET", f"/v1/tenants/{self._escape(tenant_id)}", tenant_id=None)
 
+    def update_tenant(self, tenant_id: str, **metadata: Any) -> dict:
+        return self._json("PUT", f"/v1/tenants/{self._escape(tenant_id)}", tenant_id=None, body=metadata)
+
     def disable_tenant(self, tenant_id: str) -> dict:
         return self._tenant_action(tenant_id, "disable")
 

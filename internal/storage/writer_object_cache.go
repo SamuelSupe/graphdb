@@ -26,15 +26,15 @@ type WriterObjectCache struct {
 	mu   sync.Mutex
 	seed maphash.Seed
 	// Bounded generations fence slow fills without retaining every key ever written.
-	generations    [128]uint64
-	listGeneration uint64
-	bytes          int64
-	listBytes      int64
-	objects        map[string]*writerObjectEntry
-	objectLRU      *list.List
-	lists          map[string]*writerListEntry
-	listLRU        *list.List
-	maxListItems   int
+	generations  [128]uint64
+	listFills    map[string]*writerListFill
+	bytes        int64
+	listBytes    int64
+	objects      map[string]*writerObjectEntry
+	objectLRU    *list.List
+	lists        map[string]*writerListEntry
+	listLRU      *list.List
+	maxListItems int
 }
 
 type writerObjectEntry struct {
@@ -54,6 +54,10 @@ type writerListEntry struct {
 	items  map[string]ObjectInfo
 	size   int64
 	elem   *list.Element
+}
+
+type writerListFill struct {
+	readers int
 }
 
 func NewWriterObjectCache(inner ObjectStore, cfg WriterObjectCacheConfig) *WriterObjectCache {
@@ -81,6 +85,7 @@ func NewWriterObjectCache(inner ObjectStore, cfg WriterObjectCacheConfig) *Write
 		objects:      map[string]*writerObjectEntry{},
 		objectLRU:    list.New(),
 		lists:        map[string]*writerListEntry{},
+		listFills:    map[string]*writerListFill{},
 		listLRU:      list.New(),
 		maxListItems: maxListItems,
 	}
@@ -173,9 +178,19 @@ func (s *WriterObjectCache) Head(ctx context.Context, key string) (result Object
 	return meta, nil
 }
 
+type writerObjectCacheMutationKey struct{}
+
+func (s *WriterObjectCache) withMutationContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, writerObjectCacheMutationKey{}, s)
+}
+
 func (s *WriterObjectCache) Put(ctx context.Context, key string, data []byte) error {
 	generation := s.generation(key)
-	if err := s.Inner.Put(ctx, key, data); err != nil {
+	if err := s.Inner.Put(s.withMutationContext(ctx), key, data); err != nil {
+		s.invalidateKey(key)
 		return err
 	}
 	// Put does not return the store ETag. Keep cached bytes but do not synthesize
@@ -186,11 +201,9 @@ func (s *WriterObjectCache) Put(ctx context.Context, key string, data []byte) er
 
 func (s *WriterObjectCache) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
 	generation := s.generation(key)
-	meta, err := s.Inner.PutConditional(ctx, key, data, condition)
+	meta, err := s.Inner.PutConditional(s.withMutationContext(ctx), key, data, condition)
 	if err != nil {
-		if errors.Is(err, ErrConflict) {
-			s.invalidateKey(key)
-		}
+		s.invalidateKey(key)
 		return meta, err
 	}
 	s.finishMutation(key, generation, data, meta, true, false)
@@ -199,7 +212,8 @@ func (s *WriterObjectCache) PutConditional(ctx context.Context, key string, data
 
 func (s *WriterObjectCache) Delete(ctx context.Context, key string) error {
 	generation := s.generation(key)
-	if err := s.Inner.Delete(ctx, key); err != nil {
+	if err := s.Inner.Delete(s.withMutationContext(ctx), key); err != nil {
+		s.invalidateKey(key)
 		return err
 	}
 	s.finishMutation(key, generation, nil, ObjectMeta{}, false, true)
@@ -208,11 +222,9 @@ func (s *WriterObjectCache) Delete(ctx context.Context, key string) error {
 
 func (s *WriterObjectCache) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
 	generation := s.generation(key)
-	err := s.Inner.DeleteConditional(ctx, key, condition)
+	err := s.Inner.DeleteConditional(s.withMutationContext(ctx), key, condition)
 	if err != nil {
-		if errors.Is(err, ErrConflict) {
-			s.invalidateKey(key)
-		}
+		s.invalidateKey(key)
 		return err
 	}
 	s.finishMutation(key, generation, nil, ObjectMeta{}, false, true)
@@ -225,28 +237,28 @@ func (s *WriterObjectCache) List(ctx context.Context, prefix string) (result []O
 		return nil, err
 	}
 	cacheable := prefix == "" || strings.HasSuffix(prefix, "/")
-	var generation uint64
+	var fill *writerListFill
 	if cacheable {
 		var cached []ObjectInfo
 		var ok bool
-		if cached, generation, ok = s.cachedList(prefix); ok {
+		if cached, fill, ok = s.cachedList(prefix); ok {
 			return cached, nil
+		}
+		if fill != nil {
+			defer s.releaseListFill(prefix, fill)
 		}
 	}
 	items, err := s.Inner.List(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	if cacheable {
-		s.cacheList(prefix, items, generation)
-	}
+	s.cacheList(prefix, items, fill)
 	return cloneObjectInfos(items), nil
 }
 
 func (s *WriterObjectCache) ClearPrefix(prefix string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.listGeneration++
 	for i := range s.generations {
 		s.generations[i]++
 	}
@@ -258,6 +270,11 @@ func (s *WriterObjectCache) ClearPrefix(prefix string) {
 	for cachedPrefix := range s.lists {
 		if strings.HasPrefix(cachedPrefix, prefix) || strings.HasPrefix(prefix, cachedPrefix) {
 			s.removeListLocked(cachedPrefix)
+		}
+	}
+	for fillingPrefix := range s.listFills {
+		if strings.HasPrefix(fillingPrefix, prefix) || strings.HasPrefix(prefix, fillingPrefix) {
+			delete(s.listFills, fillingPrefix)
 		}
 	}
 }
@@ -335,13 +352,21 @@ func (s *WriterObjectCache) getMeta(key string) (ObjectMeta, bool, error) {
 	return entry.meta, true, nil
 }
 
-func (s *WriterObjectCache) cachedList(prefix string) ([]ObjectInfo, uint64, bool) {
+func (s *WriterObjectCache) cachedList(prefix string) ([]ObjectInfo, *writerListFill, bool) {
 	s.mu.Lock()
-	generation := s.listGeneration
 	entry, ok := s.lists[prefix]
 	if !ok {
+		var fill *writerListFill
+		if s.maxListItems > 0 {
+			fill = s.listFills[prefix]
+			if fill == nil {
+				fill = &writerListFill{}
+				s.listFills[prefix] = fill
+			}
+			fill.readers++
+		}
 		s.mu.Unlock()
-		return nil, generation, false
+		return nil, fill, false
 	}
 	s.listLRU.MoveToFront(entry.elem)
 	items := make([]ObjectInfo, 0, len(entry.items))
@@ -350,7 +375,18 @@ func (s *WriterObjectCache) cachedList(prefix string) ([]ObjectInfo, uint64, boo
 	}
 	s.mu.Unlock()
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
-	return items, generation, true
+	return items, nil, true
+}
+
+func (s *WriterObjectCache) releaseListFill(prefix string, fill *writerListFill) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listFills[prefix] == fill {
+		fill.readers--
+		if fill.readers == 0 {
+			delete(s.listFills, prefix)
+		}
+	}
 }
 
 func (s *WriterObjectCache) generationSlot(key string) *uint64 {
@@ -381,10 +417,11 @@ func (s *WriterObjectCache) fillObject(key string, generation uint64, entry writ
 	case !cacheable:
 		s.removeObjectLocked(key)
 	case entry.negative && s.negativeTTL <= 0:
-		s.listGeneration++
-		s.invalidateKeyLocked(key)
+		s.removeObjectLocked(key)
+		s.removeKeyFromCachedListsLocked(key)
 	case entry.negative:
 		s.cacheNegativeLocked(key)
+		s.removeKeyFromCachedListsLocked(key)
 	case entry.hasData:
 		s.cachePositiveLocked(key, entry.data, entry.meta, entry.hasMeta)
 	default:
@@ -403,7 +440,6 @@ func (s *WriterObjectCache) finishMutation(key string, generation uint64, data [
 	slot := s.generationSlot(key)
 	previous := *slot
 	*slot++
-	s.listGeneration++
 	if previous != generation {
 		// Concurrent completions can arrive in a different order than the durable writes.
 		s.invalidateKeyLocked(key)
@@ -436,8 +472,31 @@ func (s *WriterObjectCache) cachePositiveLocked(key string, data []byte, meta Ob
 	s.evictListsLocked()
 }
 
+func (s *WriterObjectCache) removeKeyFromCachedListsLocked(key string) {
+	for _, prefix := range writerObjectListPrefixes(key) {
+		entry := s.lists[prefix]
+		if entry == nil {
+			continue
+		}
+		if before, existed := entry.items[key]; existed {
+			delete(entry.items, key)
+			delta := writerObjectInfoCacheSize(before)
+			entry.size -= delta
+			s.listBytes -= delta
+			delete(s.listFills, prefix)
+		}
+	}
+}
+
 func (s *WriterObjectCache) cacheMetaLocked(key string, meta ObjectMeta) {
 	entry := s.ensureObjectEntryLocked(key)
+	// Head and Get may have observed different revisions of the object.
+	if entry.hasData && (!entry.hasMeta || entry.meta.ETag != meta.ETag) {
+		s.bytes -= entry.size
+		entry.data = nil
+		entry.size = 0
+		entry.hasData = false
+	}
 	entry.meta = normalizeObjectMeta(key, meta)
 	entry.hasMeta = true
 	entry.negative = false
@@ -464,8 +523,8 @@ func (s *WriterObjectCache) cacheNegativeLocked(key string) {
 	s.evictObjectsLocked()
 }
 
-func (s *WriterObjectCache) cacheList(prefix string, items []ObjectInfo, generation uint64) {
-	if s.maxListItems == 0 {
+func (s *WriterObjectCache) cacheList(prefix string, items []ObjectInfo, fill *writerListFill) {
+	if fill == nil {
 		return
 	}
 	itemMap := make(map[string]ObjectInfo, len(items))
@@ -479,9 +538,10 @@ func (s *WriterObjectCache) cacheList(prefix string, items []ObjectInfo, generat
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.listGeneration != generation {
+	if s.listFills[prefix] != fill {
 		return
 	}
+	delete(s.listFills, prefix)
 	entry := s.lists[prefix]
 	if entry == nil {
 		entry = &writerListEntry{prefix: prefix, elem: s.listLRU.PushFront(prefix)}
@@ -498,6 +558,7 @@ func (s *WriterObjectCache) cacheList(prefix string, items []ObjectInfo, generat
 
 func (s *WriterObjectCache) updateCachedListsLocked(key string, info ObjectInfo, deleted bool) {
 	for _, prefix := range writerObjectListPrefixes(key) {
+		delete(s.listFills, prefix)
 		entry := s.lists[prefix]
 		if entry == nil {
 			continue
@@ -527,13 +588,13 @@ func (s *WriterObjectCache) invalidateKey(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	*s.generationSlot(key)++
-	s.listGeneration++
 	s.invalidateKeyLocked(key)
 }
 
 func (s *WriterObjectCache) invalidateKeyLocked(key string) {
 	s.removeObjectLocked(key)
 	for _, prefix := range writerObjectListPrefixes(key) {
+		delete(s.listFills, prefix)
 		if s.lists[prefix] != nil {
 			s.removeListLocked(prefix)
 		}

@@ -1,7 +1,6 @@
 package query
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -37,7 +36,7 @@ func IndexScanKeyMatcher(filters []Filter) func(string) bool {
 			op:      op,
 			number:  number,
 			numeric: numeric,
-			text:    fmt.Sprint(filter.Value),
+			text:    canonicalScalarText(filter.Value),
 			exists:  exists,
 		})
 	}
@@ -66,9 +65,11 @@ func parseIndexScanValue(key string) (indexScanValue, bool) {
 	case key == "b:false":
 		return indexScanValue{text: "false"}, true
 	case strings.HasPrefix(key, "n:"):
-		text := key[2:]
-		number, err := strconv.ParseFloat(text, 64)
-		return indexScanValue{number: number, numeric: err == nil, text: text}, err == nil
+		number, err := strconv.ParseFloat(key[2:], 64)
+		if err != nil {
+			return indexScanValue{}, false
+		}
+		return indexScanValue{number: number, numeric: true, text: canonicalScalarText(number)}, true
 	default:
 		return indexScanValue{}, false
 	}

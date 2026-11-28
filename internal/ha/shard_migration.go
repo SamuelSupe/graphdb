@@ -2,33 +2,43 @@ package ha
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func (c *Cluster) runShardMigrations(ctx context.Context) {
-	ticker := time.NewTicker(200 * time.Millisecond)
+func (c *Cluster) runCatalogWorker(ctx context.Context, interval, timeout time.Duration, work func(context.Context) error) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			operationCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			if c.Node.ReadBarrier(operationCtx) == nil {
-				_ = c.advanceShardMigration(operationCtx)
+			operationCtx, cancel := ctx, func() {}
+			if timeout > 0 {
+				operationCtx, cancel = context.WithTimeout(ctx, timeout)
+			}
+			barrier, endBarrier := context.WithTimeout(operationCtx, 3*time.Second)
+			err := c.Node.ReadBarrier(barrier)
+			endBarrier()
+			if err == nil {
+				_ = work(operationCtx)
 			}
 			cancel()
 		}
 	}
 }
 
-func (c *Cluster) advanceShardMigration(ctx context.Context) error {
+func (c *Cluster) observedCatalog(ctx context.Context) (sharding.Catalog, []string, error) {
 	c.App.mu.RLock()
 	state, err := c.App.catalog(ctx)
 	if err == nil {
@@ -36,13 +46,21 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 	}
 	c.App.mu.RUnlock()
 	if err != nil {
-		return err
+		return state, nil, err
 	}
 	ids := make([]string, 0, len(state.Tenants))
 	for id := range state.Tenants {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	return state, ids, nil
+}
+
+func (c *Cluster) advanceShardAssignments(ctx context.Context) error {
+	state, ids, err := c.observedCatalog(ctx)
+	if err != nil {
+		return err
+	}
 	for _, id := range ids {
 		placement := state.Tenants[id]
 		if placement.State != "assigning" {
@@ -57,6 +75,14 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 		_, err = c.shardAction(ctx, sharding.Action{Operation: "assigned", Tenant: id, Epoch: placement.Epoch})
 		return err
 	}
+	return nil
+}
+
+func (c *Cluster) advanceShardMigration(ctx context.Context) error {
+	state, ids, err := c.observedCatalog(ctx)
+	if err != nil {
+		return err
+	}
 	for _, id := range ids {
 		p := state.Tenants[id]
 		if p.State != "partitioning" {
@@ -67,17 +93,53 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 			g := state.Shards[id]
 			groups[id] = partition.Group{ID: g.ID, ClusterID: g.ClusterID, Peers: g.Peers}
 		}
+		input := partition.EnableRequest{Tenant: p.Tenant, Epoch: p.Epoch, Groups: groups}
+		home := state.Shards[p.Shard]
+		managed := false
+		if c.config.Protocol >= partition.ConversionCancellationProtocol {
+			var identity struct {
+				Protocol int `json:"protocol_version"`
+			}
+			probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+			err := c.shards.JSON(probe, home, http.MethodGet, "/cluster/identity", nil, &identity)
+			cancel()
+			if err != nil {
+				continue
+			}
+			managed = identity.Protocol >= partition.ConversionCancellationProtocol
+			if managed {
+				input.Attempt, input.GenerationFloor = p.PartitionAttempt, p.GraphGenerationFloor
+			} else if p.GraphGenerationFloor != 0 {
+				continue
+			}
+		}
+		action := sharding.Action{Tenant: p.Tenant, Epoch: p.Epoch, PartitionAttempt: p.PartitionAttempt}
 		var descriptor partition.Graph
-		err := c.shards.JSON(ctx, state.Shards[p.Shard], http.MethodPost, "/cluster/graph/enable", partition.EnableRequest{Tenant: p.Tenant, Epoch: p.Epoch, Groups: groups}, &descriptor)
+		err := c.shards.JSON(ctx, home, http.MethodPost, "/cluster/graph/enable", input, &descriptor)
 		if err != nil {
+			var rejected *sharding.HTTPError
+			if c.config.Protocol >= partition.ConversionPreflightProtocol && errors.As(err, &rejected) && rejected.Status == http.StatusBadRequest {
+				var status struct {
+					Code string `json:"code"`
+				}
+				if json.Unmarshal([]byte(rejected.Body), &status) == nil && status.Code == errPartitionSourceValueBudget.Error() {
+					action.Operation, action.Error = "partition_preflight_rejected", err.Error()
+					return c.partitionCatalogAction(ctx, action)
+				}
+				if managed && status.Code == "bad_request" {
+					action.Operation, action.Error = "cancel_partition", err.Error()
+					return c.partitionCatalogAction(ctx, action)
+				}
+			}
 			if p.PartitionError != err.Error() {
-				_, _ = c.shardAction(ctx, sharding.Action{Operation: "partition_error", Tenant: p.Tenant, Epoch: p.Epoch, Error: err.Error()})
+				action.Operation, action.Error = "partition_error", err.Error()
+				_ = c.partitionCatalogAction(ctx, action)
 			}
 			continue
 		}
 		if descriptor.State == "active" {
-			_, err = c.shardAction(ctx, sharding.Action{Operation: "partition_ready", Tenant: p.Tenant, Epoch: p.Epoch})
-			return err
+			action.Operation = "partition_ready"
+			return c.partitionCatalogAction(ctx, action)
 		}
 	}
 	for _, id := range ids {
@@ -95,6 +157,92 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 		return nil
 	}
 	return nil
+}
+
+func (c *Cluster) syncPartitionGroupTopology(ctx context.Context) error {
+	state, ids, err := c.observedCatalog(ctx)
+	if err != nil {
+		return err
+	}
+	remote := sharding.GraphRemote{Client: c.shards}
+	var syncErr error
+	for _, tenant := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		placement := state.Tenants[tenant]
+		if placement.Mode != "partitioned" && placement.State != "partitioning" {
+			continue
+		}
+		shard := state.Shards[placement.Shard]
+		home := partition.Group{ID: shard.ID, ClusterID: shard.ClusterID, Peers: shard.Peers}
+		call, cancel := context.WithTimeout(ctx, 3*time.Second)
+		g, err := remote.Describe(call, home, tenant)
+		if err == nil {
+			groups := changedPartitionGroups(g, state.Shards)
+			if len(groups) != 0 {
+				err = remote.Action(call, home, partition.Action{
+					Operation: "sync_groups", Tenant: tenant, Generation: g.Generation,
+					CatalogVersion: state.Version, Groups: groups,
+				}, nil)
+			}
+			if err == nil && c.config.Protocol >= partition.GroupTopologyProtocol &&
+				placement.Mode == "partitioned" && placement.State == "active" && placement.ConversionCleanup == nil && g.State == "active" && g.Move == nil {
+				used := map[string]bool{placement.Shard: true}
+				for _, part := range g.Partitions {
+					used[part.Group] = true
+				}
+				for _, groupID := range placement.GraphGroups {
+					if !used[groupID] && state.Shards[groupID].Draining {
+						fenceGroups := map[string]partition.Group{}
+						if _, ok := g.Groups[home.ID]; ok {
+							fenceGroups[home.ID] = home
+						}
+						fenceErr := remote.Action(call, home, partition.Action{
+							Operation:      "sync_groups",
+							Tenant:         tenant,
+							Generation:     g.Generation,
+							CatalogVersion: state.Version,
+							Groups:         fenceGroups,
+							Target:         &partition.Group{ID: groupID},
+						}, nil)
+						if fenceErr == nil {
+							_, _ = c.shardAction(ctx, sharding.Action{
+								Operation:      "prune_graph_group",
+								Tenant:         tenant,
+								Epoch:          placement.Epoch,
+								Target:         groupID,
+								CatalogVersion: state.Version,
+							})
+						}
+					}
+				}
+			}
+		}
+		cancel()
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			syncErr = err
+		}
+	}
+	return syncErr
+}
+
+func changedPartitionGroups(g partition.Graph, shards map[string]sharding.Shard) map[string]partition.Group {
+	changed := map[string]partition.Group{}
+	check := func(group partition.Group) {
+		current, ok := shards[group.ID]
+		if ok && current.ClusterID == group.ClusterID && !maps.Equal(current.Peers, group.Peers) {
+			changed[group.ID] = partition.Group{ID: current.ID, ClusterID: current.ClusterID, Peers: current.Peers}
+		}
+	}
+	for _, group := range g.Groups {
+		check(group)
+	}
+	if g.Move != nil {
+		check(g.Move.Source)
+		check(g.Move.Target)
+	}
+	return changed
 }
 
 func (c *Cluster) advanceTenantMove(ctx context.Context, state sharding.Catalog, p sharding.Placement) (err error) {

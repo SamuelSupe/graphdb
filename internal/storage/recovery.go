@@ -119,7 +119,7 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 			report.UnappliedKeys = append(report.UnappliedKeys, item.Key)
 			continue
 		}
-		nextGraph, applyReport, err := loaded.Graph.ApplyCommitCopyWithOptions(item.Commit, graph.ApplyOptions{})
+		nextGraph, applyReport, err := loaded.Graph.ApplyCommitStorageCopyWithOptions(item.Commit, graph.ApplyOptions{})
 		if err != nil {
 			report.Blocked++
 			report.UnappliedKeys = append(report.UnappliedKeys, item.Key)
@@ -157,7 +157,7 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 		report.RecoveredKeys = append(report.RecoveredKeys, item.Key)
 	}
 	report.EndVersion = loaded.Manifest.Version
-	s.setWriteCache(tenantID, loaded)
+	s.setWriteCacheContext(ctx, tenantID, loaded)
 	// Release maintenance and read-view barriers before running incremental
 	// index updates so admitMaintenance cannot invert the lock hierarchy.
 	unlock()
@@ -378,12 +378,17 @@ func snapshotIdentityFromKey(key string) (int64, bool) {
 }
 
 func referencedCommits(manifest Manifest) map[string]struct{} {
-	out := map[string]struct{}{}
+	reachable := CollectReachableKeys(manifest, nil, nil, nil)
+	out := make(map[string]struct{}, len(manifest.CommitSegments)+len(manifest.CommitKeys))
 	for _, segment := range manifest.CommitSegments {
-		out[segment.Key] = struct{}{}
+		if reachable.Contains(segment.Key) {
+			out[segment.Key] = struct{}{}
+		}
 	}
 	for _, key := range manifest.CommitKeys {
-		out[key] = struct{}{}
+		if reachable.Contains(key) {
+			out[key] = struct{}{}
+		}
 	}
 	return out
 }

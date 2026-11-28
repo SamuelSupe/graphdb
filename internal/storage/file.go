@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 type FileStore struct {
@@ -77,53 +79,132 @@ func NewFileStore(root string) *FileStore {
 	return &FileStore{root: root, objectLocks: map[string]*fileObjectLock{}}
 }
 
-func (s *FileStore) Get(ctx context.Context, key string) (result []byte, err error) {
-	defer func() { recordReplicationFailure(ctx, err) }()
-	releaseOperation, operationErr := s.beginOperation(ctx, key)
-	if operationErr != nil {
-		err := operationErr
-		return nil, err
-	}
-	defer releaseOperation()
-	if err := objectContextErr(ctx); err != nil {
-		return nil, err
-	}
-	if err := validateObjectKey(key); err != nil {
-		return nil, err
-	}
-	path, err := s.path(key)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.verifySafeParent(path); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return s.packedReceipt(ctx, key)
-		}
-		return nil, err
-	}
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return s.packedReceipt(ctx, key)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, ErrNotFound
-	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return s.packedReceipt(ctx, key)
-	}
+func (s *FileStore) Get(ctx context.Context, key string) ([]byte, error) {
+	data, _, err := s.get(ctx, key, nil, false)
 	return data, err
 }
 
+// GetIfFileUnchanged checks a loose object's identity before reusing decoded
+// contents. A nil body with non-nil metadata confirms the supplied file.
+func (s *FileStore) GetIfFileUnchanged(ctx context.Context, key string, previous os.FileInfo) ([]byte, os.FileInfo, error) {
+	return s.get(ctx, key, previous, true)
+}
+
+func (s *FileStore) get(ctx context.Context, key string, previous os.FileInfo, versioned bool) (_ []byte, _ os.FileInfo, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
+	releaseOperation, operationErr := s.beginOperation(ctx, key)
+	if operationErr != nil {
+		return nil, nil, operationErr
+	}
+	defer releaseOperation()
+	if err := objectContextErr(ctx); err != nil {
+		return nil, nil, err
+	}
+	if err := validateObjectKey(key); err != nil {
+		return nil, nil, err
+	}
+	path, err := s.path(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	var parentErr error
+	if versioned {
+		parentErr = s.verifySafeMutationParent(ctx, path)
+	} else {
+		parentErr = s.verifySafeParent(path)
+	}
+	if parentErr != nil {
+		if errors.Is(parentErr, ErrNotFound) {
+			data, err := s.packedReceipt(ctx, key)
+			return data, nil, err
+		}
+		return nil, nil, parentErr
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		data, err := s.packedReceipt(ctx, key)
+		return data, nil, err
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, ErrNotFound
+	}
+	if s.isReceiptDB(key) {
+		data, err := s.readReceiptDBSnapshot(ctx, key)
+		return data, nil, err
+	}
+	if !versioned {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			data, err = s.packedReceipt(ctx, key)
+		}
+		return data, nil, err
+	}
+	if previous != nil && sameObjectFile(previous, info) && sameFileChangeTime(previous, info) {
+		return nil, info, nil
+	}
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		data, err := s.packedReceipt(ctx, key)
+		return data, nil, err
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !opened.Mode().IsRegular() {
+		return nil, nil, ErrNotFound
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !sameObjectFile(opened, after) {
+		return nil, nil, fmt.Errorf("object %q changed while reading", key)
+	}
+	return data, opened, nil
+}
+
+func sameObjectFile(a, b os.FileInfo) bool {
+	return os.SameFile(a, b) && a.Size() == b.Size() && a.Mode() == b.Mode() && a.ModTime().Equal(b.ModTime())
+}
 func (s *FileStore) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
 	data, err := s.Get(ctx, key)
 	if err != nil {
 		return nil, ObjectMeta{Key: key}, err
 	}
 	return data, ObjectMeta{Key: key, ETag: sha256Hex(data), Exists: true}, nil
+}
+
+func (s *FileStore) readReceiptDBSnapshot(ctx context.Context, key string) ([]byte, error) {
+	return s.readReceiptDBSnapshotMode(ctx, key, false)
+}
+
+func (s *FileStore) readReceiptDBSnapshotLocked(ctx context.Context, key string) ([]byte, error) {
+	return s.readReceiptDBSnapshotMode(ctx, key, true)
+}
+
+func (s *FileStore) readReceiptDBSnapshotMode(ctx context.Context, key string, objectLocked bool) ([]byte, error) {
+	var snapshot bytes.Buffer
+	if err := s.withReceiptDBMode(ctx, key, false, objectLocked, func(db *bolt.DB) error {
+		return db.View(func(tx *bolt.Tx) error {
+			_, err := tx.WriteTo(&snapshot)
+			return err
+		})
+	}); err != nil {
+		return nil, err
+	}
+	return snapshot.Bytes(), nil
 }
 
 func (s *FileStore) Head(ctx context.Context, key string) (result ObjectMeta, err error) {
@@ -211,7 +292,22 @@ func (s *FileStore) putConditional(ctx context.Context, key string, data []byte,
 	if err := s.ensureSafeParent(path, journal); err != nil {
 		return ObjectMeta{}, err
 	}
-	currentETag, exists, err := s.objectState(key, path, fileStorePutNeedsCurrentETag(condition))
+	var (
+		currentETag string
+		exists      bool
+	)
+	if s.isReceiptDB(key) && fileStorePutNeedsCurrentETag(condition) {
+		snapshot, snapErr := s.readReceiptDBSnapshotLocked(ctx, key)
+		if errors.Is(snapErr, ErrNotFound) {
+			currentETag, exists, err = "", false, nil
+		} else if snapErr != nil {
+			return ObjectMeta{}, snapErr
+		} else {
+			currentETag, exists, err = sha256Hex(snapshot), true, nil
+		}
+	} else {
+		currentETag, exists, err = s.objectState(key, path, fileStorePutNeedsCurrentETag(condition))
+	}
 	if err != nil {
 		return ObjectMeta{}, err
 	}
@@ -226,7 +322,7 @@ func (s *FileStore) putConditional(ctx context.Context, key string, data []byte,
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key, ETag: currentETag, Exists: exists}, err
 	}
-	if _, batched := ctx.Value(fileBatchKey{}).(*FileStore); journal == nil && !batched {
+	if files, batched := ctx.Value(fileBatchKey{}).(*FileStore); journal == nil && (!batched || files != s) {
 		// A reused immutable file may belong to another in-flight batch. Every
 		// standalone publication drains pending renames. Replicated writes
 		// drain them once at the journal's publication barrier.
@@ -235,7 +331,7 @@ func (s *FileStore) putConditional(ctx context.Context, key string, data []byte,
 		}
 	}
 	etag := ""
-	defer func() { s.changed(key, etag, false) }()
+	defer func() { s.changedContext(ctx, key, etag, false) }()
 	if err := s.journalObject(ctx, key); err != nil {
 		return ObjectMeta{}, err
 	}
@@ -317,7 +413,22 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 		}
 		return nil
 	}
-	currentETag, exists, err := s.objectState(key, path, condition.IfMatch != "")
+	var (
+		currentETag string
+		exists      bool
+	)
+	if s.isReceiptDB(key) && condition.IfMatch != "" {
+		snapshot, snapErr := s.readReceiptDBSnapshotLocked(ctx, key)
+		if errors.Is(snapErr, ErrNotFound) {
+			currentETag, exists, err = "", false, nil
+		} else if snapErr != nil {
+			return snapErr
+		} else {
+			currentETag, exists, err = sha256Hex(snapshot), true, nil
+		}
+	} else {
+		currentETag, exists, err = s.objectState(key, path, condition.IfMatch != "")
+	}
 	if err != nil {
 		return err
 	}
@@ -330,7 +441,7 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 	if err := objectContextErr(ctx); err != nil {
 		return err
 	}
-	if view, ok := ctx.Value(gcViewKey{}).(*gcView); ok && !view.canDelete(key) {
+	if view, ok := ctx.Value(gcViewKey{}).(*gcView); ok && view.files == s && !view.canDelete(key) {
 		return errGCViewPinned
 	}
 	if s.isReceiptDB(key) {
@@ -338,7 +449,7 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 			return err
 		}
 	}
-	defer s.changed(key, "", true)
+	defer s.changedContext(ctx, key, "", true)
 	journal := s.replicationJournal(ctx)
 	gcFiles, gcBatched := ctx.Value(gcDeleteBatchKey{}).(*FileStore)
 	gcBatched = gcBatched && gcFiles == s && journal == nil
@@ -347,8 +458,14 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 	batched := gcBatched || writeBatched
 	if batched {
 		s.runtime.publicationMu.Lock()
-		defer s.runtime.publicationMu.Unlock()
 	}
+	unlockPublication := func() {
+		if batched {
+			batched = false
+			s.runtime.publicationMu.Unlock()
+		}
+	}
+	defer unlockPublication()
 	if !reclaim {
 		if err := s.journalObject(ctx, key); err != nil {
 			return err
@@ -356,32 +473,38 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 	}
 	err = os.Remove(path)
 	if os.IsNotExist(err) {
+		unlockPublication()
+		if _, isReceipt := s.receipt(key); isReceipt {
+			if packedErr := s.deletePackedReceipt(ctx, key, PutCondition{}); packedErr != nil && !errors.Is(packedErr, ErrNotFound) {
+				return packedErr
+			}
+		}
 		return nil
 	}
 	if err == nil {
 		if journal != nil {
 			journal.forgetFileSync(path)
 			journal.deferDeletedObject(filepath.Dir(path), key, !reclaim)
-			return nil
-		}
-		if gcBatched {
-			if s.runtime.pendingDeleteDirectories == nil {
-				s.runtime.pendingDeleteDirectories = make(map[string]struct{})
+		} else if gcBatched {
+			s.runtime.pendingDeleteDirectories.mark(filepath.Dir(path))
+			unlockPublication()
+		} else if writeBatched {
+			s.runtime.pendingDirectories.mark(filepath.Dir(path))
+			unlockPublication()
+		} else {
+			if err := syncDir(filepath.Dir(path)); err != nil {
+				return err
 			}
-			s.runtime.pendingDeleteDirectories[filepath.Dir(path)] = struct{}{}
-			return nil
+			prune = true
 		}
-		if writeBatched {
-			if s.runtime.pendingDirectories == nil {
-				s.runtime.pendingDirectories = make(map[string]struct{})
+		if _, isReceipt := s.receipt(key); isReceipt {
+			// Clear any crash-duplicated packed copy outside publicationMu so
+			// opening the receipt DB cannot self-deadlock on syncPendingDirectories
+			// or invert objectLock -> publicationMu.
+			if packedErr := s.deletePackedReceipt(ctx, key, PutCondition{}); packedErr != nil && !errors.Is(packedErr, ErrNotFound) {
+				return packedErr
 			}
-			s.runtime.pendingDirectories[filepath.Dir(path)] = struct{}{}
-			return nil
 		}
-		if err := syncDir(filepath.Dir(path)); err != nil {
-			return err
-		}
-		prune = true
 		return nil
 	}
 	return err
@@ -524,10 +647,7 @@ func writeReaderAtomicContext(ctx context.Context, path string, reader io.Reader
 		return nil
 	}
 	if batched {
-		if files.runtime.pendingDirectories == nil {
-			files.runtime.pendingDirectories = make(map[string]struct{})
-		}
-		files.runtime.pendingDirectories[dir] = struct{}{}
+		files.runtime.pendingDirectories.mark(dir)
 		return nil
 	}
 	return syncDir(dir)

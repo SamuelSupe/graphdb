@@ -17,7 +17,9 @@ import (
 func runReceiptCheck(cfg config.Config, args []string) error {
 	const worker = "--check-worker"
 	if len(args) == 2 && args[0] == worker {
-		count, err := storage.CheckLocalReceiptDatabase(context.Background(), cfg.DataDir, cfg.Prefix, args[1])
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		count, err := storage.CheckLocalReceiptDatabase(ctx, cfg.DataDir, cfg.Prefix, args[1])
 		if err != nil {
 			return err
 		}

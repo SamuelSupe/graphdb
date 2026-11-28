@@ -1,53 +1,136 @@
 package query
 
+// lazyOperatorCapability binds an operator's admission predicate (CanExecute)
+// and reverse-index requirement (RequiresReverse) to the same descriptor so
+// planner admission and physical lazy execution stay 100% aligned.
+type lazyOperatorCapability struct {
+	Op              string
+	CanExecute      func(request Request, stats PlannerStats) bool
+	RequiresReverse func(request Request) bool
+}
+
+var lazyOperatorCapabilities = map[string]lazyOperatorCapability{
+	"match": {
+		Op:              "match",
+		CanExecute:      lazyMatchSupported,
+		RequiresReverse: func(Request) bool { return false },
+	},
+	"pattern": {
+		Op: "pattern",
+		CanExecute: func(target Request, stats PlannerStats) bool {
+			if !lazyMatchSupported(target, stats) {
+				return false
+			}
+			if target.DirectionStrategy == "impact" {
+				return lazyImpactSupportedForDepth(target, len(target.Path.Steps), stats)
+			}
+			return lazyPathDirectionsSupported(target, stats)
+		},
+		RequiresReverse: func(target Request) bool {
+			if target.DirectionStrategy == "impact" {
+				return true
+			}
+			target.Depth = len(target.Path.Steps)
+			if target.Direction == "" {
+				target.Direction = "out"
+			}
+			return pathLevelsRequireReverse(target, normalizedDepth(target.Depth))
+		},
+	},
+	"traverse": {
+		Op: "traverse",
+		CanExecute: func(target Request, stats PlannerStats) bool {
+			if target.DirectionStrategy == "impact" {
+				return lazyImpactSupported(target, stats)
+			}
+			return target.ID != "" && lazyPathDirectionsSupported(target, stats)
+		},
+		RequiresReverse: func(target Request) bool {
+			if target.DirectionStrategy == "impact" {
+				return true
+			}
+			return pathLevelsRequireReverse(target, normalizedDepth(target.Depth))
+		},
+	},
+	"shortest_path": {
+		Op: "shortest_path",
+		CanExecute: func(target Request, stats PlannerStats) bool {
+			if target.DirectionStrategy == "impact" {
+				return lazyImpactSupported(target, stats)
+			}
+			return target.ID != "" && lazyPathDirectionsSupported(target, stats)
+		},
+		RequiresReverse: func(target Request) bool {
+			if target.DirectionStrategy == "impact" {
+				return true
+			}
+			return pathLevelsRequireReverse(target, normalizedDepth(target.Depth))
+		},
+	},
+	"neighbors": {
+		Op: "neighbors",
+		CanExecute: func(target Request, stats PlannerStats) bool {
+			if target.DirectionStrategy == "impact" {
+				return target.ID != "" && lazyImpactSupportedForDepth(target, 1, stats)
+			}
+			return target.ID != "" && lazyDirectionSupported(target.Direction, stats)
+		},
+		RequiresReverse: func(target Request) bool {
+			if target.DirectionStrategy == "impact" {
+				return true
+			}
+			return target.Direction != "out"
+		},
+	},
+	"impact": {
+		Op:              "impact",
+		CanExecute:      lazyImpactSupported,
+		RequiresReverse: func(Request) bool { return true },
+	},
+}
+
 func SupportsLazyRead(request Request, stats PlannerStats) bool {
 	if len(stats.EntityPages) == 0 {
 		return false
 	}
-	target := lazyTarget(request)
-	switch target.Op {
-	case "match":
-		return lazyMatchSupported(target, stats)
-	case "pattern":
-		return lazyMatchSupported(target, stats) &&
-			lazyPathDirectionsSupported(target, stats)
-	case "traverse", "shortest_path":
-		return target.ID != "" &&
-			lazyPathDirectionsSupported(target, stats)
-	case "neighbors":
-		return target.ID != "" && lazyDirectionSupported(target.Direction, stats)
-	case "impact":
-		return lazyImpactSupported(target, stats)
-	default:
+	target := normalizeCompiledRequest(lazyTarget(request))
+	cap, ok := lazyOperatorCapabilities[target.Op]
+	if !ok {
 		return false
 	}
+	return cap.CanExecute(target, stats)
 }
 
 func RequiresReverseIndex(request Request) bool {
-	target := lazyTarget(request)
-	if target.Op == "impact" || target.DirectionStrategy == "impact" {
-		return true
-	}
-	switch target.Op {
-	case "match":
-		return false
-	case "neighbors":
-		return target.Direction != "out"
-	case "pattern":
-		target.Depth = len(target.Path.Steps)
-		if target.Direction == "" {
-			target.Direction = "out"
-		}
-	case "traverse", "shortest_path":
-	default:
+	target := normalizeCompiledRequest(lazyTarget(request))
+	cap, ok := lazyOperatorCapabilities[target.Op]
+	if !ok {
 		return false
 	}
-	for level := 0; level < normalizedDepth(target.Depth); level++ {
+	return cap.RequiresReverse(target)
+}
+
+func pathLevelsRequireReverse(target Request, depth int) bool {
+	for level := 0; level < depth; level++ {
 		if requestForPathLevel(target, level).Direction != "out" {
 			return true
 		}
 	}
 	return false
+}
+
+func lazyImpactSupportedForDepth(request Request, depth int, stats PlannerStats) bool {
+	if depth <= 0 {
+		return false
+	}
+	for level := 0; level < depth; level++ {
+		levelRequest := requestForPathLevel(request, level)
+		directions, ok := impactDirectionsForRequest(levelRequest, stats)
+		if !ok || !impactIndexesAvailable(directions, stats) {
+			return false
+		}
+	}
+	return true
 }
 
 func lazyPathDirectionsSupported(request Request, stats PlannerStats) bool {
@@ -113,7 +196,7 @@ func lazyMatchSupported(request Request, stats PlannerStats) bool {
 	if request.Kind != "" {
 		return true
 	}
-	filters := requestFilters(request)
+	filters := requestIndexFilters(request)
 	if _, ok := idEquality(filters); ok {
 		return true
 	}

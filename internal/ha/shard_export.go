@@ -170,6 +170,11 @@ func (c *Cluster) exportPayload(ctx context.Context, action sharding.Action, man
 }
 
 func (c *Cluster) buildTenantExport(ctx context.Context, action sharding.Action) (_ *tenantExport, err error) {
+	// Populate the shard-wide receipt index outside App.mu.RLock so a cold
+	// post-restart scan does not stall Raft applyLoop across unrelated tenants.
+	if err := c.App.ensureTenantReceipts(ctx); err != nil {
+		return nil, err
+	}
 	// Ownership is frozen. Pin only this tenant and its terminal acceptance
 	// records while excluding application, then encode outside the barrier.
 	c.App.mu.RLock()
@@ -187,26 +192,18 @@ func (c *Cluster) buildTenantExport(ctx context.Context, action sharding.Action)
 		keys = append(keys, object.Key)
 		estimate += object.Size*4/3 + 1024
 	}
-	var accepted []storage.ObjectInfo
-	if err == nil {
-		accepted, err = c.App.Files.List(ctx, c.App.ingestPrefix())
-	}
-	for _, object := range accepted {
-		var record acceptedRequest
-		if err == nil {
-			record, err = c.App.accepted(ctx, object.Key)
-		}
-		if err != nil {
-			break
-		}
-		if record.Tenant == action.Tenant {
-			keys = append(keys, object.Key)
-			estimate += object.Size*4/3 + 1024
-		}
-	}
 	var generation int64
 	if err == nil {
 		generation, err = c.App.Store.ReplicationTenantGeneration(ctx, action.Tenant)
+	}
+	if err == nil {
+		err = c.App.visitTenantIngestReceipts(ctx, action.Tenant, func(object storage.ObjectInfo, record acceptedRequest) error {
+			if record.AcceptedEpoch == 0 || generation == record.Generation {
+				keys = append(keys, object.Key)
+				estimate += object.Size*4/3 + 1024
+			}
+			return nil
+		})
 	}
 	var tombstone []byte
 	if err == nil {
@@ -229,8 +226,18 @@ func (c *Cluster) buildTenantExport(ctx context.Context, action sharding.Action)
 			view.Close()
 		}
 	}()
-	if err := storage.ValidateTenantMigrationSource(ctx, storage.NewTenantStore(view.Store, c.App.Store.Prefix), action.Tenant, nil); err != nil {
-		return nil, err
+	tombstonedTenant := false
+	if len(objects) == 0 && len(tombstone) > 0 {
+		complete, err := storage.IsCompleteTenantPurgeTombstone(ctx, action.Tenant, tombstone)
+		if err != nil {
+			return nil, err
+		}
+		tombstonedTenant = complete
+	}
+	if !tombstonedTenant {
+		if err := storage.ValidateTenantMigrationSource(ctx, storage.NewTenantStore(view.Store, c.App.Store.Prefix), action.Tenant, nil); err != nil {
+			return nil, err
+		}
 	}
 	data, _ := json.Marshal(generation)
 	virtual := map[string][]byte{c.App.generationKey(action.Tenant): data, c.App.purgeKey(action.Tenant): tombstone}

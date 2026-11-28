@@ -157,7 +157,7 @@ func (s *TenantStore) updateDirectCommitReservation(ctx context.Context, reserva
 	if reservation.meta.Exists {
 		condition.IfMatch = reservation.meta.ETag
 		if reservation.before != nil {
-			condition.previous = &objectBeforeImage{data: reservation.before, meta: reservation.meta}
+			condition = condition.WithBeforeImage(reservation.before, reservation.meta)
 		}
 	}
 	meta, err := s.putTenantConditionalIfBound(ctx, record.TenantID, reservation.key, data, condition)

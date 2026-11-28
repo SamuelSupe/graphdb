@@ -10,8 +10,13 @@ import (
 )
 
 func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []IngestResult) (int, error) {
+	retryItems, err := s.appendTerminalBatchPending(items, results)
+	return len(items) - len(retryItems), err
+}
+
+func (s *IngestService) appendTerminalBatchPending(items []*ingestPending, results []IngestResult) ([]*ingestPending, error) {
 	if len(items) != len(results) {
-		return 0, fmt.Errorf("terminal ingest result count mismatch")
+		return items, fmt.Errorf("terminal ingest result count mismatch")
 	}
 	records := make([]ingestWALBatchRecord, 0, len(items))
 	// Preparation has not finalized any prefix; a failure here retries all items.
@@ -28,16 +33,16 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 					pending.envelope.AcceptedAt,
 					time.Now().UTC(),
 				); err != nil {
-					return 0, fmt.Errorf("persist ingest attempt failure: %w", err)
+					return items, fmt.Errorf("persist ingest attempt failure: %w", err)
 				}
 			}
 			payload, err := pendingStatePayload(
 				pending, IngestWALFailed, IngestStateFailed, &result, "",
 			)
 			if err != nil {
-				return 0, err
+				return items, err
 			}
-			records = append(records, ingestWALBatchRecord{kind: IngestWALFailed, payload: payload})
+			records = append(records, ingestWALBatchRecord{kind: IngestWALFailed, payload: payload, id: pending.envelope.RecordID})
 			continue
 		}
 		if result.SkipReason == IngestSkipReasonIdempotentReplay {
@@ -51,7 +56,7 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 					pending.envelope.AcceptedAt,
 					time.Now().UTC(),
 				); err != nil {
-					return 0, fmt.Errorf("resolve ingest attempt failure: %w", err)
+					return items, fmt.Errorf("resolve ingest attempt failure: %w", err)
 				}
 			}
 		}
@@ -59,20 +64,33 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 			pending, IngestWALFinalized, IngestStateCommitted, &result, "",
 		)
 		if err != nil {
-			return 0, err
+			return items, err
 		}
-		records = append(records, ingestWALBatchRecord{kind: IngestWALFinalized, payload: finalized})
+		records = append(records, ingestWALBatchRecord{kind: IngestWALFinalized, payload: finalized, id: pending.envelope.RecordID})
 	}
 
 	responses := s.appendWALBatchWithPrune(records)
+	var (
+		succeededItems   []*ingestPending
+		succeededResults []IngestResult
+		retryItems       []*ingestPending
+		firstErr         error
+	)
 	for index, response := range responses {
 		if response.err != nil {
-			s.completePendingBatch(items[:index], results[:index])
-			return index, response.err
+			if firstErr == nil {
+				firstErr = response.err
+			}
+			retryItems = append(retryItems, items[index])
+			continue
 		}
+		succeededItems = append(succeededItems, items[index])
+		succeededResults = append(succeededResults, results[index])
 	}
-	s.completePendingBatch(items, results)
-	return len(items), nil
+	if len(succeededItems) > 0 {
+		s.completePendingBatch(succeededItems, succeededResults)
+	}
+	return retryItems, firstErr
 }
 
 func (s *IngestService) appendWALBatchWithPrune(records []ingestWALBatchRecord) []ingestWALAppendResponse {
@@ -119,6 +137,7 @@ func (s *IngestService) appendPreparedBatchState(
 		return fmt.Errorf("prepared ingest plan count mismatch")
 	}
 	envelopes := make([]walPreparedEnvelope, 0, len(items))
+	recordIDs := make([]string, 0, len(items))
 	planBytes := make(map[string]int64, len(items))
 	for index, pending := range items {
 		if plans[index] == nil {
@@ -144,6 +163,7 @@ func (s *IngestService) appendPreparedBatchState(
 			RecordID: pending.envelope.RecordID,
 			Prepared: plans[index],
 		})
+		recordIDs = append(recordIDs, pending.envelope.RecordID)
 	}
 	if len(envelopes) == 0 {
 		return nil
@@ -153,10 +173,30 @@ func (s *IngestService) appendPreparedBatchState(
 		return err
 	}
 	checkpointGeneration := s.wal.checkpointGeneration.Load()
-	appendResult, err := s.wal.Append(ctx, IngestWALPrepared, payload)
+	appendResult, err := s.wal.append(ctx, IngestWALPrepared, payload, recordIDs)
 	if errors.Is(err, ErrIngestWALFull) {
 		if pruneErr := s.prune(ctx, checkpointGeneration); pruneErr == nil {
-			appendResult, err = s.wal.Append(ctx, IngestWALPrepared, payload)
+			appendResult, err = s.wal.append(ctx, IngestWALPrepared, payload, recordIDs)
+		}
+		if len(items) == 1 && errors.Is(err, ErrIngestWALFull) {
+			// A checkpoint still needs the accepted request before the plan can
+			// be written. Diagnose an impossible single request separately from
+			// pressure caused by other requests that may finish later.
+			request := items[0].envelope
+			request.AcceptedLSN = 0
+			accepted, encodeErr := json.Marshal(request)
+			if encodeErr != nil {
+				return encodeErr
+			}
+			const overhead = ingestWALHeaderBytes + ingestWALChecksumBytes
+			minimum := min(items[0].bytes, int64(len(accepted)+overhead)) + int64(len(payload)+overhead)
+			limit := s.config.WAL.MaxBytes - s.config.WAL.terminalReserveBytes()
+			if minimum > limit {
+				return fmt.Errorf("%w: accepted request and prepared plan need at least %d bytes, WAL preparation limit is %d", ErrIngestWALRecordTooLarge, minimum, limit)
+			}
+			if !s.hasOtherActiveTenant(items[0].envelope.TenantID) {
+				appendResult, err = s.wal.appendHeadOfLine(ctx, IngestWALPrepared, payload, recordIDs)
+			}
 		}
 	}
 	if err != nil {
@@ -189,6 +229,17 @@ func (s *IngestService) appendPreparedBatchState(
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *IngestService) hasOtherActiveTenant(tenantID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pending := range s.active {
+		if pending.envelope.TenantID != tenantID && pending.state != IngestStateFailed {
+			return true
+		}
+	}
+	return false
 }
 
 func pendingStatePayload(pending *ingestPending, kind IngestWALRecordType, state string, _ *IngestResult, errorMessage string) ([]byte, error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
@@ -99,7 +100,7 @@ func decodeParquetSnapshotSchema(ctx context.Context, data []byte) (snapshotSche
 
 	var schemaData snapshotSchemaData
 	var expectedHash string
-	build := &commitBuild{}
+	build := codec.NewCommitBuilder(table.NumRows())
 	rows := 0
 	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
@@ -123,6 +124,9 @@ func decodeParquetSnapshotSchema(ctx context.Context, data []byte) (snapshotSche
 				return snapshotSchemaData{}, fmt.Errorf("snapshot schema identity mismatch")
 			}
 			row := codec.ParquetCommitRowFromColumns(columns, i)
+			if err := columns.ValidateOrdinals(i, table.NumRows(), true); err != nil {
+				return snapshotSchemaData{}, err
+			}
 			switch row.Kind {
 			case commitRowMetadata:
 			case commitRowUpsertCIType, commitRowCITypeExtends, commitRowCITypeField, commitRowCITypeFieldEnum, commitRowCITypeFieldDefault, commitRowCITypeIdentity, commitRowCITypeIdentityField:
@@ -272,20 +276,20 @@ func decodeParquetShardedSnapshotCatalog(ctx context.Context, data []byte) (Shar
 		for i := 0; i < int(batch.NumRows()); i++ {
 			rowCatalog := ShardedSnapshotCatalog{
 				LayoutVersion: int(columns.layoutVersion.Value(i)),
-				TenantID:      columns.tenantID.Value(i),
-				Key:           columns.key.Value(i),
+				TenantID:      strings.Clone(columns.tenantID.Value(i)),
+				Key:           strings.Clone(columns.key.Value(i)),
 				Version:       columns.version.Value(i),
-				Format:        columns.format.Value(i),
+				Format:        strings.Clone(columns.format.Value(i)),
 				Schema: SnapshotSchemaSpec{
-					Key:         columns.schemaKey.Value(i),
-					Format:      columns.schemaFormat.Value(i),
-					ContentHash: columns.schemaContentHash.Value(i),
+					Key:         strings.Clone(columns.schemaKey.Value(i)),
+					Format:      strings.Clone(columns.schemaFormat.Value(i)),
+					ContentHash: strings.Clone(columns.schemaContentHash.Value(i)),
 				},
 				UpdatedAt: parquetio.ParseTime(columns.updatedAt.Value(i)),
 			}
 			if rows == 0 {
 				catalog = rowCatalog
-				expectedHash = columns.contentHash.Value(i)
+				expectedHash = strings.Clone(columns.contentHash.Value(i))
 				entityPageCount = columns.entityPageCount.Value(i)
 				edgeShardCount = columns.edgeShardCount.Value(i)
 			} else if !sameShardedSnapshotCatalogMetadata(catalog, rowCatalog) ||
@@ -472,14 +476,14 @@ func parquetSnapshotCatalogColumns(batch arrow.RecordBatch) (parquetSnapshotCata
 
 func snapshotCatalogRowFromColumns(columns parquetSnapshotCatalogColumnSet, row int) snapshotCatalogRow {
 	return snapshotCatalogRow{
-		Kind:         columns.rowKind.Value(row),
+		Kind:         strings.Clone(columns.rowKind.Value(row)),
 		Ordinal:      int(columns.ordinal.Value(row)),
-		Shard:        columns.shard.Value(row),
-		RelationType: columns.relationType.Value(row),
-		Key:          columns.objectKey.Value(row),
-		Format:       columns.objectFormat.Value(row),
+		Shard:        strings.Clone(columns.shard.Value(row)),
+		RelationType: strings.Clone(columns.relationType.Value(row)),
+		Key:          strings.Clone(columns.objectKey.Value(row)),
+		Format:       strings.Clone(columns.objectFormat.Value(row)),
 		Count:        int(columns.objectCount.Value(row)),
-		ContentHash:  columns.objectContentHash.Value(row),
+		ContentHash:  strings.Clone(columns.objectContentHash.Value(row)),
 	}
 }
 

@@ -63,7 +63,7 @@ func (s *TenantStore) publishLocalCompaction(
 		return Manifest{}, ObjectMeta{}, err
 	}
 	s.updateWriteCacheAfterLocalCompaction(
-		tenantID, loaded, previousCached, hasPreviousCached, current, currentMeta, candidate, meta,
+		ctx, tenantID, loaded, previousCached, hasPreviousCached, current, currentMeta, candidate, meta,
 	)
 	return candidate, meta, nil
 }
@@ -118,6 +118,7 @@ func (s *TenantStore) requireManifestDescendsFrom(
 }
 
 func (s *TenantStore) updateWriteCacheAfterLocalCompaction(
+	ctx context.Context,
 	tenantID string,
 	loaded loadedGraph,
 	previousCached loadedGraph,
@@ -132,7 +133,7 @@ func (s *TenantStore) updateWriteCacheAfterLocalCompaction(
 		loaded.Meta = meta
 		loaded.CommitTail = emptyCommitTailCache()
 		loaded.CacheBytes = writeCacheBytesWithoutCommitTail(loaded)
-		s.setWriteCache(tenantID, loaded)
+		s.setWriteCacheContext(ctx, tenantID, loaded)
 		return
 	}
 	cached, ok := previousCached, hasPreviousCached
@@ -150,7 +151,7 @@ func (s *TenantStore) updateWriteCacheAfterLocalCompaction(
 		writeCacheBytesWithoutCommitTail(cached), tail.bytes,
 	)
 	cached.CommitTail = tail
-	s.setWriteCache(tenantID, cached)
+	s.setWriteCacheContext(ctx, tenantID, cached)
 }
 
 func compactedCommitTailCache(

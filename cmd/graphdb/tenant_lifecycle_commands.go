@@ -7,7 +7,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func listTenants(args []string, store *storage.TenantStore) error {
+func listTenants(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) > 1 || (len(args) == 1 && args[0] != "--include-legacy") {
 		return fmt.Errorf("usage: graphdb list-tenants [--include-legacy]")
 	}
@@ -16,9 +16,9 @@ func listTenants(args []string, store *storage.TenantStore) error {
 		err     error
 	)
 	if len(args) == 1 {
-		tenants, err = store.ListTenantInfosIncludingLegacy(context.Background())
+		tenants, err = store.ListTenantInfosIncludingLegacy(ctx)
 	} else {
-		tenants, err = store.ListManagedTenantInfos(context.Background())
+		tenants, err = store.ListManagedTenantInfos(ctx)
 	}
 	if err != nil {
 		return err
@@ -26,18 +26,18 @@ func listTenants(args []string, store *storage.TenantStore) error {
 	return printJSON(map[string]any{"tenants": tenants})
 }
 
-func tenantInfo(args []string, store *storage.TenantStore) error {
+func tenantInfo(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb tenant <tenant-id>")
 	}
-	info, err := store.GetTenantInfo(context.Background(), args[0])
+	info, err := store.GetTenantInfo(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(info)
 }
 
-func createTenant(args []string, store *storage.TenantStore) error {
+func createTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 1 || len(args) > 2 {
 		return fmt.Errorf("usage: graphdb create-tenant <tenant-id> [metadata.json]")
 	}
@@ -45,14 +45,14 @@ func createTenant(args []string, store *storage.TenantStore) error {
 	if err != nil {
 		return err
 	}
-	info, err := store.CreateTenant(context.Background(), args[0], options)
+	info, err := store.CreateTenant(ctx, args[0], options)
 	if err != nil {
 		return err
 	}
 	return printJSON(info)
 }
 
-func setTenantMetadata(args []string, store *storage.TenantStore) error {
+func setTenantMetadata(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb set-tenant-metadata <tenant-id> <metadata.json>")
 	}
@@ -60,26 +60,26 @@ func setTenantMetadata(args []string, store *storage.TenantStore) error {
 	if err := readJSONFile(args[1], &options); err != nil {
 		return err
 	}
-	info, err := store.UpdateTenantMetadata(context.Background(), args[0], options)
+	info, err := store.UpdateTenantMetadata(ctx, args[0], options)
 	if err != nil {
 		return err
 	}
 	return printJSON(info)
 }
 
-func disableTenant(args []string, store *storage.TenantStore) error {
-	return setTenantStatusCLI(args, store, storage.TenantStatusDisabled, "disable-tenant")
+func disableTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
+	return setTenantStatusCLI(ctx, args, store, storage.TenantStatusDisabled, "disable-tenant")
 }
 
-func enableTenant(args []string, store *storage.TenantStore) error {
-	return setTenantStatusCLI(args, store, storage.TenantStatusActive, "enable-tenant")
+func enableTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
+	return setTenantStatusCLI(ctx, args, store, storage.TenantStatusActive, "enable-tenant")
 }
 
-func deleteTenant(args []string, store *storage.TenantStore) error {
-	return setTenantStatusCLI(args, store, storage.TenantStatusDeleted, "delete-tenant")
+func deleteTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
+	return setTenantStatusCLI(ctx, args, store, storage.TenantStatusDeleted, "delete-tenant")
 }
 
-func purgeTenant(args []string, store *storage.TenantStore) error {
+func purgeTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 1 || len(args) > 2 {
 		return fmt.Errorf("usage: graphdb purge-tenant <tenant-id> [--force]")
 	}
@@ -87,14 +87,14 @@ func purgeTenant(args []string, store *storage.TenantStore) error {
 	if len(args) == 2 && !force {
 		return fmt.Errorf("usage: graphdb purge-tenant <tenant-id> [--force]")
 	}
-	report, err := store.PurgeTenant(context.Background(), args[0], force)
+	report, err := store.PurgeTenant(ctx, args[0], force)
 	if err != nil {
 		return err
 	}
 	return printJSON(report)
 }
 
-func cloneTenant(args []string, store *storage.TenantStore) error {
+func cloneTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 2 || len(args) > 3 {
 		return fmt.Errorf("usage: graphdb clone-tenant <source-tenant-id> <target-tenant-id> [metadata.json]")
 	}
@@ -105,19 +105,19 @@ func cloneTenant(args []string, store *storage.TenantStore) error {
 		}
 		options.TargetTenantID = args[1]
 	}
-	info, err := store.CloneTenant(context.Background(), args[0], options)
+	info, err := store.CloneTenant(ctx, args[0], options)
 	if err != nil {
 		return err
 	}
 	return printJSON(info)
 }
 
-func backupTenant(args []string, store *storage.TenantStore) error {
+func backupTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb backup-tenant <tenant-id>")
 	}
 	task, err := startAndWaitTask(
-		context.Background(), store, args[0], storage.TaskTypeTenantBackup, nil,
+		ctx, store, args[0], storage.TaskTypeTenantBackup, nil,
 	)
 	if err != nil {
 		return err
@@ -125,7 +125,7 @@ func backupTenant(args []string, store *storage.TenantStore) error {
 	return printFinishedTask(task)
 }
 
-func restoreTenant(args []string, store *storage.TenantStore) error {
+func restoreTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 2 || len(args) > 4 {
 		return fmt.Errorf("usage: graphdb restore-tenant <tenant-id> <backup-key> [--overwrite] [--dry-run]")
 	}
@@ -141,7 +141,7 @@ func restoreTenant(args []string, store *storage.TenantStore) error {
 			return fmt.Errorf("usage: graphdb restore-tenant <tenant-id> <backup-key> [--overwrite] [--dry-run]")
 		}
 	}
-	task, err := startAndWaitTask(context.Background(), store, args[0], storage.TaskTypeTenantRestore, map[string]any{
+	task, err := startAndWaitTask(ctx, store, args[0], storage.TaskTypeTenantRestore, map[string]any{
 		"backup_key": args[1],
 		"overwrite":  overwrite,
 		"dry_run":    dryRun,
@@ -152,7 +152,7 @@ func restoreTenant(args []string, store *storage.TenantStore) error {
 	return printFinishedTask(task)
 }
 
-func restoreDrillTenant(args []string, store *storage.TenantStore) error {
+func restoreDrillTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 1 || len(args) > 2 {
 		return fmt.Errorf("usage: graphdb restore-drill-tenant <tenant-id> [params.json]")
 	}
@@ -163,7 +163,7 @@ func restoreDrillTenant(args []string, store *storage.TenantStore) error {
 		}
 	}
 	task, err := startAndWaitTask(
-		context.Background(), store, args[0], storage.TaskTypeTenantRestoreDrill, params,
+		ctx, store, args[0], storage.TaskTypeTenantRestoreDrill, params,
 	)
 	if err != nil {
 		return err
@@ -171,11 +171,11 @@ func restoreDrillTenant(args []string, store *storage.TenantStore) error {
 	return printFinishedTask(task)
 }
 
-func setTenantStatusCLI(args []string, store *storage.TenantStore, status string, command string) error {
+func setTenantStatusCLI(ctx context.Context, args []string, store *storage.TenantStore, status string, command string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb %s <tenant-id>", command)
 	}
-	info, err := store.SetTenantStatus(context.Background(), args[0], status)
+	info, err := store.SetTenantStatus(ctx, args[0], status)
 	if err != nil {
 		return err
 	}

@@ -63,7 +63,9 @@ func tokenizeGQL(input string) ([]gqlToken, error) {
 		}
 		value := input[start:i]
 		kind := gqlIdent
-		if isGQLNumber(value) {
+		if isNum, rangeErr := classifyGQLNumber(value); rangeErr != nil {
+			return nil, rangeErr
+		} else if isNum {
 			kind = gqlNumber
 		}
 		tokens = append(tokens, gqlToken{kind: kind, value: value})
@@ -147,10 +149,19 @@ func isGQLBareChar(r rune) bool {
 	return true
 }
 
-func isGQLNumber(value string) bool {
+func classifyGQLNumber(value string) (bool, error) {
 	if value == "" {
-		return false
+		return false, nil
+	}
+	if !(value[0] == '-' || value[0] == '+' || (value[0] >= '0' && value[0] <= '9')) {
+		return false, nil
 	}
 	_, err := strconv.ParseFloat(value, 64)
-	return err == nil && (value[0] == '-' || value[0] == '+' || value[0] >= '0' && value[0] <= '9')
+	if err == nil {
+		return true, nil
+	}
+	if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange {
+		return false, fmt.Errorf("%w: numeric literal %q out of range", ErrInvalid, value)
+	}
+	return false, nil
 }

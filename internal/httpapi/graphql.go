@@ -24,7 +24,28 @@ func (s *Server) queryGraphQL(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &body, maxQueryRequestBytes) {
 		return
 	}
-	plan, requestErrors := query.ParseGraphQL(body)
+	releaseParse, admitErr := s.acquireQuery(r.Context(), tenantID)
+	if admitErr != nil {
+		status, apiError := queryErrorResponse(admitErr)
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "1")
+		}
+		writeJSON(w, status, graphQLResponse{
+			Errors: gqlerror.List{&gqlerror.Error{
+				Message: apiError.Message,
+				Extensions: map[string]any{
+					"code":       apiError.Code,
+					"retryable":  apiError.Retryable,
+					"httpStatus": status,
+				},
+			}},
+		})
+		return
+	}
+	plan, requestErrors := func() (query.GraphQLPlan, gqlerror.List) {
+		defer releaseParse()
+		return query.ParseGraphQL(body)
+	}()
 	if len(requestErrors) > 0 {
 		writeJSON(w, http.StatusBadRequest, graphQLResponse{Errors: requestErrors})
 		return

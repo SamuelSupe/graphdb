@@ -187,8 +187,7 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 	}
 	defer release()
 	stream := queryStreamWriter{w: w, encoder: json.NewEncoder(w)}
-	var response query.Response
-	handled, err := s.tryLazyQueryStreamAdmitted(&stream, r, tenantID, request)
+	response, handled, err := s.tryLazyQueryStreamAdmitted(&stream, r, tenantID, request)
 	if !handled {
 		response, err = s.executeQueryAdmitted(r, tenantID, request)
 		if err == nil {
@@ -236,7 +235,7 @@ func encodeMaterializedQueryStream(stream *queryStreamWriter, r *http.Request, r
 	return err
 }
 
-func (s *Server) tryLazyQueryStreamAdmitted(stream *queryStreamWriter, r *http.Request, tenantID string, request query.Request) (handled bool, resultErr error) {
+func (s *Server) tryLazyQueryStreamAdmitted(stream *queryStreamWriter, r *http.Request, tenantID string, request query.Request) (response query.Response, handled bool, resultErr error) {
 	ctx, span := startAPIPhase(r.Context(), "execute_lazy_stream", append([]attribute.KeyValue{
 		attribute.String("graphdb.tenant", tenantID),
 	}, queryRequestTraceAttributes(request)...)...)
@@ -253,28 +252,48 @@ func (s *Server) tryLazyQueryStreamAdmitted(stream *queryStreamWriter, r *http.R
 
 	target, err := s.readTarget(r, tenantID, queryReadFreshness(request))
 	if err != nil {
-		return true, err
+		return response, true, err
 	}
 	options, version, ok := s.Store.SelectQueryRead(r.Context(), tenantID, request, target.TargetVersion, target.ManifestVersion, s.cachedMaterializedQueryAvailable(tenantID, target))
 	if !ok {
-		return false, nil
+		return response, false, nil
 	}
 	g := graph.New()
 	g.Version = version
+	response.Version = version
 	ok, err = query.StreamContextWithOptions(r.Context(), g, request, options, func(item any) error {
-		if result, ok := item.(query.Result); ok {
-			item = queryResultJSON(result)
+		switch v := item.(type) {
+		case query.Result:
+			item = queryResultJSON(v)
+		case query.StreamMeta:
+			if v.Version > 0 {
+				response.Version = v.Version
+			}
+			if v.Stats != nil {
+				response.Stats = *v.Stats
+			}
+			if v.NextCursor != "" {
+				response.NextCursor = v.NextCursor
+			}
+			if v.Plan != nil {
+				response.Plan = v.Plan
+			}
+			if len(v.Profile) > 0 {
+				response.Profile = v.Profile
+			}
 		}
 		return stream.write(r.Context(), item)
 	})
 	if !ok {
-		return false, nil
+		return query.Response{}, false, nil
 	}
 	if !stream.started && errors.Is(err, query.ErrIndexUnavailable) {
-		s.Store.MarkQueryIndexUnavailable(tenantID, version)
-		return false, nil
+		if !errors.Is(err, query.ErrMaterializedFallback) {
+			s.Store.MarkQueryIndexUnavailable(tenantID, version)
+		}
+		return query.Response{}, false, nil
 	}
-	return true, err
+	return response, true, err
 }
 
 type queryStreamWriter struct {
@@ -331,16 +350,29 @@ func encodeStreamItem(ctx context.Context, encoder *json.Encoder, item any, flus
 	return ctx.Err()
 }
 
+const (
+	streamChunkWriteDeadline = 2 * time.Minute
+	streamMaxLifetime        = 30 * time.Minute
+)
+
 func streamFlush(w http.ResponseWriter) func() error {
 	controller := http.NewResponseController(w)
+	streamEnd := time.Now().Add(streamMaxLifetime)
 	pending := streamFlushEvery - 1
-	deadline := time.Now().Add(10 * time.Minute)
 	return func() error {
 		pending++
 		if pending < streamFlushEvery {
 			return nil
 		}
 		pending = 0
+		now := time.Now()
+		if !now.Before(streamEnd) {
+			return context.DeadlineExceeded
+		}
+		deadline := now.Add(streamChunkWriteDeadline)
+		if deadline.After(streamEnd) {
+			deadline = streamEnd
+		}
 		if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return err
 		}
@@ -356,9 +388,14 @@ func (s *Server) listQueryTemplates(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	items, err := s.Store.ListSavedQueries(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageErrorDefault(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"queries": items})
@@ -373,13 +410,18 @@ func (s *Server) saveQueryTemplate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, _, slotErr := s.acquireWriteSlot(w, r, tenantID)
+	if slotErr != nil {
+		return
+	}
+	defer release()
 	var saved storage.SavedQuery
 	if !decodeJSONBody(w, r, &saved, maxQueryRequestBytes) {
 		return
 	}
 	saved, err := s.Store.SaveQuery(r.Context(), tenantID, saved)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageErrorDefault(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, saved)
@@ -397,7 +439,7 @@ func (s *Server) runQueryTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	saved, err := s.Store.GetSavedQuery(r.Context(), tenantID, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeStorageErrorDefault(w, http.StatusNotFound, err)
 		return
 	}
 	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(saved.Request)...)
@@ -477,7 +519,9 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		if err == nil || !errors.Is(err, query.ErrIndexUnavailable) {
 			return response, err
 		}
-		s.Store.MarkQueryIndexUnavailable(tenantID, version)
+		if !errors.Is(err, query.ErrMaterializedFallback) {
+			s.Store.MarkQueryIndexUnavailable(tenantID, version)
+		}
 		if span != nil {
 			span.SetAttributes(attribute.Bool("graphdb.query.lazy_fallback", true))
 		}
@@ -546,6 +590,9 @@ func writeQueryError(w http.ResponseWriter, err error) {
 		return
 	}
 	status, response := queryErrorResponse(err)
+	if status == http.StatusTooManyRequests && w.Header().Get("Retry-After") == "" {
+		w.Header().Set("Retry-After", "1")
+	}
 	writeJSON(w, status, response)
 }
 
@@ -558,19 +605,21 @@ func queryErrorResponse(err error) (int, ErrorResponse) {
 	if freshness, ok := asReaderNotFresh(err); ok {
 		return http.StatusServiceUnavailable, buildErrorResponse(ErrorCodeReaderNotFresh, err.Error(), true, freshness.detail())
 	}
-	status := http.StatusBadRequest
-	if errors.Is(err, context.DeadlineExceeded) {
-		status = http.StatusGatewayTimeout
-	} else if errors.Is(err, context.Canceled) {
-		status = statusClientClosedRequest
-	} else if errors.Is(err, query.ErrInvalid) {
-		status = http.StatusUnprocessableEntity
-	} else if errors.Is(err, query.ErrLimitExceeded) {
-		status = http.StatusTooManyRequests
-	} else if errors.Is(err, storage.ErrReaderLoadBusy) {
-		status = http.StatusTooManyRequests
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout, errorResponseFor(http.StatusGatewayTimeout, err, "", nil)
+	case errors.Is(err, context.Canceled):
+		return statusClientClosedRequest, errorResponseFor(statusClientClosedRequest, err, "", nil)
+	case errors.Is(err, query.ErrInvalid):
+		return http.StatusUnprocessableEntity, errorResponseFor(http.StatusUnprocessableEntity, err, "", nil)
+	case errors.Is(err, query.ErrLimitExceeded), errors.Is(err, storage.ErrReaderLoadBusy):
+		return http.StatusTooManyRequests, errorResponseFor(http.StatusTooManyRequests, err, "", nil)
 	}
-	return status, errorResponseFor(status, err, "", nil)
+	response := errorResponseFor(http.StatusInternalServerError, err, "", nil)
+	if response.Code == ErrorCodeInternal {
+		response = buildErrorResponse(ErrorCodeInternal, "internal storage error", false, nil)
+	}
+	return storageErrorStatus(response.Code), response
 }
 
 func (s *Server) observeQuery(tenantID string, request query.Request, response query.Response, err error, duration time.Duration) {

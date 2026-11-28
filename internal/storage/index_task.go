@@ -79,7 +79,7 @@ func (s *TenantStore) finishIndexTaskCleanup(ctx context.Context, task Task, cat
 		return nil, "", err
 	}
 	// GC reacquires execution capacity per batch so compact can run between them.
-	if admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
+	if admission, ok := s.taskAdmissionFromContext(ctx); ok {
 		admission.release()
 	}
 	report, err := s.RunGC(ctx, task.TenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})

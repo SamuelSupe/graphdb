@@ -31,25 +31,32 @@ func (r *Router) catalogRead(ctx context.Context, path string, result any) error
 			return &HTTPError{Status: http.StatusServiceUnavailable, Body: "catalog is temporarily unavailable"}
 		}
 	}
+	startedAt := time.Now().UnixNano()
 	probe, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	err := r.Client.JSON(probe, r.Catalog, http.MethodGet, path, nil, result)
 	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	r.catalogUnavailable.Store(catalogUnavailable(err))
-	if catalogUnavailable(err) {
-		r.catalogRetryAt.Store(time.Now().Add(time.Second).UnixNano())
-	} else {
-		r.catalogRetryAt.Store(0)
-		if err == nil {
-			r.catalogLastSuccess.Store(time.Now().UnixNano())
-		}
-		var response *HTTPError
-		if errors.As(err, &response) && (response.Status == http.StatusUnauthorized || response.Status == http.StatusForbidden) {
-			r.catalogVerified.Store(false)
+	unavailable := catalogUnavailable(err)
+	r.catalogStateMu.Lock()
+	if startedAt >= r.catalogStateAt {
+		r.catalogStateAt = startedAt
+		r.catalogUnavailable.Store(unavailable)
+		if unavailable {
+			r.catalogRetryAt.Store(time.Now().Add(time.Second).UnixNano())
+		} else {
+			r.catalogRetryAt.Store(0)
+			if err == nil {
+				r.catalogLastSuccess.Store(time.Now().UnixNano())
+			}
+			var response *HTTPError
+			if errors.As(err, &response) && (response.Status == http.StatusUnauthorized || response.Status == http.StatusForbidden) {
+				r.catalogVerified.Store(false)
+			}
 		}
 	}
+	r.catalogStateMu.Unlock()
 	return err
 }
 

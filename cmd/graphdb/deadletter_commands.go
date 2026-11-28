@@ -8,18 +8,18 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func deadLetters(args []string, store *storage.TenantStore) error {
+func deadLetters(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb deadletters <tenant-id> <source>")
 	}
-	items, err := store.ListDeadLetters(context.Background(), args[0], args[1])
+	items, err := store.ListDeadLetters(ctx, args[0], args[1])
 	if err != nil {
 		return err
 	}
 	return printJSON(map[string]any{"deadletters": items})
 }
 
-func replayDeadLetters(args []string, store *storage.TenantStore) error {
+func replayDeadLetters(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 2 || len(args) > 3 {
 		return fmt.Errorf("usage: graphdb replay-deadletters <tenant-id> <source> [limit]")
 	}
@@ -34,7 +34,7 @@ func replayDeadLetters(args []string, store *storage.TenantStore) error {
 		}
 		limit = value
 	}
-	report, err := store.ReplayDeadLetters(context.Background(), args[0], args[1], limit)
+	report, err := store.ReplayDeadLetters(ctx, args[0], args[1], limit)
 	if err != nil {
 		return err
 	}

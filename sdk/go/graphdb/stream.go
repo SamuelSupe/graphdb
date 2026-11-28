@@ -1,6 +1,7 @@
 package graphdb
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -30,21 +31,24 @@ func (s *Stream) Next(v any) bool {
 		}
 		return false
 	}
-	var meta struct {
-		Done  bool   `json:"done"`
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		s.err = err
-		return false
+	if bytes.Contains(raw, []byte(`"done"`)) {
+		var meta struct {
+			Done  bool   `json:"done"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			s.err = err
+			return false
+		}
+		s.done = s.done || meta.Done
+		if meta.Done && meta.Error != "" {
+			s.err = apiErrorFromBody(http.StatusOK, raw)
+			return false
+		}
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
 		s.err = err
 		return false
-	}
-	s.done = s.done || meta.Done
-	if meta.Done && meta.Error != "" {
-		s.err = apiErrorFromBody(http.StatusOK, raw)
 	}
 	return true
 }

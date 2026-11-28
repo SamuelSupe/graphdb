@@ -1,6 +1,6 @@
 import { objectEditor } from './forms.js';
 import { t } from './i18n.js';
-import { tenant, request, pathID, params, json, parseJSON } from './api.js';
+import { tenant, request, pathID, params, json, parseJSON, uuid } from './api.js';
 import { e, button, field, select, checkbox, tabs, table, badge, structuredView, taskView, dateView, notice, dialog, toast, objectInput, confirmRequest } from './ui.js';
 
 let tasksTab = 'tasks', governanceTab = 'sourcePolicy', ingestionTab = 'commit';
@@ -27,18 +27,34 @@ export async function indexesPage(ctx) {
 
 export async function tasksPage(ctx) {
   let rows = [], selectedTask, filters = { type: '', status: '', limit: 100 };
-  let refreshTimer, loadSequence = 0;
-  ctx.signal.addEventListener('abort', () => clearTimeout(refreshTimer), { once: true });
+  let refreshTimer, loadSequence = 0, pollDelay = 5000;
+  const onVisibility = () => {
+    if (!document.hidden && ctx.valid() && tasksTab === 'tasks' && rows.some(row => ['queued', 'running'].includes(row.status))) {
+      load().catch(error => { if (ctx.valid()) toast(error.message, true); });
+    }
+  };
+  if (typeof document?.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', onVisibility);
+  }
+  ctx.signal.addEventListener('abort', () => {
+    clearTimeout(refreshTimer);
+    if (typeof document?.removeEventListener === 'function') {
+      document.removeEventListener('visibilitychange', onVisibility);
+    }
+  }, { once: true });
   const taskTypes = ['compact', 'gc', 'repair', 'export_snapshot', 'replay_deadletters', 'index_rebuild', 'tenant_backup', 'tenant_restore', 'tenant_restore_drill'];
   function drawTasks() {
     clearTimeout(refreshTimer);
     ctx.html(`<div class="${selectedTask ? 'split' : ''}"><section class="workbench">${tabs(['tasks', 'maintenance', 'automation'], tasksTab)}<div class="toolbar">${button('newTask', 'create', 'primary')}${button('backup', 'backup')}${button('restore', 'restore')}${button('restoreDrill', 'drill')}</div><form class="toolbar" id="task-filter">${select('type', [['', t('type')], ...taskTypes.map(value => [value, t(value)])], filters.type)}${select('status', [['', t('status')], ...['queued', 'running', 'succeeded', 'failed', 'canceled'].map(value => [value, t(value)])], filters.status)}<button type="submit">${e(t('search'))}</button></form>${table([['id', (row, index) => `<button type="button" class="text-button code" title="${e(row.id)}" data-action="inspect:${index}">${e(row.id.length > 20 ? row.id.slice(0, 16) + '…' : row.id)}</button>`], ['type', row => e(t(row.type))], ['status', row => badge(row.status)], ['updated', row => dateView(row.updated_at)], ['phase', row => e(row.phase)]], rows, selectedTask)}</section>${selectedTask ? `<aside class="inspector">${taskView(selectedTask)}<div class="row-actions">${['queued', 'running'].includes(selectedTask.status) ? button('cancelTask', 'cancel:' + rows.indexOf(selectedTask)) : ''}${['failed', 'canceled'].includes(selectedTask.status) ? button('retry', 'retry:' + rows.indexOf(selectedTask)) : ''}</div></aside>` : ''}</div>`);
     const form = ctx.root.querySelector('#task-filter');
     form.onsubmit = async event => { event.preventDefault(); filters = { ...filters, ...Object.fromEntries(new FormData(form)) }; try { await load(); } catch (error) { toast(error.message, true); } };
-    if (rows.some(row => ['queued', 'running'].includes(row.status))) refreshTimer = setTimeout(async () => {
-      if (!ctx.valid()) return;
-      try { await load(); } catch (error) { if (ctx.valid()) toast(error.message, true); }
-    }, 5000);
+    if (rows.some(row => ['queued', 'running'].includes(row.status)) && !document.hidden) refreshTimer = setTimeout(async () => {
+      if (!ctx.valid() || document.hidden) return;
+      try { await load(); pollDelay = 5000; } catch (error) {
+        pollDelay = Math.min(pollDelay * 2, 30000);
+        if (ctx.valid()) toast(error.message, true);
+      }
+    }, pollDelay);
   }
   const load = async () => {
     clearTimeout(refreshTimer);
@@ -72,7 +88,11 @@ export async function tasksPage(ctx) {
       drawTasks();
     }
     else if (action.startsWith('cancel:') || action.startsWith('retry:')) { const [op, index] = action.split(':'); await confirmRequest(ctx, op === 'cancel' ? 'cancelTask' : 'retry', 'admin', '/v1/tasks/' + pathID(rows[Number(index)].id) + '/' + op, undefined, { after: load }); }
-    else if (action === 'backup') await confirmRequest(ctx, 'backup', 'admin', '/v1/tenants/' + pathID(tenant) + '/backup', {}, { after: load });
+    else if (action === 'backup') dialog('backup', select('destination', [['local', 'local'], ['object', 'object']], 'local') + notice(t('confirmDesc')) + field('typeConfirm', '', 'text', 'required') + `<p class="hint code">${e(tenant)}</p>`, async form => {
+      if (form.elements.namedItem('typeConfirm').value !== tenant) throw new Error(t('confirmMismatch'));
+      const destination = form.elements.namedItem('destination').value;
+      const result = await request('admin', '/v1/tenants/' + pathID(tenant) + '/backup', { method: 'POST', body: { destination }, tenantID: '' }); toast(t('accepted')); await load(); ctx.result(result.data);
+    }, 'execute');
     else if (action === 'restore' || action === 'drill') {
       const drill = action === 'drill', id = tenant;
       dialog(drill ? 'restoreDrill' : 'restore', field('backupKey', '', 'text', 'required') + (drill ? field('targetTenant') + checkbox('cleanup', true) : checkbox('overwrite')) + checkbox('dryRun', true) + notice(t('destructive')) + field('typeConfirm', '', 'text', 'required') + `<p class="hint code">${e(id)}</p>`, async form => {
@@ -126,7 +146,7 @@ async function leaveEditor() {
 
 export async function ingestionPage(ctx) {
   const key = tenant;
-  const draft = () => ingestionDrafts.get(key + ':' + ingestionTab) || json(ingestionTab === 'batch' ? { source: '', collector_id: '', batch_id: crypto.randomUUID(), items: [{ entity: { id: '', kind: '', fields: {} } }] } : { idempotency_key: crypto.randomUUID(), mutations: { upsert_entities: [{ id: '', kind: '', fields: {} }] } });
+  const draft = () => ingestionDrafts.get(key + ':' + ingestionTab) || json(ingestionTab === 'batch' ? { source: '', collector_id: '', batch_id: uuid(), items: [{ entity: { id: '', kind: '', fields: {} } }] } : { idempotency_key: uuid(), mutations: { upsert_entities: [{ id: '', kind: '', fields: {} }] } });
   let payload = draft();
   const capture = () => {
     const input = ctx.root.querySelector('[name=payload]');
@@ -152,6 +172,10 @@ export async function ingestionPage(ctx) {
     if (importForm) importForm.onsubmit = async event => {
       event.preventDefault();
       const values = Object.fromEntries(new FormData(importForm)), file = values.file;
+      if (file && file.size > 32 * 1024 * 1024) {
+        toast('Import file exceeds the 32 MiB upload limit', true);
+        return;
+      }
       const submit = importForm.querySelector('[type=submit]'); submit.disabled = true;
       try {
         const result = await request('data', '/v1/imports' + params({ source: values.source, collector_id: values.collectorID, format: values.format, batch_size: values.batchSize, on_error: values.onError }), { method: 'POST', body: file, headers: { 'Content-Type': values.format === 'csv' ? 'text/csv' : 'application/x-ndjson' } });

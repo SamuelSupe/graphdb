@@ -13,9 +13,14 @@ func (s *Server) indexCatalog(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	catalog, err := s.Store.GetIndexCatalog(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeStorageErrorDefault(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, catalog)
@@ -26,6 +31,11 @@ func (s *Server) indexDefinitions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	definitions, err := s.Store.ListIndexDefinitions(r.Context(), tenantID)
 	if err != nil {
 		writeStorageError(w, err)
@@ -177,6 +187,11 @@ func (s *Server) indexTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	taskID := strings.TrimPrefix(r.URL.Path, "/v1/indexes/tasks/")
 	if taskID == "" || strings.Contains(taskID, "/") {
 		writeError(w, http.StatusBadRequest, "task path must be /v1/indexes/tasks/{id}")
@@ -184,7 +199,7 @@ func (s *Server) indexTask(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := s.Store.GetIndexTask(r.Context(), tenantID, taskID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeStorageErrorDefault(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)

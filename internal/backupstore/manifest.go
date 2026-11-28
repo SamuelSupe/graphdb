@@ -18,10 +18,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"golang.org/x/sync/errgroup"
 )
 
 const Format = "graphdb-object-snapshot-v1"
 const maxManifestBytes = 64 << 10
+
+var errInvalidManifest = errors.New("invalid object backup manifest")
 
 type Manifest struct {
 	Automatic   bool      `json:"automatic,omitempty"`
@@ -41,8 +44,9 @@ type Entry struct {
 }
 
 type Page struct {
-	Backups    []Entry `json:"backups"`
-	NextCursor string  `json:"next_cursor,omitempty"`
+	Backups          []Entry `json:"backups"`
+	NextCursor       string  `json:"next_cursor,omitempty"`
+	InvalidManifests int     `json:"invalid_manifests,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
@@ -90,10 +94,10 @@ func (n Namespace) ParseURI(uri string) (tenant, id string, err error) {
 func (r *Repository) validate(m Manifest, tenant, id string) error {
 	hash, err := hex.DecodeString(m.SHA256)
 	if m.Format != Format || m.TenantID != tenant || m.BackupID != id || m.Version < 0 || m.CreatedAt.IsZero() || m.Bytes <= 0 || m.Bytes > 5<<40 || err != nil || len(hash) != sha256.Size || strings.ToLower(m.SHA256) != m.SHA256 {
-		return fmt.Errorf("invalid object backup manifest")
+		return errInvalidManifest
 	}
 	if m.SnapshotKey != path.Join(r.prefix, tenant, id, m.SHA256+".parquet") {
-		return fmt.Errorf("object backup snapshot key does not match its identity and checksum")
+		return fmt.Errorf("%w: snapshot key does not match its identity and checksum", errInvalidManifest)
 	}
 	return nil
 }
@@ -116,11 +120,11 @@ func (r *Repository) ReadManifest(ctx context.Context, uri string) (Manifest, er
 		return Manifest{}, err
 	}
 	if len(data) > maxManifestBytes {
-		return Manifest{}, fmt.Errorf("object backup manifest exceeds size limit")
+		return Manifest{}, fmt.Errorf("%w: exceeds size limit", errInvalidManifest)
 	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return Manifest{}, err
+		return Manifest{}, fmt.Errorf("%w: %w", errInvalidManifest, err)
 	}
 	if err := r.validate(m, tenant, id); err != nil {
 		return Manifest{}, err
@@ -145,13 +149,14 @@ func (r *Repository) Publish(ctx context.Context, m Manifest, source *io.Section
 	if err != nil {
 		return Entry{}, err
 	}
+	m.CreatedAt = m.CreatedAt.UTC().Round(0)
 	m.Format, m.Bytes, m.SHA256 = Format, n, hex.EncodeToString(hash.Sum(nil))
 	m.SnapshotKey = path.Join(r.prefix, m.TenantID, m.BackupID, m.SHA256+".parquet")
 	if err := r.validate(m, m.TenantID, m.BackupID); err != nil {
 		return Entry{}, err
 	}
 	if previous, err := r.ReadManifest(ctx, uri); err == nil {
-		if previous != m {
+		if !manifestsEqual(previous, m) {
 			return Entry{}, fmt.Errorf("backup ID already contains a different snapshot")
 		}
 		return Entry{Manifest: m, BackupKey: uri}, nil
@@ -192,8 +197,12 @@ func (r *Repository) Publish(ctx context.Context, m Manifest, source *io.Section
 	if err != nil {
 		// A lost response can leave a successfully published manifest. Only the
 		// identical manifest makes that ambiguous outcome safe to resume.
-		previous, readErr := r.ReadManifest(ctx, uri)
-		if readErr != nil || previous != m {
+		// Use a detached bounded context so a canceled/timed-out publish still
+		// detects a missing manifest and deletes the orphaned snapshot object.
+		checkCtx, checkCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		previous, readErr := r.ReadManifest(checkCtx, uri)
+		checkCancel()
+		if readErr != nil || !manifestsEqual(previous, m) {
 			if errors.Is(readErr, ErrNotFound) {
 				cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 				_, _ = r.client.DeleteObject(cleanup, &s3.DeleteObjectInput{
@@ -205,6 +214,18 @@ func (r *Repository) Publish(ctx context.Context, m Manifest, source *io.Section
 		}
 	}
 	return Entry{Manifest: m, BackupKey: uri}, nil
+}
+
+func manifestsEqual(a, b Manifest) bool {
+	return a.Format == b.Format &&
+		a.Automatic == b.Automatic &&
+		a.TenantID == b.TenantID &&
+		a.BackupID == b.BackupID &&
+		a.Version == b.Version &&
+		a.SnapshotKey == b.SnapshotKey &&
+		a.Bytes == b.Bytes &&
+		a.SHA256 == b.SHA256 &&
+		a.CreatedAt.Equal(b.CreatedAt)
 }
 
 // Download validates length and SHA-256 while streaming into caller-owned staging.
@@ -253,6 +274,7 @@ func (r *Repository) List(ctx context.Context, tenant, cursor string, limit int)
 	}
 	page := Page{Backups: []Entry{}}
 	var token *string
+	var lastConsumed string
 	for {
 		out, err := r.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket: aws.String(r.bucket), Prefix: aws.String(prefix), StartAfter: aws.String(start), ContinuationToken: token, MaxKeys: aws.Int32(1000),
@@ -260,25 +282,57 @@ func (r *Repository) List(ctx context.Context, tenant, cursor string, limit int)
 		if err != nil {
 			return Page{}, err
 		}
+		var candidates []string
 		for _, obj := range out.Contents {
 			key := aws.ToString(obj.Key)
 			parts := strings.Split(strings.TrimPrefix(key, prefix), "/")
 			if len(parts) != 2 || parts[1] != "manifest.json" || !validID(parts[0]) {
 				continue
 			}
-			if len(page.Backups) == limit {
-				page.NextCursor = page.Backups[len(page.Backups)-1].BackupKey
-				return page, nil
-			}
 			uri, _ := r.URI(tenant, parts[0])
-			m, err := r.ReadManifest(ctx, uri)
-			if errors.Is(err, ErrNotFound) {
-				continue
+			candidates = append(candidates, uri)
+		}
+		for len(candidates) != 0 {
+			n := min(8, limit-len(page.Backups)+1, len(candidates))
+			type manifestResult struct {
+				entry   Entry
+				invalid bool
 			}
-			if err != nil {
+			entries := make([]manifestResult, n)
+			group, loadCtx := errgroup.WithContext(ctx)
+			for i, uri := range candidates[:n] {
+				group.Go(func() error {
+					manifest, err := r.ReadManifest(loadCtx, uri)
+					if errors.Is(err, ErrNotFound) {
+						return nil
+					}
+					if errors.Is(err, errInvalidManifest) {
+						entries[i].invalid = true
+						return nil
+					}
+					if err == nil {
+						entries[i].entry = Entry{Manifest: manifest, BackupKey: uri}
+					}
+					return err
+				})
+			}
+			if err := group.Wait(); err != nil {
 				return Page{}, err
 			}
-			page.Backups = append(page.Backups, Entry{Manifest: m, BackupKey: uri})
+			for i, result := range entries {
+				if result.entry.BackupKey != "" && len(page.Backups) == limit {
+					page.NextCursor = lastConsumed
+					return page, nil
+				}
+				if result.invalid {
+					lastConsumed = candidates[i]
+					page.InvalidManifests++
+				} else if result.entry.BackupKey != "" {
+					lastConsumed = candidates[i]
+					page.Backups = append(page.Backups, result.entry)
+				}
+			}
+			candidates = candidates[n:]
 		}
 		if !aws.ToBool(out.IsTruncated) {
 			return page, nil

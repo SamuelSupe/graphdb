@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes int64) {
+func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes int64, live ingestWALLiveRecords) {
 	defer close(w.done)
 	state := ingestWALWriterState{
 		wal:        w,
@@ -21,6 +22,7 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 		totalBytes: totalBytes,
 		writtenLSN: nextLSN - 1,
 		durableLSN: nextLSN - 1,
+		live:       live,
 	}
 	_, checkpointErr := os.Stat(filepath.Join(w.config.Dir, ingestWALCheckpointFile))
 	state.checkpointRequired = checkpointErr == nil
@@ -80,6 +82,8 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 }
 
 type ingestWALWriterState struct {
+	live               ingestWALLiveRecords
+	headProgressID     string
 	checkpointRequired bool
 	tailFile           *os.File
 	tailSequence       uint64
@@ -217,6 +221,16 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		endStorageSpan(groupSpan, nil)
 		for i, request := range pending {
 			result := results[i]
+			if s.live != nil {
+				if len(request.ids) == 0 {
+					s.live = nil
+				} else {
+					ref := ingestWALFrameRef{kind: request.kind, lsn: result.LSN, segment: result.Segment, offset: result.Offset}
+					for _, id := range request.ids {
+						s.live.update(id, ref)
+					}
+				}
+			}
 			result.Durable = s.wal.config.Durability == IngestWALDurabilitySync
 			if request.kind == IngestWALAccepted {
 				s.acceptedSequence++
@@ -254,12 +268,44 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 			continue
 		}
 		limit := s.wal.config.MaxBytes
-		if request.kind == IngestWALAccepted {
+		var retirementID string
+		allowHeadPrepare := false
+		switch request.kind {
+		case IngestWALAccepted:
 			limit -= s.wal.config.controlReserveBytes()
+		case IngestWALPrepared, IngestWALPublished:
+			limit -= s.wal.config.terminalReserveBytes()
+			if request.headOfLine && len(request.ids) == 1 && request.ids[0] != "" &&
+				(s.headProgressID == "" || s.headProgressID == request.ids[0]) {
+				allowHeadPrepare = true
+			}
+		case IngestWALFinalized, IngestWALFailed:
+			var marker walPendingStateEnvelope
+			if json.Unmarshal(request.payload, &marker) == nil && marker.RecordID != "" {
+				if marker.RecordID == s.headProgressID {
+					s.headProgressID = ""
+				}
+				if len(s.wal.legacyTerminalIDs) > 0 && frameBytes <= ingestTerminalFrameBytes {
+					if _, ok := s.wal.legacyTerminalIDs[marker.RecordID]; ok {
+						retirementID = marker.RecordID
+					}
+				}
+			}
 		}
-		if s.totalBytes+int64(buffer.Len())+frameBytes > limit {
+		// Older volumes may have filled the terminal reserve with prepared
+		// records. Only their recovered IDs (or at most one FIFO head-of-line
+		// record blocked solely by its own tenant's queued tail) may grow the
+		// log until compaction brings it below the limit.
+		if s.totalBytes+int64(buffer.Len())+frameBytes > limit && retirementID == "" && !allowHeadPrepare {
 			request.done <- ingestWALAppendResponse{err: ErrIngestWALFull}
 			continue
+		}
+		if s.totalBytes+int64(buffer.Len())+frameBytes > limit && allowHeadPrepare {
+			s.headProgressID = request.ids[0]
+			if s.wal.legacyTerminalIDs == nil {
+				s.wal.legacyTerminalIDs = make(map[string]struct{}, 1)
+			}
+			s.wal.legacyTerminalIDs[request.ids[0]] = struct{}{}
 		}
 		if s.segments[s.current].size+int64(buffer.Len())+frameBytes > s.wal.config.SegmentBytes {
 			if err := flush(); err != nil {
@@ -280,6 +326,9 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		offset := s.segments[s.current].size + int64(buffer.Len())
 		frame := encodeIngestWALFrame(request.kind, lsn, request.payload)
 		_, _ = buffer.Write(frame)
+		if retirementID != "" {
+			delete(s.wal.legacyTerminalIDs, retirementID)
+		}
 		s.nextLSN++
 		s.segments[s.current].maxLSN = lsn
 		pending = append(pending, request)
@@ -328,6 +377,9 @@ func (s *ingestWALWriterState) rotate() error {
 	}
 	if err := s.openCurrent(); err != nil {
 		return err
+	}
+	if s.wal.config.Durability != IngestWALDurabilitySync {
+		return nil
 	}
 	// Pruning may immediately remove the previous segment. Move the durable
 	// boundary to the new empty segment before its predecessor can disappear.
@@ -389,7 +441,12 @@ func (s *ingestWALWriterState) syncAndCloseSegment() error {
 	}
 	syncErr := syncStorageFile(s.file)
 	if syncErr == nil && s.writtenLSN != s.durableLSN {
-		syncErr = s.persistDurableTail(s.writtenLSN)
+		if s.wal.config.Durability == IngestWALDurabilitySync {
+			syncErr = s.persistDurableTail(s.writtenLSN)
+		}
+		if syncErr == nil {
+			s.durableLSN = s.writtenLSN
+		}
 	}
 	closeErr := s.file.Close()
 	s.file = nil
@@ -403,7 +460,13 @@ func (s *ingestWALWriterState) syncAndClose() (err error) {
 			s.tailFile = nil
 		}
 	}()
-	return s.syncAndCloseSegment()
+	if err = s.syncAndCloseSegment(); err != nil {
+		return err
+	}
+	if s.wal.config.Durability != IngestWALDurabilitySync && s.writtenLSN > 0 && s.wal.currentError() == nil && s.durableLSN == s.writtenLSN {
+		return s.persistDurableTail(s.writtenLSN)
+	}
+	return nil
 }
 
 func (s *ingestWALWriterState) failPending(err error) {

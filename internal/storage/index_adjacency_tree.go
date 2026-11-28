@@ -191,7 +191,16 @@ func (s *TenantStore) updateAdjacency(ctx context.Context, tenant, prefix string
 	if len(changes) == 0 {
 		return root, ctx.Err()
 	}
-	sort.Slice(changes, func(i, j int) bool { return changes[i].key.less(changes[j].key) })
+	sort.SliceStable(changes, func(i, j int) bool { return changes[i].key.less(changes[j].key) })
+	coalesced := changes[:0]
+	for _, c := range changes {
+		if n := len(coalesced); n > 0 && coalesced[n-1].key == c.key {
+			coalesced[n-1] = c
+			continue
+		}
+		coalesced = append(coalesced, c)
+	}
+	changes = coalesced
 	refs, err := s.editAdjacency(ctx, tenant, prefix, root, changes)
 	if err != nil {
 		return nil, err

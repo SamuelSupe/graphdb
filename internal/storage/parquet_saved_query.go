@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -55,19 +56,35 @@ const (
 	parquetSavedQueryColumnStringValue
 	parquetSavedQueryColumnBoolValue
 	parquetSavedQueryColumnFloatValue
+	parquetSavedQueryColumnMinVersion
+	parquetSavedQueryColumnAllowStale
 )
 
 const (
-	savedQueryRowMetadata         = "metadata"
-	savedQueryRowFilter           = "filter"
-	savedQueryRowWhere            = "where"
-	savedQueryRowRelationType     = "relation_type"
-	savedQueryRowPathNodeKind     = "path_node_kind"
-	savedQueryRowPathRelationType = "path_relation_type"
-	savedQueryRowPathEndWhere     = "path_end_where"
-	savedQueryRowSort             = "sort"
-	savedQueryRowProject          = "project"
-	savedQueryRowAggregate        = "aggregate"
+	savedQueryRowMetadata              = "metadata"
+	savedQueryRowFilter                = "filter"
+	savedQueryRowWhere                 = "where"
+	savedQueryRowWhereExpr             = "where_expr"
+	savedQueryRowEdgeWhere             = "edge_where"
+	savedQueryRowEdgeWhereExpr         = "edge_where_expr"
+	savedQueryRowRelationType          = "relation_type"
+	savedQueryRowPathNodeKind          = "path_node_kind"
+	savedQueryRowPathRelationType      = "path_relation_type"
+	savedQueryRowPathEndWhere          = "path_end_where"
+	savedQueryRowPathEndWhereExpr      = "path_end_where_expr"
+	savedQueryRowPathStep              = "path_step"
+	savedQueryRowPathStepNodeKind      = "path_step_node_kind"
+	savedQueryRowPathStepRelationType  = "path_step_relation_type"
+	savedQueryRowPathStepWhere         = "path_step_where"
+	savedQueryRowPathStepWhereExpr     = "path_step_where_expr"
+	savedQueryRowPathStepEdgeWhere     = "path_step_edge_where"
+	savedQueryRowPathStepEdgeWhereExpr = "path_step_edge_where_expr"
+	savedQueryRowSort                  = "sort"
+	savedQueryRowProject               = "project"
+	savedQueryRowAggregate             = "aggregate"
+	savedQueryRowGroupBy               = "group_by"
+	savedQueryRowHaving                = "having"
+	savedQueryRowHavingExpr            = "having_expr"
 )
 
 type savedQueryParquetRow struct {
@@ -115,6 +132,8 @@ type savedQueryColumnSet struct {
 	stringValue       *array.String
 	boolValue         *array.Boolean
 	floatValue        *array.Float64
+	minVersion        *array.Int64
+	allowStale        *array.Boolean
 }
 
 func marshalParquetSavedQuery(ctx context.Context, saved SavedQuery) ([]byte, error) {
@@ -168,6 +187,7 @@ func decodeParquetSavedQuery(ctx context.Context, data []byte) (SavedQuery, erro
 
 	var saved SavedQuery
 	var contentHash string
+	exprs := newSavedQueryExprBuilder()
 	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
 	for reader.Next() {
@@ -180,14 +200,21 @@ func decodeParquetSavedQuery(ctx context.Context, data []byte) (SavedQuery, erro
 			rowSaved := savedQueryFromColumns(columns, i)
 			if saved.Name == "" {
 				saved = rowSaved
-				contentHash = columns.contentHash.Value(i)
+				contentHash = strings.Clone(columns.contentHash.Value(i))
 			} else if saved.TenantID != rowSaved.TenantID || saved.Name != rowSaved.Name {
 				return SavedQuery{}, fmt.Errorf("saved query identity mismatch")
 			}
-			if err := applySavedQueryRow(&saved.Request, savedQueryRowFromColumns(columns, i)); err != nil {
+			ordinal := columns.ordinal.Value(i)
+			if ordinal < 0 || ordinal >= table.NumRows() {
+				return SavedQuery{}, fmt.Errorf("invalid saved query ordinal %d for %d rows", ordinal, table.NumRows())
+			}
+			if err := applySavedQueryRow(&saved.Request, exprs, savedQueryRowFromColumns(columns, i), table.NumRows()); err != nil {
 				return SavedQuery{}, err
 			}
 		}
+	}
+	if err := exprs.apply(&saved.Request); err != nil {
+		return SavedQuery{}, err
 	}
 	if strings.TrimSpace(saved.Name) == "" {
 		return SavedQuery{}, fmt.Errorf("parquet saved query is empty")
@@ -231,6 +258,20 @@ func savedQueryRows(request query.Request) ([]savedQueryParquetRow, error) {
 		}
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowWhere, Ordinal: i, Field: filter.Field, Op: filter.Op, Value: value})
 	}
+	var err error
+	if rows, err = appendSavedQueryExprRows(rows, savedQueryRowWhereExpr, "", request.WhereExpr); err != nil {
+		return nil, err
+	}
+	for i, filter := range request.EdgeWhere {
+		value, err := parquetio.ValueFromAny(filter.Value)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowEdgeWhere, Ordinal: i, Field: filter.Field, Op: filter.Op, Value: value})
+	}
+	if rows, err = appendSavedQueryExprRows(rows, savedQueryRowEdgeWhereExpr, "", request.EdgeWhereExpr); err != nil {
+		return nil, err
+	}
 	for i, relationType := range request.RelationTypes {
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowRelationType, Ordinal: i, Value: codec.StringCommitValue(relationType)})
 	}
@@ -247,6 +288,38 @@ func savedQueryRows(request query.Request) ([]savedQueryParquetRow, error) {
 		}
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathEndWhere, Ordinal: i, Field: filter.Field, Op: filter.Op, Value: value})
 	}
+	if rows, err = appendSavedQueryExprRows(rows, savedQueryRowPathEndWhereExpr, "", request.Path.EndWhereExpr); err != nil {
+		return nil, err
+	}
+	for stepIdx, step := range request.Path.Steps {
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathStep, Ordinal: stepIdx, Op: step.Direction})
+		for i, kind := range step.NodeKinds {
+			rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathStepNodeKind, ParentOrdinal: stepIdx, Ordinal: i, Value: codec.StringCommitValue(kind)})
+		}
+		for i, relationType := range step.RelationTypes {
+			rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathStepRelationType, ParentOrdinal: stepIdx, Ordinal: i, Value: codec.StringCommitValue(relationType)})
+		}
+		for i, filter := range step.Where {
+			value, err := parquetio.ValueFromAny(filter.Value)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathStepWhere, ParentOrdinal: stepIdx, Ordinal: i, Field: filter.Field, Op: filter.Op, Value: value})
+		}
+		if rows, err = appendSavedQueryExprRows(rows, savedQueryRowPathStepWhereExpr, strconv.Itoa(stepIdx), step.WhereExpr); err != nil {
+			return nil, err
+		}
+		for i, filter := range step.EdgeWhere {
+			value, err := parquetio.ValueFromAny(filter.Value)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathStepEdgeWhere, ParentOrdinal: stepIdx, Ordinal: i, Field: filter.Field, Op: filter.Op, Value: value})
+		}
+		if rows, err = appendSavedQueryExprRows(rows, savedQueryRowPathStepEdgeWhereExpr, strconv.Itoa(stepIdx), step.EdgeWhereExpr); err != nil {
+			return nil, err
+		}
+	}
 	for i, sortSpec := range request.Sort {
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowSort, Ordinal: i, Field: sortSpec.Field, Desc: sortSpec.Desc})
 	}
@@ -255,6 +328,19 @@ func savedQueryRows(request query.Request) ([]savedQueryParquetRow, error) {
 	}
 	for i, aggregate := range request.Aggregate {
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowAggregate, Ordinal: i, Name: aggregate.Name, Op: aggregate.Op, Field: aggregate.Field})
+	}
+	for i, field := range request.GroupBy {
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowGroupBy, Ordinal: i, Value: codec.StringCommitValue(field)})
+	}
+	for i, filter := range request.Having {
+		value, err := parquetio.ValueFromAny(filter.Value)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowHaving, Ordinal: i, Field: filter.Field, Op: filter.Op, Value: value})
+	}
+	if rows, err = appendSavedQueryExprRows(rows, savedQueryRowHavingExpr, "", request.HavingExpr); err != nil {
+		return nil, err
 	}
 	return rows, nil
 }
@@ -293,57 +379,66 @@ func appendSavedQueryRow(builder *array.RecordBuilder, saved SavedQuery, hash st
 	builder.Field(parquetSavedQueryColumnStringValue).(*array.StringBuilder).Append(row.Value.StringValue)
 	builder.Field(parquetSavedQueryColumnBoolValue).(*array.BooleanBuilder).Append(row.Value.BoolValue)
 	builder.Field(parquetSavedQueryColumnFloatValue).(*array.Float64Builder).Append(row.Value.FloatValue)
+	builder.Field(parquetSavedQueryColumnMinVersion).(*array.Int64Builder).Append(saved.Request.MinVersion)
+	builder.Field(parquetSavedQueryColumnAllowStale).(*array.BooleanBuilder).Append(saved.Request.AllowStale)
 }
 
 func savedQueryFromColumns(columns savedQueryColumnSet, row int) SavedQuery {
-	return SavedQuery{
-		TenantID:    columns.tenantID.Value(row),
-		Name:        columns.name.Value(row),
-		Description: columns.description.Value(row),
+	saved := SavedQuery{
+		TenantID:    strings.Clone(columns.tenantID.Value(row)),
+		Name:        strings.Clone(columns.name.Value(row)),
+		Description: strings.Clone(columns.description.Value(row)),
 		CreatedAt:   parquetio.ParseTime(columns.createdAt.Value(row)),
 		UpdatedAt:   parquetio.ParseTime(columns.updatedAt.Value(row)),
 		Request: query.Request{
-			Op:                columns.requestOp.Value(row),
-			TargetOp:          columns.targetOp.Value(row),
-			Kind:              columns.kind.Value(row),
-			ID:                columns.id.Value(row),
-			TargetID:          columns.targetID.Value(row),
-			Direction:         columns.direction.Value(row),
-			DirectionStrategy: columns.directionStrategy.Value(row),
-			RelationType:      columns.relationType.Value(row),
+			Op:                strings.Clone(columns.requestOp.Value(row)),
+			TargetOp:          strings.Clone(columns.targetOp.Value(row)),
+			Kind:              strings.Clone(columns.kind.Value(row)),
+			ID:                strings.Clone(columns.id.Value(row)),
+			TargetID:          strings.Clone(columns.targetID.Value(row)),
+			Direction:         strings.Clone(columns.direction.Value(row)),
+			DirectionStrategy: strings.Clone(columns.directionStrategy.Value(row)),
+			RelationType:      strings.Clone(columns.relationType.Value(row)),
 			Depth:             int(columns.depth.Value(row)),
 			Limit:             int(columns.limit.Value(row)),
-			Cursor:            columns.cursor.Value(row),
+			Cursor:            strings.Clone(columns.cursor.Value(row)),
 			TimeoutMS:         int(columns.timeoutMS.Value(row)),
 			CostLimit:         int(columns.costLimit.Value(row)),
 			Profile:           columns.profile.Value(row),
 			Path: query.PathFilter{
-				EndKind:  columns.pathEndKind.Value(row),
+				EndKind:  strings.Clone(columns.pathEndKind.Value(row)),
 				MaxPaths: int(columns.pathMaxPaths.Value(row)),
 			},
 		},
 	}
+	if columns.minVersion != nil {
+		saved.Request.MinVersion = columns.minVersion.Value(row)
+	}
+	if columns.allowStale != nil {
+		saved.Request.AllowStale = columns.allowStale.Value(row)
+	}
+	return saved
 }
 
 func savedQueryRowFromColumns(columns savedQueryColumnSet, row int) savedQueryParquetRow {
 	return savedQueryParquetRow{
-		Kind:          columns.rowKind.Value(row),
+		Kind:          strings.Clone(columns.rowKind.Value(row)),
 		Ordinal:       int(columns.ordinal.Value(row)),
 		ParentOrdinal: int(columns.parentOrdinal.Value(row)),
-		Field:         columns.field.Value(row),
-		Op:            columns.op.Value(row),
-		Name:          columns.rowName.Value(row),
+		Field:         strings.Clone(columns.field.Value(row)),
+		Op:            strings.Clone(columns.op.Value(row)),
+		Name:          strings.Clone(columns.rowName.Value(row)),
 		Desc:          columns.desc.Value(row),
 		Value: parquetValue{
-			Kind:        columns.valueKind.Value(row),
-			StringValue: columns.stringValue.Value(row),
+			Kind:        strings.Clone(columns.valueKind.Value(row)),
+			StringValue: strings.Clone(columns.stringValue.Value(row)),
 			BoolValue:   columns.boolValue.Value(row),
 			FloatValue:  columns.floatValue.Value(row),
 		},
 	}
 }
 
-func applySavedQueryRow(request *query.Request, row savedQueryParquetRow) error {
+func applySavedQueryRow(request *query.Request, exprs *savedQueryExprBuilder, row savedQueryParquetRow, totalRows int64) error {
 	switch row.Kind {
 	case savedQueryRowMetadata:
 		return nil
@@ -362,6 +457,14 @@ func applySavedQueryRow(request *query.Request, row savedQueryParquetRow) error 
 			return err
 		}
 		request.Where = setQueryFilterAt(request.Where, row.Ordinal, query.Filter{Field: row.Field, Op: row.Op, Value: value})
+	case savedQueryRowWhereExpr, savedQueryRowEdgeWhereExpr, savedQueryRowHavingExpr, savedQueryRowPathEndWhereExpr, savedQueryRowPathStepWhereExpr, savedQueryRowPathStepEdgeWhereExpr:
+		return exprs.add(row)
+	case savedQueryRowEdgeWhere:
+		value, err := parquetio.AnyFromValue(row.Value)
+		if err != nil {
+			return err
+		}
+		request.EdgeWhere = setQueryFilterAt(request.EdgeWhere, row.Ordinal, query.Filter{Field: row.Field, Op: row.Op, Value: value})
 	case savedQueryRowRelationType:
 		value, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
@@ -386,6 +489,49 @@ func applySavedQueryRow(request *query.Request, row savedQueryParquetRow) error 
 			return err
 		}
 		request.Path.EndWhere = setQueryFilterAt(request.Path.EndWhere, row.Ordinal, query.Filter{Field: row.Field, Op: row.Op, Value: value})
+	case savedQueryRowPathStep:
+		request.Path.Steps = ensureQueryPathStepsLen(request.Path.Steps, row.Ordinal)
+		request.Path.Steps[row.Ordinal].Direction = row.Op
+	case savedQueryRowPathStepNodeKind:
+		if row.ParentOrdinal < 0 || int64(row.ParentOrdinal) >= totalRows {
+			return fmt.Errorf("invalid saved query path step ordinal %d", row.ParentOrdinal)
+		}
+		value, err := codec.StringFromCommitValue(row.Value)
+		if err != nil {
+			return err
+		}
+		request.Path.Steps = ensureQueryPathStepsLen(request.Path.Steps, row.ParentOrdinal)
+		request.Path.Steps[row.ParentOrdinal].NodeKinds = codec.SetStringAt(request.Path.Steps[row.ParentOrdinal].NodeKinds, row.Ordinal, value)
+	case savedQueryRowPathStepRelationType:
+		if row.ParentOrdinal < 0 || int64(row.ParentOrdinal) >= totalRows {
+			return fmt.Errorf("invalid saved query path step ordinal %d", row.ParentOrdinal)
+		}
+		value, err := codec.StringFromCommitValue(row.Value)
+		if err != nil {
+			return err
+		}
+		request.Path.Steps = ensureQueryPathStepsLen(request.Path.Steps, row.ParentOrdinal)
+		request.Path.Steps[row.ParentOrdinal].RelationTypes = codec.SetStringAt(request.Path.Steps[row.ParentOrdinal].RelationTypes, row.Ordinal, value)
+	case savedQueryRowPathStepWhere:
+		if row.ParentOrdinal < 0 || int64(row.ParentOrdinal) >= totalRows {
+			return fmt.Errorf("invalid saved query path step ordinal %d", row.ParentOrdinal)
+		}
+		value, err := parquetio.AnyFromValue(row.Value)
+		if err != nil {
+			return err
+		}
+		request.Path.Steps = ensureQueryPathStepsLen(request.Path.Steps, row.ParentOrdinal)
+		request.Path.Steps[row.ParentOrdinal].Where = setQueryFilterAt(request.Path.Steps[row.ParentOrdinal].Where, row.Ordinal, query.Filter{Field: row.Field, Op: row.Op, Value: value})
+	case savedQueryRowPathStepEdgeWhere:
+		if row.ParentOrdinal < 0 || int64(row.ParentOrdinal) >= totalRows {
+			return fmt.Errorf("invalid saved query path step ordinal %d", row.ParentOrdinal)
+		}
+		value, err := parquetio.AnyFromValue(row.Value)
+		if err != nil {
+			return err
+		}
+		request.Path.Steps = ensureQueryPathStepsLen(request.Path.Steps, row.ParentOrdinal)
+		request.Path.Steps[row.ParentOrdinal].EdgeWhere = setQueryFilterAt(request.Path.Steps[row.ParentOrdinal].EdgeWhere, row.Ordinal, query.Filter{Field: row.Field, Op: row.Op, Value: value})
 	case savedQueryRowSort:
 		request.Sort = setQuerySortAt(request.Sort, row.Ordinal, query.SortSpec{Field: row.Field, Desc: row.Desc})
 	case savedQueryRowProject:
@@ -396,10 +542,194 @@ func applySavedQueryRow(request *query.Request, row savedQueryParquetRow) error 
 		request.Project = codec.SetStringAt(request.Project, row.Ordinal, value)
 	case savedQueryRowAggregate:
 		request.Aggregate = setQueryAggregateAt(request.Aggregate, row.Ordinal, query.Aggregation{Name: row.Name, Op: row.Op, Field: row.Field})
+	case savedQueryRowGroupBy:
+		value, err := codec.StringFromCommitValue(row.Value)
+		if err != nil {
+			return err
+		}
+		request.GroupBy = codec.SetStringAt(request.GroupBy, row.Ordinal, value)
+	case savedQueryRowHaving:
+		value, err := parquetio.AnyFromValue(row.Value)
+		if err != nil {
+			return err
+		}
+		request.Having = setQueryFilterAt(request.Having, row.Ordinal, query.Filter{Field: row.Field, Op: row.Op, Value: value})
 	default:
 		return fmt.Errorf("unknown saved query row kind %q", row.Kind)
 	}
 	return nil
+}
+
+type savedQueryExprEntry struct {
+	ordinal       int
+	parentOrdinal int
+	node          query.FilterExpr
+}
+
+type savedQueryExprKey struct {
+	kind string
+	name string
+}
+
+type savedQueryExprBuilder struct {
+	entries map[savedQueryExprKey][]savedQueryExprEntry
+}
+
+func newSavedQueryExprBuilder() *savedQueryExprBuilder {
+	return &savedQueryExprBuilder{entries: map[savedQueryExprKey][]savedQueryExprEntry{}}
+}
+
+func (b *savedQueryExprBuilder) add(row savedQueryParquetRow) error {
+	var value any
+	if row.Desc {
+		var err error
+		value, err = parquetio.AnyFromValue(row.Value)
+		if err != nil {
+			return err
+		}
+	}
+	key := savedQueryExprKey{kind: row.Kind, name: row.Name}
+	b.entries[key] = append(b.entries[key], savedQueryExprEntry{
+		ordinal:       row.Ordinal,
+		parentOrdinal: row.ParentOrdinal,
+		node: query.FilterExpr{
+			Op:    row.Op,
+			Field: row.Field,
+			Value: value,
+		},
+	})
+	return nil
+}
+
+func (b *savedQueryExprBuilder) apply(request *query.Request) error {
+	for key, entries := range b.entries {
+		expr, err := buildSavedQueryFilterExpr(entries)
+		if err != nil {
+			return err
+		}
+		switch key.kind {
+		case savedQueryRowWhereExpr:
+			request.WhereExpr = expr
+		case savedQueryRowEdgeWhereExpr:
+			request.EdgeWhereExpr = expr
+		case savedQueryRowHavingExpr:
+			request.HavingExpr = expr
+		case savedQueryRowPathEndWhereExpr:
+			request.Path.EndWhereExpr = expr
+		case savedQueryRowPathStepWhereExpr:
+			stepIdx, err := strconv.Atoi(key.name)
+			if err != nil || stepIdx < 0 || stepIdx >= len(request.Path.Steps) {
+				return fmt.Errorf("invalid saved query path step expr index %q", key.name)
+			}
+			request.Path.Steps[stepIdx].WhereExpr = expr
+		case savedQueryRowPathStepEdgeWhereExpr:
+			stepIdx, err := strconv.Atoi(key.name)
+			if err != nil || stepIdx < 0 || stepIdx >= len(request.Path.Steps) {
+				return fmt.Errorf("invalid saved query path step edge expr index %q", key.name)
+			}
+			request.Path.Steps[stepIdx].EdgeWhereExpr = expr
+		}
+	}
+	return nil
+}
+
+func appendSavedQueryExprRows(rows []savedQueryParquetRow, kind string, name string, expr *query.FilterExpr) ([]savedQueryParquetRow, error) {
+	if expr == nil {
+		return rows, nil
+	}
+	nextID := 0
+	var walk func(node query.FilterExpr, parent int) error
+	walk = func(node query.FilterExpr, parent int) error {
+		id := nextID
+		nextID++
+		var value parquetValue
+		hasValue := node.Value != nil
+		if hasValue {
+			var err error
+			value, err = parquetio.ValueFromAny(node.Value)
+			if err != nil {
+				return err
+			}
+		}
+		rows = append(rows, savedQueryParquetRow{
+			Kind:          kind,
+			Ordinal:       id,
+			ParentOrdinal: parent,
+			Name:          name,
+			Field:         node.Field,
+			Op:            node.Op,
+			Desc:          hasValue,
+			Value:         value,
+		})
+		for _, child := range node.Children {
+			if err := walk(child, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(*expr, -1); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func buildSavedQueryFilterExpr(entries []savedQueryExprEntry) (*query.FilterExpr, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	nodes := make([]query.FilterExpr, len(entries))
+	parents := make([]int, len(entries))
+	seen := make([]bool, len(entries))
+	for _, entry := range entries {
+		if entry.ordinal < 0 || entry.ordinal >= len(entries) || seen[entry.ordinal] {
+			return nil, fmt.Errorf("invalid saved query filter expression ordinal %d", entry.ordinal)
+		}
+		nodes[entry.ordinal] = entry.node
+		parents[entry.ordinal] = entry.parentOrdinal
+		seen[entry.ordinal] = true
+	}
+	rootIndex := -1
+	for i := range nodes {
+		parent := parents[i]
+		if parent == -1 {
+			if rootIndex != -1 {
+				return nil, fmt.Errorf("saved query filter expression has multiple roots")
+			}
+			rootIndex = i
+			continue
+		}
+		if parent < 0 || parent >= i {
+			return nil, fmt.Errorf("invalid saved query filter expression parent %d for node %d", parent, i)
+		}
+	}
+	if rootIndex != 0 {
+		return nil, fmt.Errorf("saved query filter expression missing root")
+	}
+	childrenByParent := make([][]int, len(nodes))
+	for i := 1; i < len(nodes); i++ {
+		childrenByParent[parents[i]] = append(childrenByParent[parents[i]], i)
+	}
+	var assemble func(idx int) query.FilterExpr
+	assemble = func(idx int) query.FilterExpr {
+		node := nodes[idx]
+		if childIDs := childrenByParent[idx]; len(childIDs) > 0 {
+			node.Children = make([]query.FilterExpr, len(childIDs))
+			for j, childID := range childIDs {
+				node.Children[j] = assemble(childID)
+			}
+		}
+		return node
+	}
+	root := assemble(0)
+	return &root, nil
+}
+
+func ensureQueryPathStepsLen(values []query.PathStep, index int) []query.PathStep {
+	for len(values) <= index {
+		values = append(values, query.PathStep{})
+	}
+	return values
 }
 
 func savedQueryColumns(batch arrow.RecordBatch) (savedQueryColumnSet, error) {
@@ -468,6 +798,16 @@ func savedQueryColumns(batch arrow.RecordBatch) (savedQueryColumnSet, error) {
 	if columns.floatValue, err = parquetio.Float64Column(batch, parquetSavedQueryColumnFloatValue, "float_value"); err != nil {
 		return columns, err
 	}
+	if batch.NumCols() > int64(parquetSavedQueryColumnMinVersion) {
+		if columns.minVersion, err = parquetio.Int64Column(batch, parquetSavedQueryColumnMinVersion, "min_version"); err != nil {
+			return columns, err
+		}
+	}
+	if batch.NumCols() > int64(parquetSavedQueryColumnAllowStale) {
+		if columns.allowStale, err = parquetio.BoolColumn(batch, parquetSavedQueryColumnAllowStale, "allow_stale"); err != nil {
+			return columns, err
+		}
+	}
 	return columns, nil
 }
 
@@ -506,6 +846,8 @@ func parquetSavedQueryArrowSchema() *arrow.Schema {
 		{Name: "string_value", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "bool_value", Type: arrow.FixedWidthTypes.Boolean, Nullable: false},
 		{Name: "float_value", Type: arrow.PrimitiveTypes.Float64, Nullable: false},
+		{Name: "min_version", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
+		{Name: "allow_stale", Type: arrow.FixedWidthTypes.Boolean, Nullable: false},
 	}, nil)
 }
 

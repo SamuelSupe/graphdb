@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+	"golang.org/x/sync/errgroup"
 )
 
 type ReadRequest struct {
@@ -164,6 +165,7 @@ var ErrVersionNotReady = errors.New("graph has not reached the requested minimum
 var ErrPlacementChanged = errors.New("partition placement changed")
 var ErrShardUnavailable = errors.New("partition group unavailable")
 var ErrGraphBusy = errors.New("graph is busy")
+var ErrPrepareSnapshotBudget = errors.New("snapshot byte budget blocks transaction preparation")
 var ErrPartitionCorrupt = errors.New("partition data is corrupt")
 
 var ErrQuotaExceeded = errors.New("graph quota exceeded")
@@ -243,10 +245,13 @@ func (v View) readBatch(ctx context.Context, requests []ReadRequest) ([]ReadResu
 		indices[group.ID] = append(indices[group.ID], i)
 		groups[group.ID] = group
 	}
-	for id, pending := range indices {
+	readGroup := func(ctx context.Context, id string, pending []int) error {
 		for len(pending) > 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err := v.Budget.charge(1, 0); err != nil {
-				return nil, err
+				return err
 			}
 			batch := make([]ReadRequest, min(ReadBatchParts, len(pending)))
 			for i := range batch {
@@ -255,21 +260,74 @@ func (v View) readBatch(ctx context.Context, requests []ReadRequest) ([]ReadResu
 			}
 			received, err := remote.ReadBatch(ctx, groups[id], batch)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if len(received) == 0 || len(received) > len(batch) {
-				return nil, fmt.Errorf("%w: fragment batch made no progress", ErrPartitionCorrupt)
+				return fmt.Errorf("%w: fragment batch made no progress", ErrPartitionCorrupt)
 			}
 			for i, result := range received {
 				if err := v.Budget.charge(0, result.rawBytes()); err != nil {
-					return nil, err
+					return err
 				}
 				results[pending[i]] = result
 			}
 			pending = pending[len(received):]
 		}
+		return nil
+	}
+	if len(indices) <= 1 {
+		for id, pending := range indices {
+			if err := readGroup(ctx, id, pending); err != nil {
+				return nil, err
+			}
+		}
+		return results, nil
+	}
+	reads, readCtx := errgroup.WithContext(ctx)
+	// Bound the number of in-flight responses (each up to fragmentReadBytes).
+	reads.SetLimit(4)
+	for id, pending := range indices {
+		reads.Go(func() error { return readGroup(readCtx, id, pending) })
+	}
+	if err := reads.Wait(); err != nil {
+		return nil, err
 	}
 	return results, nil
+}
+
+func (v View) visitKeys(ctx context.Context, byPartition map[uint8][]string, visit func(uint8, Row) error) error {
+	var requests []ReadRequest
+	for bucket, keys := range byPartition {
+		for len(keys) > 0 {
+			end := min(128, len(keys))
+			requests = append(requests, ReadRequest{Partition: bucket, Keys: keys[:end]})
+			keys = keys[end:]
+		}
+	}
+	for len(requests) > 0 {
+		batches, err := v.readBatch(ctx, requests)
+		if err != nil {
+			return err
+		}
+		next := requests[:0]
+		for i, batch := range batches {
+			request := requests[i]
+			for _, row := range batch.Rows {
+				if err := visit(request.Partition, row); err != nil {
+					return err
+				}
+			}
+			if len(batch.Remaining) > 0 {
+				if len(batch.Remaining) >= len(request.Keys) {
+					return fmt.Errorf("%w: key batch made no progress", ErrPartitionCorrupt)
+				}
+				request.Keys = batch.Remaining
+				next = append(next, request)
+			}
+		}
+		requests = next
+	}
+	return nil
 }
 
 func (v View) Get(ctx context.Context, bucket uint8, key string, value any) (bool, error) {

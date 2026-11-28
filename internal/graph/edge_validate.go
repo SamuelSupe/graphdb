@@ -15,7 +15,7 @@ func (g *Graph) validateRelationTypeEdges(
 	relationTypes map[string]struct{},
 ) error {
 	for relationType := range relationTypes {
-		for edgeID := range g.edgeTypeIndex[relationType] {
+		for edgeID := range g.edgeTypeIndex.At(relationType).Keys() {
 			edge, ok := g.Edges.Get(edgeID)
 			if !ok {
 				continue
@@ -113,8 +113,8 @@ func (g *Graph) validateCardinality(edge Edge) error {
 	return nil
 }
 
-func (g *Graph) hasCardinalityConflict(edge Edge, edgeIDs map[string]struct{}) bool {
-	for edgeID := range edgeIDs {
+func (g *Graph) hasCardinalityConflict(edge Edge, edgeIDs *ShardedMap[struct{}]) bool {
+	for edgeID := range edgeIDs.Keys() {
 		existing := g.Edges.At(edgeID)
 		if existing.ID != edge.ID && existing.Type == edge.Type {
 			return true

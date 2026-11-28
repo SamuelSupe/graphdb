@@ -252,9 +252,25 @@ func (c *ReaderCache) invalidate(tenantID string) {
 
 func (c *ReaderCache) InvalidateAll() {
 	c.mu.Lock()
+	tenants := make([]string, 0, len(c.entries)+len(c.loading))
+	seen := make(map[string]struct{}, len(c.entries)+len(c.loading))
+	for tenantID := range c.entries {
+		seen[tenantID] = struct{}{}
+		tenants = append(tenants, tenantID)
+	}
+	for tenantID := range c.loading {
+		if _, ok := seen[tenantID]; !ok {
+			tenants = append(tenants, tenantID)
+		}
+	}
 	clear(c.entries)
 	c.bytes = 0
 	c.mu.Unlock()
+	if c.Store != nil {
+		for _, tenantID := range tenants {
+			c.Store.invalidateReadViews(tenantID, false)
+		}
+	}
 }
 
 // PublishFromWriteCache makes an already-persisted copy-on-write graph visible
@@ -288,7 +304,20 @@ func (c *ReaderCache) publishGraph(tenantID string, loaded loadedGraph) bool {
 		bytes:      readerCacheEntryBytes(loaded),
 	}
 	if err := c.storeEntryLocked(tenantID, next); err != nil {
+		// Fail closed: evict any stale pre-commit entry and supersede obsolete
+		// in-flight loads so live readers transparently reload from disk instead
+		// of failing with spurious context.Canceled.
+		c.deleteEntryLocked(tenantID)
+		var cancel context.CancelFunc
+		if load := c.loading[tenantID]; load != nil && load.cancel != nil {
+			load.superseded = true
+			load.supersededGeneration = c.Store.readGeneration(tenantID)
+			cancel = load.cancel
+		}
 		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		return false
 	}
 	var cancel context.CancelFunc
@@ -334,6 +363,32 @@ func (c *ReaderCache) CachedAtLeast(tenantID string, minVersion int64) (*graph.G
 	c.recordVisible(tenantID, entry.manifest.Version)
 	g, manifest, err := cloneCacheEntry(entry)
 	return g, manifest, true, err
+}
+
+// WithCachedReadOnlyGraphAtLeast lends a cached immutable snapshot without
+// cloning when its version already satisfies minVersion.
+func (c *ReaderCache) WithCachedReadOnlyGraphAtLeast(tenantID string, minVersion int64, fn func(*graph.Graph, Manifest) error) (bool, error) {
+	if c == nil || fn == nil {
+		return false, nil
+	}
+	now := time.Now()
+	c.mu.RLock()
+	entry, ok := c.entries[tenantID]
+	if !ok || entry.manifest.Version < minVersion {
+		c.mu.RUnlock()
+		return false, nil
+	}
+	c.mu.RUnlock()
+	if !entry.touchAccess(now) {
+		c.touch(tenantID)
+	}
+	c.recordCache(tenantID, "hit_after_timeout")
+	c.recordVisible(tenantID, entry.manifest.Version)
+	g, manifest, err := cacheEntryGraph(entry, true)
+	if err != nil {
+		return true, err
+	}
+	return true, fn(g, manifest)
 }
 
 func (c *ReaderCache) Status(tenantID string) ReaderCacheStatus {

@@ -1,45 +1,97 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/subtle"
 	"io"
 	"net/http"
 	"net/http/pprof"
+	"strings"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/adminui"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 // Handler preserves the 1.0 single-listener API surface, with pprof disabled.
 func (s *Server) Handler() http.Handler {
-	return s.handler(true, true, false)
+	return s.handler(true, true, false, true)
+}
+
+// InternalHandler serves the full API surface without external bearer-token
+// authentication. It is exclusively for Raft state-machine replay and private
+// /cluster/data/ requests already authenticated by the Raft cluster token.
+func (s *Server) InternalHandler() http.Handler {
+	return s.handler(true, true, false, false)
 }
 
 // DataHandler exposes graph reads, writes, and schema reads.
 func (s *Server) DataHandler() http.Handler {
-	return s.handler(true, false, false)
+	return s.handler(true, false, false, true)
 }
 
 // AdminHandler exposes lifecycle, configuration, maintenance, and metrics.
 func (s *Server) AdminHandler(enablePprof bool) http.Handler {
-	return s.handler(false, true, enablePprof)
+	return s.handler(false, true, enablePprof, true)
 }
 
-func (s *Server) handler(data, admin, enablePprof bool) http.Handler {
+func (s *Server) handler(data, admin, enablePprof, enforceAuth bool) http.Handler {
 	s.prepareHandler()
 	mux := http.NewServeMux()
+	authRequired := enforceAuth && (s.AuthToken != "" || s.AdminToken != "" || s.RequireTenantScope)
 	s.registerCommonRoutes(mux)
 	if data {
-		s.registerDataRoutes(mux)
+		s.registerDataRoutes(mux, authRequired, false)
 	}
 	if admin {
 		adminui.Register(mux)
-		s.registerAdminRoutes(mux)
+		s.registerAdminRoutes(mux, authRequired)
+		if !data {
+			s.registerRoutes(mux, authRequired, true, routeSpec{pattern: "GET /v1/query/templates", handler: s.listQueryTemplates, adminOnly: true})
+		}
 	}
 	if enablePprof {
-		registerPprofRoutes(mux)
+		s.registerPprofRoutes(mux, authRequired)
 	}
 	return s.observeHTTP(mux)
+}
+
+func (s *Server) routeAuthMiddleware(adminOnly bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if storage.IsReplicatedContext(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		token := ""
+		if strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+		adminMatch := s.AdminToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.AdminToken)) == 1
+		authMatch := s.AuthToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.AuthToken)) == 1
+		if adminOnly && s.AdminToken != "" {
+			if !adminMatch {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="graphdb-admin"`)
+				writeError(w, http.StatusUnauthorized, "valid admin bearer token is required")
+				return
+			}
+		} else if s.AuthToken != "" || s.AdminToken != "" {
+			if !authMatch && !adminMatch {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="graphdb"`)
+				writeError(w, http.StatusUnauthorized, "valid bearer token is required")
+				return
+			}
+		}
+		if adminMatch {
+			r = r.WithContext(storage.WithAdminAuthorized(r.Context()))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isAdminAuthRequest(ctx context.Context) bool {
+	return storage.IsAdminAuthorized(ctx)
 }
 
 type routeSpec struct {
@@ -47,18 +99,21 @@ type routeSpec struct {
 	handler               http.HandlerFunc
 	mutation              bool
 	runtimeOnly           bool
+	readerActive          bool
 	bypassTenantLifecycle bool
 	skipReadView          bool
+	cancelableReadView    bool
+	adminOnly             bool
 }
 
-func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
+func (s *Server) registerRoutes(mux *http.ServeMux, enforceAuth, defaultAdmin bool, routes ...routeSpec) {
 	for _, route := range routes {
 		handler := http.Handler(route.handler)
+		if !route.mutation && !route.runtimeOnly && !route.skipReadView {
+			handler = s.pinLocalReadView(route.cancelableReadView, handler)
+		}
 		if !route.bypassTenantLifecycle {
 			handler = s.tenantLifecycleGate(route.mutation, handler)
-		}
-		if !route.mutation && !route.runtimeOnly && !route.skipReadView {
-			handler = s.pinLocalReadView(handler)
 		}
 		if s.Cluster != nil {
 			next := handler
@@ -66,8 +121,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
 				s.Cluster.ServeRoute(w, r, route.mutation, route.runtimeOnly, next)
 			})
 		}
-		if route.mutation && s.writeAllowed() {
+		if route.mutation && (s.writeAllowed() || route.runtimeOnly || route.readerActive) {
 			handler = ProtectBrowserWrite(handler)
+		}
+		if enforceAuth {
+			handler = s.routeAuthMiddleware(route.adminOnly || defaultAdmin, handler)
 		}
 		mux.Handle(route.pattern, handler)
 	}
@@ -89,27 +147,27 @@ func (s *Server) prepareHandler() {
 }
 
 func (s *Server) registerCommonRoutes(mux *http.ServeMux) {
-	s.registerRoutes(mux,
+	s.registerRoutes(mux, false, false,
 		routeSpec{pattern: "GET /v1/health", handler: s.health, bypassTenantLifecycle: true, skipReadView: true},
 		routeSpec{pattern: "GET /v1/readiness", handler: s.readiness, bypassTenantLifecycle: true, skipReadView: true},
 		routeSpec{pattern: "GET /openapi.yaml", handler: s.openAPI, bypassTenantLifecycle: true, skipReadView: true},
 	)
 }
 
-func (s *Server) registerDataRoutes(mux *http.ServeMux) {
-	s.registerRoutes(mux,
+func (s *Server) registerDataRoutes(mux *http.ServeMux, enforceAuth, defaultAdmin bool) {
+	s.registerRoutes(mux, enforceAuth, defaultAdmin,
 		routeSpec{pattern: "POST /v1/commits", handler: s.commit, mutation: true},
 		routeSpec{pattern: "POST /v1/ingest/batches", handler: s.ingest, mutation: true, bypassTenantLifecycle: true},
 		routeSpec{pattern: "GET /v1/ingest/batches/", handler: s.ingestBatchStatus, bypassTenantLifecycle: true},
 		routeSpec{pattern: "GET /v1/ingest/writers/", handler: s.ingestBatchStatus, bypassTenantLifecycle: true},
 		routeSpec{pattern: "POST /v1/imports", handler: s.startImport, mutation: true},
 		routeSpec{pattern: "GET /v1/entities", handler: s.listEntities},
-		routeSpec{pattern: "GET /v1/entities/stream", handler: s.streamEntities},
+		routeSpec{pattern: "GET /v1/entities/stream", handler: s.streamEntities, cancelableReadView: true},
 		routeSpec{pattern: "GET /v1/entities/", handler: s.entity},
 		routeSpec{pattern: "GET /v1/edges", handler: s.listEdges},
-		routeSpec{pattern: "GET /v1/edges/stream", handler: s.streamEdges},
-		routeSpec{pattern: "GET /v1/export/snapshot", handler: s.exportSnapshot},
-		routeSpec{pattern: "GET /v1/export/snapshot/stream", handler: s.streamSnapshot},
+		routeSpec{pattern: "GET /v1/edges/stream", handler: s.streamEdges, cancelableReadView: true},
+		routeSpec{pattern: "GET /v1/export/snapshot", handler: s.exportSnapshot, cancelableReadView: true},
+		routeSpec{pattern: "GET /v1/export/snapshot/stream", handler: s.streamSnapshot, cancelableReadView: true},
 		routeSpec{pattern: "GET /v1/ci-types", handler: s.ciTypes},
 		routeSpec{pattern: "GET /v1/entity-types", handler: s.entityTypes},
 		routeSpec{pattern: "GET /v1/relation-types", handler: s.relationTypes},
@@ -118,17 +176,17 @@ func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 		routeSpec{pattern: "GET /v1/tenant-config", handler: s.getTenantConfig},
 		routeSpec{pattern: "GET /v1/backup-automation", handler: s.getBackupAutomation},
 		routeSpec{pattern: "POST /v1/query", handler: s.query},
-		routeSpec{pattern: "POST /v1/query/stream", handler: s.queryStream},
+		routeSpec{pattern: "POST /v1/query/stream", handler: s.queryStream, cancelableReadView: true},
 		routeSpec{pattern: "POST /v1/query/graphql", handler: s.queryGraphQL},
 		routeSpec{pattern: "POST /v1/query/gql", handler: s.queryGQL},
-		routeSpec{pattern: "POST /v1/query/gql/stream", handler: s.queryGQLStream},
+		routeSpec{pattern: "POST /v1/query/gql/stream", handler: s.queryGQLStream, cancelableReadView: true},
 		routeSpec{pattern: "GET /v1/query/templates", handler: s.listQueryTemplates},
 		routeSpec{pattern: "POST /v1/query/templates/", handler: s.runQueryTemplate},
 	)
 }
 
-func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
-	s.registerRoutes(mux,
+func (s *Server) registerAdminRoutes(mux *http.ServeMux, enforceAuth bool) {
+	s.registerRoutes(mux, enforceAuth, true,
 		routeSpec{pattern: "POST /v1/backup-automation/reset", handler: s.resetBackupAutomation, mutation: true},
 		routeSpec{pattern: "GET /metrics", handler: s.metrics, runtimeOnly: true, bypassTenantLifecycle: true},
 		routeSpec{pattern: "GET /v1/diagnostics", handler: s.diagnostics, runtimeOnly: true, bypassTenantLifecycle: true},
@@ -145,7 +203,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		routeSpec{pattern: "PUT /v1/source-policy", handler: s.putSourcePolicy, mutation: true},
 		routeSpec{pattern: "PUT /v1/tenant-config", handler: s.putTenantConfig, mutation: true},
 		routeSpec{pattern: "GET /v1/queries/running", handler: s.listRunningQueries, runtimeOnly: true, bypassTenantLifecycle: true},
-		routeSpec{pattern: "DELETE /v1/queries/running/", handler: s.killRunningQuery, runtimeOnly: true, bypassTenantLifecycle: true},
+		routeSpec{pattern: "DELETE /v1/queries/running/", handler: s.killRunningQuery, mutation: true, runtimeOnly: true, bypassTenantLifecycle: true},
 		routeSpec{pattern: "POST /v1/query/templates", handler: s.saveQueryTemplate, mutation: true},
 		routeSpec{pattern: "GET /v1/tasks", handler: s.listTasks},
 		routeSpec{pattern: "POST /v1/tasks", handler: s.startTask, mutation: true},
@@ -165,29 +223,44 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		routeSpec{pattern: "GET /v1/control/reader-traffic-gate", handler: s.readerTrafficGate},
 		routeSpec{pattern: "GET /v1/control/integrity-audit", handler: s.integrityAudit},
 		routeSpec{pattern: "POST /v1/control/recover", handler: s.recoverTenant, mutation: true},
-		routeSpec{pattern: "POST /v1/control/repair", handler: s.repairTenant, mutation: true},
+		routeSpec{pattern: "POST /v1/control/repair", handler: s.repairTenant, mutation: true, readerActive: true},
 		routeSpec{pattern: "POST /v1/control/cleanup-commits", handler: s.cleanupCommits, mutation: true},
 		routeSpec{pattern: "POST /v1/control/gc", handler: s.runGC, mutation: true},
 		routeSpec{pattern: "POST /v1/compact", handler: s.compact, mutation: true},
 	)
 }
 
-func registerPprofRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
-	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("POST /debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
+func (s *Server) registerPprofRoutes(mux *http.ServeMux, enforceAuth bool) {
+	wrap := func(fn http.HandlerFunc) http.Handler {
+		if enforceAuth {
+			return s.routeAuthMiddleware(true, fn)
+		}
+		return fn
+	}
+	mux.Handle("GET /debug/pprof/", wrap(pprof.Index))
+	mux.Handle("GET /debug/pprof/cmdline", wrap(pprof.Cmdline))
+	mux.Handle("GET /debug/pprof/profile", wrap(pprof.Profile))
+	mux.Handle("GET /debug/pprof/symbol", wrap(pprof.Symbol))
+	mux.Handle("POST /debug/pprof/symbol", wrap(pprof.Symbol))
+	mux.Handle("GET /debug/pprof/trace", wrap(pprof.Trace))
 }
 
-func (s *Server) pinLocalReadView(next http.Handler) http.Handler {
+func (s *Server) pinLocalReadView(cancelable bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.Store == nil {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ctx, release, err := s.Store.ReadViewContext(r.Context(), r.Header.Get("X-Tenant-ID"))
+		var (
+			ctx     context.Context
+			release func()
+			err     error
+		)
+		if cancelable {
+			ctx, release, err = s.Store.ReadViewContextCancelable(r.Context(), r.Header.Get("X-Tenant-ID"))
+		} else {
+			ctx, release, err = s.Store.ReadViewContext(r.Context(), r.Header.Get("X-Tenant-ID"))
+		}
 		if err != nil {
 			writeStorageError(w, err)
 			return

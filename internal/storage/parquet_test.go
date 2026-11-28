@@ -114,8 +114,9 @@ func TestEntityPageRowsDecodeOutOfOrdinalOrder(t *testing.T) {
 		{Kind: entityPageRowSource, Ordinal: 1, EntitySource: graph.EntitySource{Source: "agent"}},
 		{Kind: entityPageRowSource, Ordinal: 0, EntitySource: graph.EntitySource{Source: "manual"}},
 	}
+	budget := int64(len(rows))
 	for _, row := range rows {
-		if err := codec.ApplyEntityRow(&entity, row); err != nil {
+		if err := codec.ApplyEntityRow(&entity, row, &budget); err != nil {
 			t.Fatalf("apply row %#v: %v", row, err)
 		}
 	}
@@ -267,6 +268,65 @@ func TestParquetIngestRecordRoundTripsTransactionalOptionsAndErrorCode(t *testin
 	}
 	if decoded.Result.Conflicts[0].ExistingValue != "stale" || decoded.Result.Conflicts[0].IncomingValue != "ready" {
 		t.Fatalf("decoded conflict values = %#v", decoded.Result.Conflicts[0])
+	}
+	// A tenant-sharded binding still uses the old column layout for transfers.
+	record.ReplicatedReceipt = &ReplicatedIngestReceipt{
+		Generation: 1, Index: 41, Epoch: 3, Digest: strings.Repeat("a", 64), SkipReason: "test-skip-reason",
+	}
+	full, err := marshalParquetIngestRecord(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullRecord, err := decodeParquetIngestRecord(ctx, full)
+	if err != nil || fullRecord.ReplicatedReceipt == nil || *fullRecord.ReplicatedReceipt != *record.ReplicatedReceipt {
+		t.Fatalf("wide receipt binding = %+v, error = %v", fullRecord.ReplicatedReceipt, err)
+	}
+	record.ReplicatedReceipt.Epoch = 0
+	compact, err := marshalParquetIngestRecord(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactRecord, err := decodeParquetIngestRecord(ctx, compact)
+	if err != nil || compactRecord.ReplicatedReceipt == nil || *compactRecord.ReplicatedReceipt != *record.ReplicatedReceipt {
+		t.Fatalf("sparse receipt binding = %+v, error = %v", compactRecord.ReplicatedReceipt, err)
+	}
+	fullRecord.ReplicatedReceipt.Epoch = 0
+	fullHash, err := ingestRecordContentHash(fullRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactHash, err := ingestRecordContentHash(compactRecord)
+	if err != nil || compactHash != fullHash {
+		t.Fatalf("sparse record changed the logical hash: %s, want %s (%v)", compactHash, fullHash, err)
+	}
+	if len(compact)*2 >= len(full) {
+		t.Fatalf("sparse typed record is %d bytes, want less than half of %d", len(compact), len(full))
+	}
+	assertNoJSONPayloadColumns(t, ctx, "sparse ingest record", compact)
+	var missingSource bytes.Buffer
+	func() {
+		table, release, err := parquetio.ReadTable(ctx, compact)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+		defer table.Release()
+		var fields []arrow.Field
+		var columns []arrow.Column
+		for index, field := range table.Schema().Fields() {
+			if field.Name != "source" {
+				fields = append(fields, field)
+				columns = append(columns, *table.Column(index))
+			}
+		}
+		damaged := array.NewTable(arrow.NewSchema(fields, nil), columns, table.NumRows())
+		defer damaged.Release()
+		if err := pqarrow.WriteTable(damaged, &missingSource, damaged.NumRows(), nil, pqarrow.DefaultWriterProps()); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if _, err := decodeParquetIngestRecord(ctx, missingSource.Bytes()); err == nil || !strings.Contains(err.Error(), "content hash mismatch") {
+		t.Fatalf("missing non-default column: got %v, want a content hash mismatch", err)
 	}
 }
 

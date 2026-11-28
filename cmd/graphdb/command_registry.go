@@ -1,6 +1,10 @@
 package main
 
-import "github.com/SamuelSupe/graphdb/v2/internal/storage"
+import (
+	"context"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+)
 
 type commandKind uint8
 
@@ -15,7 +19,7 @@ const (
 	commandReceiptCheck
 )
 
-type commandHandler func([]string, *storage.TenantStore) error
+type commandHandler func(context.Context, []string, *storage.TenantStore) error
 
 type commandSpec struct {
 	name     string

@@ -44,6 +44,10 @@ func (s *TenantStore) reuseUnchangedIndexCatalogObjects(tenantID string, catalog
 		previousSpec, ok := previousEdges[spec.RelationType+"\x00"+spec.Shard]
 		if ok {
 			spec.Objects = append([]IndexObject(nil), previousSpec.Objects...)
+			if spec.AdjacencyRoot == nil && previousSpec.AdjacencyRoot != nil {
+				rootCopy := *previousSpec.AdjacencyRoot
+				spec.AdjacencyRoot = &rootCopy
+			}
 		}
 	}
 
@@ -137,6 +141,12 @@ func (s *TenantStore) parquetObjectSuffix(tenantID string, key string) string {
 
 func (s *TenantStore) writeChangedParquetSecondaryIndexesFast(ctx context.Context, tenantID string, indexes []SecondaryIndex, catalog IndexCatalog, version int64) error {
 	specs := indexCatalogSpecMap(catalog)
+	type secondaryWriteJob struct {
+		index   SecondaryIndex
+		shardID string
+		sharded bool
+	}
+	var jobs []secondaryWriteJob
 	for _, index := range indexes {
 		spec, ok := specs[index.Kind+"\x00"+index.Field]
 		if !ok {
@@ -148,21 +158,23 @@ func (s *TenantStore) writeChangedParquetSecondaryIndexesFast(ctx context.Contex
 			if !ok || !s.indexObjectUsesVersion(tenantID, object, version) {
 				continue
 			}
-			if err := s.putParquetSecondaryIndex(ctx, tenantID, index, false); err != nil {
-				return err
-			}
+			jobs = append(jobs, secondaryWriteJob{index: index})
 			continue
 		}
 		for _, group := range groups {
 			if !s.secondaryIndexGroupUsesVersion(tenantID, spec, group, version) {
 				continue
 			}
-			if err := s.putParquetSecondaryIndexShard(ctx, tenantID, group.ID, group.Index, false); err != nil {
-				return err
-			}
+			jobs = append(jobs, secondaryWriteJob{index: group.Index, shardID: group.ID, sharded: true})
 		}
 	}
-	return nil
+	return s.runFileWriteJobs(ctx, len(jobs), func(workCtx context.Context, i int) error {
+		job := jobs[i]
+		if job.sharded {
+			return s.putParquetSecondaryIndexShard(workCtx, tenantID, job.shardID, job.index, false)
+		}
+		return s.putParquetSecondaryIndex(workCtx, tenantID, job.index, false)
+	})
 }
 
 func (s *TenantStore) writeIncrementalSecondaryIndexObjects(ctx context.Context, tenantID string, writes []incrementalSecondaryIndexWrite) error {
@@ -265,6 +277,7 @@ func (s *TenantStore) tombstoneDeletedEntityRecords(ctx context.Context, tenantI
 	if before == nil || after == nil {
 		return nil
 	}
+	var deletedIDs []string
 	for _, id := range changedEntityIDs {
 		if _, existed := before.Entities.Get(id); !existed {
 			continue
@@ -272,12 +285,18 @@ func (s *TenantStore) tombstoneDeletedEntityRecords(ctx context.Context, tenantI
 		if _, exists := after.Entities.Get(id); exists {
 			continue
 		}
+		deletedIDs = append(deletedIDs, id)
+	}
+	if len(deletedIDs) == 0 {
+		return nil
+	}
+	return s.runFileWriteJobs(ctx, len(deletedIDs), func(workCtx context.Context, i int) error {
+		id := deletedIDs[i]
 		key := s.entityRecordKey(tenantID, id)
-
-		meta, err := objectMeta(ctx, s.Objects, key)
+		meta, err := objectMeta(workCtx, s.Objects, key)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				continue
+				return nil
 			}
 			return err
 		}
@@ -290,11 +309,8 @@ func (s *TenantStore) tombstoneDeletedEntityRecords(ctx context.Context, tenantI
 			Version:       version,
 		}
 		stampEntityRecordHash(&record)
-		if err := s.putEntityRecordWithMeta(ctx, key, record, meta); err != nil {
-			return err
-		}
-	}
-	return nil
+		return s.putEntityRecordWithMeta(workCtx, key, record, meta)
+	})
 }
 
 func (s *TenantStore) indexObjectUsesVersion(tenantID string, object IndexObject, version int64) bool {

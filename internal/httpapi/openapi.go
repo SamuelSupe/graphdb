@@ -5,6 +5,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/docs"
 )
 
 var openAPICache struct {
@@ -52,6 +54,9 @@ func readOpenAPIFile() ([]byte, error) {
 			openAPICache.mu.Unlock()
 			return data, nil
 		}
+	}
+	if len(docs.OpenAPISpec) > 0 {
+		return docs.OpenAPISpec, nil
 	}
 	return nil, os.ErrNotExist
 }

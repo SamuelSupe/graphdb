@@ -27,7 +27,7 @@ func (s *TenantStore) finishAutomaticBackup(ctx context.Context, task Task, entr
 		return nil, fmt.Errorf("verify uploaded backup: %w", err)
 	}
 	// Restore input already verifies the entire download; do not transfer it twice.
-	result["verified_at"] = time.Now().UTC()
+	result["verified_at"] = mutationTime(ctx)
 	deleted, err := s.retainObjectBackups(ctx, task, entry)
 	if err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func (s *TenantStore) automaticBackupDrill(ctx context.Context, task Task, entry
 		return TenantRestoreDrillReport{}, ctx.Err()
 	}
 	defer releaseTaskSlot(s.taskResidentSlots)
-	if admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
+	if admission, ok := s.taskAdmissionFromContext(ctx); ok {
 		if !admission.acquire(ctx) {
 			return TenantRestoreDrillReport{}, ctx.Err()
 		}
@@ -69,6 +69,9 @@ func (s *TenantStore) retainObjectBackups(ctx context.Context, task Task, verifi
 			page, err := s.Backups.List(ctx, task.TenantID, cursor, 100)
 			if err != nil {
 				return err
+			}
+			if page.InvalidManifests > 0 {
+				return fmt.Errorf("backup retention found %d invalid manifests", page.InvalidManifests)
 			}
 			for _, entry := range page.Backups {
 				if entry.Automatic {
@@ -142,7 +145,7 @@ func (s *TenantStore) retainObjectBackups(ctx context.Context, task Task, verifi
 			return deleted, err
 		}
 	}
-	cutoff := time.Now().UTC().Add(-time.Duration(age) * time.Second)
+	cutoff := mutationTime(ctx).Add(-time.Duration(age) * time.Second)
 	err := walk(func(entry backupstore.Entry) (bool, error) {
 		if (keep > 0 && !retained[entry.BackupKey]) || (age > 0 && entry.CreatedAt.Before(cutoff)) {
 			if err := remove(entry); err != nil {

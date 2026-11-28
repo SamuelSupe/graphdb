@@ -3,6 +3,7 @@ package partition
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -29,6 +30,16 @@ type Plan struct {
 	EdgeCount     int64
 }
 
+// MutationBudgetError reports that planning exceeded the transaction's resource limit.
+type MutationBudgetError struct{ Reason string }
+
+func (e *MutationBudgetError) Error() string { return e.Reason }
+
+func mutationBudgetExceeded(err error) bool {
+	var budget *MutationBudgetError
+	return errors.Is(err, ErrReadBudget) || errors.As(err, &budget)
+}
+
 type edgeLocation struct {
 	ID        string `json:"id"`
 	Partition uint8  `json:"partition"`
@@ -42,20 +53,100 @@ type fragmentLoader struct {
 	entityLookups  map[string][]string
 	primaryMissing map[string]bool
 	edgeLookups    map[string]bool
+	edgeLocations  map[string]edgeLocation
 	directories    *directoryReads
 	bytes          int
 }
 
 func (l *fragmentLoader) charge(value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	l.bytes += len(data)
+	l.bytes += estimateFragmentBytes(value)
 	if l.bytes > 64<<20 || len(l.entities) > 8192 || len(l.edges) > 8192 {
-		return invalid("mutation dependency set exceeds the transaction memory budget")
+		return &MutationBudgetError{Reason: "mutation dependency set exceeds the transaction memory budget"}
 	}
 	return nil
+}
+
+func estimateFragmentBytes(value any) int {
+	switch v := value.(type) {
+	case nil:
+		return 8
+	case graph.Entity:
+		size := 128 + len(v.ID) + len(v.Kind) + len(v.Source) + len(v.ExternalID) + len(v.SplitFrom)
+		for _, id := range v.MergedFrom {
+			size += len(id) + 16
+		}
+		for k, val := range v.Fields {
+			size += len(k) + estimateAnyBytes(val) + 16
+		}
+		for k, val := range v.Identity {
+			size += len(k) + estimateAnyBytes(val) + 16
+		}
+		for k, mode := range v.FieldWriteModes {
+			size += len(k) + len(mode) + 32
+		}
+		for k, fs := range v.FieldSources {
+			size += len(k) + len(fs.Source) + 64
+		}
+		for _, src := range v.Sources {
+			size += len(src.Source) + len(src.ExternalID) + 64
+		}
+		return size
+	case graph.Edge:
+		size := 128 + len(v.ID) + len(v.Type) + len(v.From) + len(v.To) + len(v.Source) + len(v.ExternalID)
+		for k, val := range v.Fields {
+			size += len(k) + estimateAnyBytes(val) + 16
+		}
+		for k, fs := range v.FieldSources {
+			size += len(k) + len(fs.Source) + 64
+		}
+		for _, src := range v.Sources {
+			size += len(src.Source) + len(src.ExternalID) + 64
+		}
+		return size
+	default:
+		return estimateAnyBytes(v)
+	}
+}
+
+func estimateAnyBytes(value any) int {
+	switch v := value.(type) {
+	case nil:
+		return 4
+	case string:
+		return len(v) + 16
+	case []byte:
+		return len(v) + 24
+	case json.RawMessage:
+		return len(v) + 24
+	case bool, int, int64, int32, float64, float32, uint, uint64, uint32:
+		return 16
+	case []string:
+		n := 24
+		for _, s := range v {
+			n += len(s) + 16
+		}
+		return n
+	case []any:
+		n := 24
+		for _, item := range v {
+			n += estimateAnyBytes(item)
+		}
+		return n
+	case map[string]string:
+		n := 48
+		for k, item := range v {
+			n += len(k) + len(item) + 32
+		}
+		return n
+	case map[string]any:
+		n := 48
+		for k, item := range v {
+			n += len(k) + estimateAnyBytes(item) + 16
+		}
+		return n
+	default:
+		return 64
+	}
 }
 
 func (l *fragmentLoader) entity(id string) ([]string, error) {
@@ -98,29 +189,38 @@ func (l *fragmentLoader) entity(id string) ([]string, error) {
 }
 
 func (l *fragmentLoader) prefetchEntities(entities []graph.Entity) error {
-	if len(entities) < 2 {
+	ids := make([]string, 0, len(entities))
+	for _, entity := range entities {
+		ids = append(ids, strings.TrimSpace(entity.ID))
+	}
+	return l.prefetchEntityIDs(ids)
+}
+
+func (l *fragmentLoader) prefetchEntityIDs(ids []string) error {
+	if len(ids) < 2 {
 		return nil
 	}
 	if _, ok := l.view.Remote.(batchReader); !ok {
 		return nil
 	}
-	l.primaryMissing = make(map[string]bool)
+	if l.primaryMissing == nil {
+		l.primaryMissing = make(map[string]bool)
+	}
 	lookup := Lookup{View: l.view}
-	for start := 0; start < len(entities); start += 128 {
-		var ids []string
+	for start := 0; start < len(ids); start += 128 {
+		var missing []string
 		seen := make(map[string]bool)
-		for _, entity := range entities[start:min(len(entities), start+128)] {
-			id := strings.TrimSpace(entity.ID)
+		for _, id := range ids[start:min(len(ids), start+128)] {
 			if id != "" && !seen[id] && !l.primaryMissing[id] && len(l.entityLookups[id]) == 0 {
-				ids = append(ids, id)
+				missing = append(missing, id)
 				seen[id] = true
 			}
 		}
-		found, _, err := lookup.GetEntities(l.ctx, ids, nil)
+		found, _, err := lookup.GetEntities(l.ctx, missing, nil)
 		if err != nil {
 			return err
 		}
-		for _, id := range ids {
+		for _, id := range missing {
 			if entity, ok := found[id]; ok {
 				l.entities[id] = entity
 				l.entityLookups[id] = []string{id}
@@ -141,10 +241,16 @@ func (l *fragmentLoader) edge(id string) error {
 	}
 	l.edgeLookups[id] = true
 	key := EdgeLocatorKey(id)
-	var loc edgeLocation
-	found, err := l.view.Get(l.ctx, Bucket(key), key, &loc)
-	if err != nil {
-		return err
+	loc, cached := l.edgeLocations[id]
+	found := loc.ID != ""
+	if cached {
+		delete(l.edgeLocations, id)
+	} else {
+		var err error
+		found, err = l.view.Get(l.ctx, Bucket(key), key, &loc)
+		if err != nil {
+			return err
+		}
 	}
 	if !found {
 		owners, err := l.directories.get(EdgeAliasKey(id))
@@ -158,22 +264,25 @@ func (l *fragmentLoader) edge(id string) error {
 		}
 		return nil
 	}
-	var edge graph.Edge
-	found, err = l.view.Get(l.ctx, loc.Partition, EdgeKey(loc.ID), &edge)
-	if err != nil {
-		return err
-	}
-	if !found || edge.ID != loc.ID {
-		return fmt.Errorf("edge locator has no matching primary record")
-	}
-	l.edges[edge.ID] = edge
-	if err := l.charge(edge); err != nil {
-		return err
+	edge, alreadyLoaded := l.edges[loc.ID]
+	if !alreadyLoaded {
+		var err error
+		found, err = l.view.Get(l.ctx, loc.Partition, EdgeKey(loc.ID), &edge)
+		if err != nil {
+			return err
+		}
+		if !found || edge.ID != loc.ID {
+			return fmt.Errorf("edge locator has no matching primary record")
+		}
+		l.edges[edge.ID] = edge
+		if err := l.charge(edge); err != nil {
+			return err
+		}
 	}
 	if _, err := l.entity(edge.From); err != nil {
 		return err
 	}
-	_, err = l.entity(edge.To)
+	_, err := l.entity(edge.To)
 	return err
 }
 
@@ -186,12 +295,40 @@ func (l *fragmentLoader) incident(id string) error {
 			if err != nil {
 				return err
 			}
+			keys := make(map[uint8][]string)
+			var locations []edgeLocation
 			for _, row := range batch.Rows {
 				var loc edgeLocation
 				if err := decodeRecord(row, &loc); err != nil {
 					return err
 				}
-				if err := l.edge(loc.ID); err != nil {
+				if !l.edgeLookups[loc.ID] {
+					l.edgeLookups[loc.ID] = true
+					keys[loc.Partition] = append(keys[loc.Partition], EdgeKey(loc.ID))
+					locations = append(locations, loc)
+				}
+			}
+			edges, err := l.view.fetchEdges(l.ctx, keys)
+			if err != nil {
+				return err
+			}
+			endpoints := make([]string, 0, len(edges)*2)
+			for _, loc := range locations {
+				edge, ok := edges[loc.ID]
+				if !ok || Bucket(edge.From) != loc.Partition {
+					return fmt.Errorf("%w: adjacency references a missing edge", ErrPartitionCorrupt)
+				}
+				l.edges[loc.ID] = edge
+				if err := l.charge(edge); err != nil {
+					return err
+				}
+				endpoints = append(endpoints, edge.From, edge.To)
+			}
+			if err := l.prefetchEntityIDs(endpoints); err != nil {
+				return err
+			}
+			for _, id := range endpoints {
+				if _, err := l.entity(id); err != nil {
 					return err
 				}
 			}
@@ -230,12 +367,19 @@ func (l *fragmentLoader) constraints(g *graph.Graph, entities []graph.Entity, in
 			return err
 		}
 	}
+	var ownerIDs []string
 	for _, key := range constraints {
 		owners, err := l.directories.get(key)
 		if err != nil {
 			return err
 		}
-		for _, id := range owners {
+		ownerIDs = append(ownerIDs, owners...)
+	}
+	if len(ownerIDs) > 0 {
+		if err := l.prefetchEntityIDs(ownerIDs); err != nil {
+			return err
+		}
+		for _, id := range ownerIDs {
 			if _, err := l.entity(id); err != nil {
 				return err
 			}
@@ -340,7 +484,46 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 	}
 	directories := &directoryReads{ctx: ctx, view: view, owners: map[string][]string{}}
 	l := &fragmentLoader{view: view, ctx: ctx, entities: map[string]graph.Entity{}, edges: map[string]graph.Edge{}, entityLookups: map[string][]string{}, edgeLookups: map[string]bool{}, directories: directories}
-	if err := l.prefetchEntities(m.UpsertEntities); err != nil {
+	prefetchIDs := make([]string, 0, len(m.UpsertEntities)+len(m.DeleteEntities)+len(m.UpsertEdges)*2)
+	for _, entity := range m.UpsertEntities {
+		prefetchIDs = append(prefetchIDs, strings.TrimSpace(entity.ID))
+	}
+	for _, id := range m.DeleteEntities {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			prefetchIDs = append(prefetchIDs, trimmed)
+		}
+	}
+	for _, r := range m.DeleteEntityRequests {
+		if trimmed := strings.TrimSpace(r.ID); trimmed != "" {
+			prefetchIDs = append(prefetchIDs, trimmed)
+		}
+	}
+	for _, r := range m.MergeEntities {
+		if trimmed := strings.TrimSpace(r.TargetID); trimmed != "" {
+			prefetchIDs = append(prefetchIDs, trimmed)
+		}
+		for _, sourceID := range r.SourceIDs {
+			if trimmed := strings.TrimSpace(sourceID); trimmed != "" {
+				prefetchIDs = append(prefetchIDs, trimmed)
+			}
+		}
+	}
+	for _, r := range m.SplitEntities {
+		if trimmed := strings.TrimSpace(r.SourceID); trimmed != "" {
+			prefetchIDs = append(prefetchIDs, trimmed)
+		}
+	}
+	for _, edge := range m.UpsertEdges {
+		prefetchIDs = append(prefetchIDs, strings.TrimSpace(edge.From), strings.TrimSpace(edge.To))
+	}
+	for _, condition := range conditions {
+		if condition.ResourceType == "entity" {
+			if trimmed := strings.TrimSpace(condition.ID); trimmed != "" {
+				prefetchIDs = append(prefetchIDs, trimmed)
+			}
+		}
+	}
+	if err := l.prefetchEntitiesAndAliases(prefetchIDs); err != nil {
 		return Plan{}, err
 	}
 	for _, condition := range conditions {
@@ -356,34 +539,49 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 		return Plan{}, err
 	}
 	var incident []string
-	incident = append(incident, m.DeleteEntities...)
+	for _, id := range m.DeleteEntities {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			incident = append(incident, trimmed)
+		}
+	}
+	var deleteConstraintKeys []string
 	for _, r := range m.DeleteEntityRequests {
-		if r.ID != "" {
-			incident = append(incident, r.ID)
+		if trimmedID := strings.TrimSpace(r.ID); trimmedID != "" {
+			incident = append(incident, trimmedID)
 		} else {
-			entity := graph.Entity{Kind: r.Kind, Source: r.Source, ExternalID: r.ExternalID}
-			if err := l.constraints(preview, []graph.Entity{entity}, true); err != nil {
-				return Plan{}, err
+			ref, err := preview.PartitionEntitySourceReference(r.Kind, r.Source, r.ExternalID)
+			if err != nil {
+				return Plan{}, invalid(err.Error())
 			}
-			_, refs, err := preview.PartitionEntityReferences(entity, true)
+			deleteConstraintKeys = append(deleteConstraintKeys, ConstraintKey(ref))
+		}
+	}
+	if len(deleteConstraintKeys) > 0 {
+		if err := directories.prefetch(deleteConstraintKeys); err != nil {
+			return Plan{}, err
+		}
+		for _, key := range deleteConstraintKeys {
+			owners, err := directories.get(key)
 			if err != nil {
 				return Plan{}, err
 			}
-			for _, ref := range refs {
-				owners, err := directories.get(ConstraintKey(ref))
-				if err != nil {
-					return Plan{}, err
-				}
-				incident = append(incident, owners...)
-			}
+			incident = append(incident, owners...)
 		}
 	}
 	for _, r := range m.MergeEntities {
-		incident = append(incident, r.TargetID)
-		incident = append(incident, r.SourceIDs...)
+		if trimmed := strings.TrimSpace(r.TargetID); trimmed != "" {
+			incident = append(incident, trimmed)
+		}
+		for _, sourceID := range r.SourceIDs {
+			if trimmed := strings.TrimSpace(sourceID); trimmed != "" {
+				incident = append(incident, trimmed)
+			}
+		}
 	}
 	for _, r := range m.SplitEntities {
-		incident = append(incident, r.SourceID)
+		if trimmed := strings.TrimSpace(r.SourceID); trimmed != "" {
+			incident = append(incident, trimmed)
+		}
 		if err := l.constraints(preview, r.Entities, true); err != nil {
 			return Plan{}, err
 		}
@@ -399,28 +597,44 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 			}
 		}
 	}
+	deleteEdgeIDs := make([]string, 0, len(m.DeleteEdges)+len(m.DeleteEdgeRequests))
 	for _, id := range m.DeleteEdges {
-		if err := l.edge(id); err != nil {
-			return Plan{}, err
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			deleteEdgeIDs = append(deleteEdgeIDs, trimmed)
 		}
 	}
 	for _, r := range m.DeleteEdgeRequests {
-		id := r.ID
-		if id == "" && r.Type != "" && r.From != "" && r.To != "" {
-			id = graph.CanonicalEdgeIDParts(r.Type, r.From, r.To)
+		id := strings.TrimSpace(r.ID)
+		relType := strings.TrimSpace(r.Type)
+		from := strings.TrimSpace(r.From)
+		to := strings.TrimSpace(r.To)
+		if relType != "" || from != "" || to != "" {
+			if relType != "" && from != "" && to != "" {
+				deleteEdgeIDs = append(deleteEdgeIDs, graph.CanonicalEdgeIDParts(relType, from, to))
+			}
+		} else if id != "" {
+			deleteEdgeIDs = append(deleteEdgeIDs, id)
 		}
+	}
+	if err := l.prefetchEdgeIDs(deleteEdgeIDs); err != nil {
+		return Plan{}, err
+	}
+	for _, id := range deleteEdgeIDs {
 		if err := l.edge(id); err != nil {
 			return Plan{}, err
 		}
 	}
-	for _, edge := range m.UpsertEdges {
-		if _, err := l.entity(strings.TrimSpace(edge.From)); err != nil {
-			return Plan{}, err
+	for start := 0; start < len(m.UpsertEdges); start += 128 {
+		chunk := m.UpsertEdges[start:min(len(m.UpsertEdges), start+128)]
+		for _, edge := range chunk {
+			if _, err := l.entity(strings.TrimSpace(edge.From)); err != nil {
+				return Plan{}, err
+			}
+			if _, err := l.entity(strings.TrimSpace(edge.To)); err != nil {
+				return Plan{}, err
+			}
 		}
-		if _, err := l.entity(strings.TrimSpace(edge.To)); err != nil {
-			return Plan{}, err
-		}
-		if err := l.edgeDependencies(edge, preview.RelationTypes); err != nil {
+		if err := l.edgeDependencyBatch(chunk, preview.RelationTypes); err != nil {
 			return Plan{}, err
 		}
 	}
@@ -446,16 +660,14 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 		if err := l.constraints(after, entities, false); err != nil {
 			return Plan{}, err
 		}
-		for _, edge := range after.Edges.All() {
-			if err := l.edgeDependencies(edge, after.RelationTypes); err != nil {
-				return Plan{}, err
-			}
+		if err := l.rewrittenEdgeDependencies(after); err != nil {
+			return Plan{}, err
 		}
 		if loaded == len(l.entities)+len(l.edges) {
 			break
 		}
 		if round == 31 {
-			return Plan{}, invalid("mutation identity dependency closure exceeds its budget")
+			return Plan{}, &MutationBudgetError{Reason: "mutation identity dependency closure exceeds its budget"}
 		}
 	}
 	for _, sidecar := range view.Graph.RelationSchemas.RelationSchemas {

@@ -3,23 +3,25 @@ package storage
 import "github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 
 type (
-	CollectorStatus       = ingest.CollectorStatus
-	IngestBatchEntry      = ingest.IngestBatchEntry
-	IngestBatchHooks      = ingest.IngestBatchHooks
-	IngestBatchRecord     = ingest.IngestBatchRecord
-	IngestBatchStats      = ingest.IngestBatchStats
-	IngestConflict        = ingest.IngestConflict
-	IngestFailure         = ingest.IngestFailure
-	IngestItem            = ingest.IngestItem
-	IngestPrecondition    = ingest.IngestPrecondition
-	IngestPreparedRequest = ingest.IngestPreparedRequest
-	IngestRequest         = ingest.IngestRequest
-	IngestResult          = ingest.IngestResult
+	CollectorStatus         = ingest.CollectorStatus
+	IngestBatchEntry        = ingest.IngestBatchEntry
+	IngestBatchHooks        = ingest.IngestBatchHooks
+	IngestBatchRecord       = ingest.IngestBatchRecord
+	IngestBatchStats        = ingest.IngestBatchStats
+	IngestConflict          = ingest.IngestConflict
+	IngestFailure           = ingest.IngestFailure
+	IngestItem              = ingest.IngestItem
+	IngestPrecondition      = ingest.IngestPrecondition
+	IngestPreparedRequest   = ingest.IngestPreparedRequest
+	IngestRequest           = ingest.IngestRequest
+	IngestResult            = ingest.IngestResult
+	ReplicatedIngestReceipt = ingest.ReplicatedIngestReceipt
 )
 
 const (
 	IngestErrorAtomicSuppressed      = ingest.IngestErrorAtomicSuppressed
 	IngestErrorAtomicValidation      = ingest.IngestErrorAtomicValidation
+	IngestErrorMutationBudget        = ingest.IngestErrorMutationBudget
 	IngestErrorIdempotencyConflict   = ingest.IngestErrorIdempotencyConflict
 	IngestErrorPreconditionFailed    = ingest.IngestErrorPreconditionFailed
 	IngestErrorVersionConflict       = ingest.IngestErrorVersionConflict

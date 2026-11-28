@@ -39,16 +39,21 @@ func (s *TenantStore) readManifest(ctx context.Context, tenantID string, allowMi
 		objects = files
 	}
 	data, meta, err := objects.GetWithMeta(ctx, key)
-	if errors.Is(err, ErrNotFound) {
-		if !allowMissing {
-			exists, scanErr := s.tenantGraphObjectsExist(ctx, tenantID)
-			if scanErr != nil {
-				return Manifest{}, ObjectMeta{}, scanErr
-			}
-			if exists {
+	if errors.Is(err, ErrNotFound) && !allowMissing {
+		exists, scanErr := s.tenantGraphObjectsExist(ctx, tenantID)
+		if scanErr != nil {
+			return Manifest{}, ObjectMeta{}, scanErr
+		}
+		if exists {
+			// The first writer can publish the head between our GET and LIST.
+			s.clearWriterObjectKey(key)
+			data, meta, err = objects.GetWithMeta(ctx, key)
+			if errors.Is(err, ErrNotFound) {
 				return Manifest{}, ObjectMeta{}, fmt.Errorf("%w: tenant %q", errMissingGraphManifest, tenantID)
 			}
 		}
+	}
+	if errors.Is(err, ErrNotFound) {
 		return Manifest{TenantID: tenantID}, ObjectMeta{Key: key}, nil
 	}
 	if err != nil {

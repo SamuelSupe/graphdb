@@ -107,8 +107,11 @@ func TestRouterDrainRemovesReadinessButKeepsInFlightRouting(t *testing.T) {
 	if call("POST", "/v1/router/drain", "secret") != http.StatusNoContent || call("GET", "/v1/readiness", "") != http.StatusServiceUnavailable {
 		t.Fatal("drain did not remove router readiness")
 	}
-	if call("GET", "/v1/tenants", "") != http.StatusOK {
-		t.Fatal("drain interrupted an existing data route")
+	if call("GET", "/v1/tenants", "") != http.StatusForbidden {
+		t.Fatal("unauthenticated tenant listing bypassed operator authorization")
+	}
+	if call("GET", "/v1/tenants", "secret") != http.StatusOK {
+		t.Fatal("drain interrupted an authorized tenant listing route")
 	}
 	if call("POST", "/v1/router/resume", "secret") != http.StatusNoContent || call("GET", "/v1/readiness", "") != http.StatusOK {
 		t.Fatal("router did not resume")
@@ -352,6 +355,7 @@ func TestRouterTenantPagesUseCatalogOrderAndOwnershipHeaders(t *testing.T) {
 	router := NewRouter(Shard{ID: "catalog", ClusterID: "catalog", Peers: map[uint64]string{1: server.URL}}, "secret")
 	defer router.Client.HTTP.CloseIdleConnections()
 	request := httptest.NewRequest(http.MethodGet, "/v1/tenants?limit=25&cursor=tenant-09974", nil)
+	request.Header.Set("Authorization", "Bearer secret")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, request)
 	var page storage.TenantInfoPage
@@ -377,7 +381,7 @@ func TestRouterRequiresOperatorTokenForAdministrativeForwarding(t *testing.T) {
 	defer server.Close()
 	router := NewRouter(Shard{ID: "catalog", ClusterID: "catalog", Peers: map[uint64]string{1: server.URL}}, "secret")
 	defer router.Client.HTTP.CloseIdleConnections()
-	for _, route := range []struct{ method, path string }{{"POST", "/v1/tenants/tenant-a/purge"}, {"POST", "/v1/control/gc"}, {"POST", "/v1/control/recover"}, {"PUT", "/v1/tenant-config"}} {
+	for _, route := range []struct{ method, path string }{{"GET", "/v1/tenants"}, {"POST", "/v1/tenants/tenant-a/purge"}, {"POST", "/v1/control/gc"}, {"POST", "/v1/control/recover"}, {"PUT", "/v1/tenant-config"}} {
 		request := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
 		request.Header.Set("X-Tenant-ID", "tenant-a")
 		response := httptest.NewRecorder()
@@ -573,7 +577,7 @@ func TestGraphAdmissionKeepsOtherTenantsAndReadsAvailable(t *testing.T) {
 	client := NewClient("token")
 	releases := make([]func(), 0, 8)
 	for range 8 {
-		release := client.admitGraph("cluster/slow", false)
+		release := client.graphAdmission.acquire(t.Context(), graphScope{"cluster", "slow"}, false)
 		if release == nil {
 			t.Fatal("slow tenant exhausted its budget early")
 		}
@@ -584,12 +588,12 @@ func TestGraphAdmissionKeepsOtherTenantsAndReadsAvailable(t *testing.T) {
 			release()
 		}
 	}()
-	if release := client.admitGraph("cluster/slow", false); release != nil {
+	if release := client.graphAdmission.acquire(t.Context(), graphScope{"cluster", "slow"}, false); release != nil {
 		release()
 		t.Fatal("slow tenant exceeded its read budget")
 	}
-	write := client.admitGraph("cluster/healthy", true)
-	read := client.admitGraph("cluster/healthy", false)
+	write := client.graphAdmission.acquire(t.Context(), graphScope{"cluster", "healthy"}, true)
+	read := client.graphAdmission.acquire(t.Context(), graphScope{"cluster", "healthy"}, false)
 	if write == nil || read == nil {
 		t.Fatal("healthy tenant lost access when another tenant filled its read slots")
 	}

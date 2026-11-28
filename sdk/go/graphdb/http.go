@@ -42,7 +42,10 @@ func (c *Client) doJSONWithHeaders(
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+	}()
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return resp.StatusCode, resp.Header.Clone(), nil
@@ -58,7 +61,10 @@ func (c *Client) doText(ctx context.Context, method string, path string, tenantI
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+	}()
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
@@ -102,7 +108,7 @@ func (c *Client) doWithHeaders(
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		return nil, parseAPIError(resp)
 	}
@@ -127,7 +133,9 @@ func (c *Client) setHeaders(req *http.Request, tenantID string, contentType stri
 	if tenantID == "" {
 		tenantID = c.tenantID
 	}
-	if tenantID != "" && tenantID != platformTenant {
+	if tenantID == platformTenant {
+		req.Header.Del("X-Tenant-ID")
+	} else if tenantID != "" {
 		req.Header.Set("X-Tenant-ID", tenantID)
 	}
 }

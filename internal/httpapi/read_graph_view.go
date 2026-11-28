@@ -57,12 +57,12 @@ func (s *Server) withReadOnlyGraphForRead(ctx context.Context, tenantID string, 
 		}
 		return err
 	}
-	if cached, manifest, ok, cacheErr := s.cachedGraphAtLeast(tenantID, target.TargetVersion); cacheErr != nil {
-		return cacheErr
-	} else if ok {
+	if ok, cacheErr := s.Cache.WithCachedReadOnlyGraphAtLeast(tenantID, target.TargetVersion, func(cached *graph.Graph, manifest storage.Manifest) error {
 		s.recordReaderCatchup(tenantID, "ok", catchupStart)
 		s.recordReaderVisible(tenantID, manifest.Version)
 		return fn(cached, manifest)
+	}); ok {
+		return cacheErr
 	}
 	reason := readCatchupReason(loadCtx, err)
 	s.recordReaderCatchup(tenantID, reason, catchupStart)

@@ -93,6 +93,76 @@ type countedTaskFiles struct{ *countingObjectStore }
 
 func (s countedTaskFiles) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
 
+func TestLocalTaskListReadsOnlySelectedTerminalPayloads(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	counter := newCountingObjectStore(files)
+	store := NewTenantStore(countedTaskFiles{counter}, "test")
+	ctx := t.Context()
+	const tenant = "tenant-a"
+	start := time.Date(2026, 7, 24, 2, 0, 0, 0, time.UTC)
+	put := func(id string, at time.Time, status string) {
+		t.Helper()
+		task := Task{ID: id, TenantID: tenant, Type: TaskTypeGC, Status: status, StartedAt: at, Result: map[string]any{"kind": id}}
+		data, err := marshalParquetTask(ctx, task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := files.Put(ctx, store.taskKey(tenant, id), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 1000 {
+		put(fmt.Sprintf("finished-%04d", i), start.Add(time.Duration(i)*time.Second), TaskStatusSucceeded)
+	}
+	limit := TaskListOptions{Limit: 10}
+	read := func(options TaskListOptions, want string) []Task {
+		t.Helper()
+		tasks, err := store.ListTasks(ctx, tenant, options)
+		if err != nil || len(tasks) == 0 || tasks[0].ID != want {
+			t.Fatalf("first task %q expected, got %v (%v)", want, tasks, err)
+		}
+		return tasks
+	}
+	read(limit, "finished-0999")
+	cold := counter.getWithMetaCalls
+	counter.reset()
+	warm := read(limit, "finished-0999")
+	if len(warm) != 10 || warm[0].Result["kind"] != warm[0].ID || cold != 1000 || counter.getWithMetaCalls != 10 {
+		t.Fatalf("full result or read budget changed: cold=%d warm=%d tasks=%v", cold, counter.getWithMetaCalls, warm)
+	}
+	t.Logf("task objects fetched for limit=10: cold=%d warm=%d", cold, counter.getWithMetaCalls)
+
+	put("finished-0000", start.Add(time.Hour), TaskStatusFailed)
+	read(TaskListOptions{Status: TaskStatusFailed, Limit: 1}, "finished-0000")
+	if err := files.Delete(ctx, store.taskKey(tenant, "finished-0000")); err != nil {
+		t.Fatal(err)
+	}
+	read(limit, "finished-0999")
+
+	legacy := IndexTask{ID: "legacy", TenantID: tenant, Type: "rebuild", Status: TaskStatusSucceeded, StartedAt: start.Add(time.Hour)}
+	data, err := marshalParquetIndexTask(ctx, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := store.indexTaskKey(tenant, legacy.ID)
+	if err := files.Put(ctx, key, data); err != nil {
+		t.Fatal(err)
+	}
+	filter := TaskListOptions{Type: TaskTypeIndexRebuild, Limit: 1}
+	read(filter, "legacy")
+	read(filter, "legacy")
+	if err := files.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if tasks, err := store.ListTasks(ctx, tenant, filter); err != nil || len(tasks) != 0 {
+		t.Fatalf("deleted legacy task is still listed: %v (%v)", tasks, err)
+	}
+}
+
 func TestQueuedMaintenancePollTracksChangesWithoutReadingHistory(t *testing.T) {
 	files, err := OpenFileStore(t.TempDir())
 	if err != nil {

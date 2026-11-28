@@ -41,8 +41,8 @@ func (g *Graph) writableKindEntityIDs(kind string) *ShardedMap[struct{}] {
 	}
 	return ids
 }
-func cloneKindEntityIDs(source *ShardedMap[*ShardedMap[struct{}]]) *ShardedMap[*ShardedMap[struct{}]] {
-	result := NewShardedMap[*ShardedMap[struct{}]]()
+func cloneNestedIndex[V any](source *ShardedMap[*ShardedMap[V]]) *ShardedMap[*ShardedMap[V]] {
+	result := NewShardedMap[*ShardedMap[V]]()
 	for kind, ids := range source.All() {
 		result.Set(kind, ids.Clone())
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
@@ -336,11 +337,13 @@ func marshalParquetTaskRows(ctx context.Context, identity parquetTaskIdentity, r
 }
 
 func decodeParquetTaskRows(ctx context.Context, data []byte) (parquetTaskIdentity, []parquetTaskRow, error) {
-	return decodeParquetTaskRowsReader(ctx, bytes.NewReader(data))
+	return decodeParquetTaskRowsReader(parquetio.WithControlDecode(ctx), bytes.NewReader(data))
 }
 
 func decodeParquetTaskRowsReader(ctx context.Context, source parquet.ReaderAtSeeker) (parquetTaskIdentity, []parquetTaskRow, error) {
-	table, release, err := parquetio.ReadTableReader(parquetio.WithControlDecode(ctx), source)
+	// Streamed reader decodes (such as full-tenant backup restores) use normal
+	// admission so large restores cannot starve the reserved control-decode slot.
+	table, release, err := parquetio.ReadTableReader(ctx, source)
 	if err != nil {
 		return parquetTaskIdentity{}, nil, err
 	}
@@ -451,31 +454,31 @@ func parquetTaskColumns(record arrow.RecordBatch) (parquetTaskColumnSet, error) 
 
 func parquetTaskIdentityFromColumns(columns parquetTaskColumnSet, row int) parquetTaskIdentity {
 	return parquetTaskIdentity{
-		TenantID:          columns.tenantID.Value(row),
-		ID:                columns.id.Value(row),
-		Type:              columns.taskType.Value(row),
-		Status:            columns.status.Value(row),
-		Phase:             columns.phase.Value(row),
+		TenantID:          strings.Clone(columns.tenantID.Value(row)),
+		ID:                strings.Clone(columns.id.Value(row)),
+		Type:              strings.Clone(columns.taskType.Value(row)),
+		Status:            strings.Clone(columns.status.Value(row)),
+		Phase:             strings.Clone(columns.phase.Value(row)),
 		ProgressCompleted: int(columns.progressCompleted.Value(row)),
 		ProgressTotal:     int(columns.progressTotal.Value(row)),
-		OwnerID:           columns.ownerID.Value(row),
+		OwnerID:           strings.Clone(columns.ownerID.Value(row)),
 		CatalogVersion:    columns.catalogVersion.Value(row),
-		ResultKey:         columns.resultKey.Value(row),
-		Error:             columns.taskError.Value(row),
-		StartedAt:         columns.startedAt.Value(row),
-		UpdatedAt:         columns.updatedAt.Value(row),
-		FinishedAt:        columns.finishedAt.Value(row),
-		ContentHash:       columns.contentHash.Value(row),
+		ResultKey:         strings.Clone(columns.resultKey.Value(row)),
+		Error:             strings.Clone(columns.taskError.Value(row)),
+		StartedAt:         strings.Clone(columns.startedAt.Value(row)),
+		UpdatedAt:         strings.Clone(columns.updatedAt.Value(row)),
+		FinishedAt:        strings.Clone(columns.finishedAt.Value(row)),
+		ContentHash:       strings.Clone(columns.contentHash.Value(row)),
 	}
 }
 
 func parquetTaskRowFromColumns(columns parquetTaskColumnSet, row int) parquetTaskRow {
 	return parquetTaskRow{
-		Kind: columns.rowKind.Value(row),
-		Key:  columns.entryKey.Value(row),
+		Kind: strings.Clone(columns.rowKind.Value(row)),
+		Key:  strings.Clone(columns.entryKey.Value(row)),
 		Value: parquetValue{
-			Kind:        columns.valueKind.Value(row),
-			StringValue: columns.stringValue.Value(row),
+			Kind:        strings.Clone(columns.valueKind.Value(row)),
+			StringValue: strings.Clone(columns.stringValue.Value(row)),
 			BoolValue:   columns.boolValue.Value(row),
 			FloatValue:  columns.floatValue.Value(row),
 		},

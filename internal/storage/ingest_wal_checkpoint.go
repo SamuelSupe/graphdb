@@ -53,17 +53,33 @@ func (s *ingestWALWriterState) checkpoint() error {
 	if err := syncStorageFile(s.file); err != nil {
 		return errors.Join(ErrIngestWALFailed, err)
 	}
-	if err := s.persistDurableTail(s.writtenLSN); err != nil {
-		return errors.Join(ErrIngestWALFailed, err)
+	if s.wal.config.Durability == IngestWALDurabilitySync {
+		if err := s.persistDurableTail(s.writtenLSN); err != nil {
+			return errors.Join(ErrIngestWALFailed, err)
+		}
 	}
 	s.durableLSN = s.writtenLSN
 	var recovery ingestRecovery
-	if _, _, _, err := scanIngestWAL(s.wal.config.Dir, recovery.apply); err != nil {
-		return errors.Join(ErrIngestWALFailed, err)
+	var recoveryErr error
+	if s.live == nil {
+		_, _, _, recoveryErr = scanIngestWALWithDurability(s.wal.config.Dir, s.wal.config.Durability, recovery.apply)
+	} else {
+		recovery, recoveryErr = s.recoverLive()
+	}
+	if recoveryErr != nil {
+		return errors.Join(ErrIngestWALFailed, recoveryErr)
+	}
+	if s.headProgressID != "" && recovery.pending[s.headProgressID] == nil {
+		s.headProgressID = ""
 	}
 	checkpoint := ingestWALCheckpoint{Version: 1, Through: s.writtenLSN, Pending: make([]walIngestEnvelope, 0, len(recovery.pending))}
 	for _, pending := range recovery.pending {
-		checkpoint.Pending = append(checkpoint.Pending, pending.envelope)
+		envelope := pending.envelope
+		if envelope.Prepared != nil {
+			// The same outcome is already recorded in the durable plan.
+			envelope.Result = nil
+		}
+		checkpoint.Pending = append(checkpoint.Pending, envelope)
 	}
 	sort.Slice(checkpoint.Pending, func(i, j int) bool { return checkpoint.Pending[i].AcceptedLSN < checkpoint.Pending[j].AcceptedLSN })
 	previousBytes := int64(0)
@@ -72,17 +88,42 @@ func (s *ingestWALWriterState) checkpoint() error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	size, err := writeIngestWALCheckpoint(s.wal.config.Dir, checkpoint, s.wal.config.MaxBytes-s.wal.config.controlReserveBytes())
+	size, err := writeIngestWALCheckpoint(s.wal.config.Dir, checkpoint, s.wal.config.MaxBytes-s.wal.config.terminalReserveBytes())
 	if err != nil {
 		return err
 	}
 	s.totalBytes += size - previousBytes
+	for id := range s.live {
+		s.live[id] = nil
+	}
 	s.checkpointRequired = true
 	s.wal.hasCheckpoint.Store(true)
-	if err := s.persistDurableTail(s.writtenLSN); err != nil {
+	if s.wal.config.Durability == IngestWALDurabilitySync {
+		if err := s.persistDurableTail(s.writtenLSN); err != nil {
+			return errors.Join(ErrIngestWALFailed, err)
+		}
+	}
+	if err := s.prune(checkpoint.Through + 1); err != nil || len(checkpoint.Pending) != 0 {
+		return err
+	}
+	// The empty checkpoint covered the deleted segments. Make the new tail
+	// independent of it before removing it, including across a crash.
+	s.checkpointRequired = false
+	if s.wal.config.Durability == IngestWALDurabilitySync {
+		if err := s.persistDurableTail(s.writtenLSN); err != nil {
+			return errors.Join(ErrIngestWALFailed, err)
+		}
+	}
+	if err := os.Remove(filepath.Join(s.wal.config.Dir, ingestWALCheckpointFile)); err != nil {
+		return err
+	}
+	s.totalBytes -= size
+	s.wal.hasCheckpoint.Store(false)
+	s.observeState(0)
+	if err := syncDir(s.wal.config.Dir); err != nil {
 		return errors.Join(ErrIngestWALFailed, err)
 	}
-	return s.prune(checkpoint.Through + 1)
+	return nil
 }
 
 // Preserve the v1 CRC+JSON checkpoint format without a second pending-sized

@@ -58,7 +58,7 @@ func (e Engine) SubmitAcceptedIngest(ctx context.Context, identity string, input
 		return storage.IngestResult{}, err
 	}
 	var completed Transaction
-	_, submitErr := e.submitInput(ctx, data, identity, nil, "ingest", acceptance, &completed)
+	_, submitErr := e.submitInput(ctx, data, identity, nil, "ingest", acceptance, &completed, nil)
 	if completed.IngestResult != nil {
 		return *completed.IngestResult, nil
 	}
@@ -148,7 +148,7 @@ func buildIngestPlan(ctx context.Context, view View, input IngestInput) (Plan, e
 		var err error
 		plan, err = buildPlan(ctx, view, CommitRequest{Mutations: mutations}, input.AcceptedAt, request.Preconditions, ingest.IngestRequestAtomic(request))
 		if err != nil {
-			if !errors.Is(err, storage.ErrInvalidArgument) && !errors.Is(err, ErrReadBudget) && !errors.Is(err, ErrQuotaExceeded) &&
+			if !errors.Is(err, storage.ErrInvalidArgument) && !mutationBudgetExceeded(err) && !errors.Is(err, ErrQuotaExceeded) &&
 				!errors.Is(err, ingest.ErrIngestPreconditionFailed) && !errors.Is(err, ingest.ErrIngestAtomicSuppressed) {
 				return Plan{}, err
 			}
@@ -163,7 +163,7 @@ func buildIngestPlan(ctx context.Context, view View, input IngestInput) (Plan, e
 		}
 	}
 	if failure != nil {
-		ingest.MarkIngestResultFailure(&result, request, indices, failure)
+		markIngestPlanFailure(&result, request, indices, failure)
 	}
 	if failure != nil || result.Applied == 0 {
 		plan = Plan{CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes, EntityCount: view.Graph.EntityCount, EdgeCount: view.Graph.EdgeCount}
@@ -178,8 +178,15 @@ func failedIngestResult(input *IngestInput, failure error) *storage.IngestResult
 	}
 	result, _, indices := ingest.BuildIngestMutations(input.Request)
 	result.BatchID, result.Cursor = input.Request.BatchID, input.Request.Cursor
-	ingest.MarkIngestResultFailure(&result, input.Request, indices, failure)
+	markIngestPlanFailure(&result, input.Request, indices, failure)
 	return boundIngestResult(result)
+}
+
+func markIngestPlanFailure(result *storage.IngestResult, request storage.IngestRequest, indices []int, failure error) {
+	ingest.MarkIngestResultFailure(result, request, indices, failure)
+	if mutationBudgetExceeded(failure) {
+		result.ErrorCode = storage.IngestErrorMutationBudget
+	}
 }
 
 // An accepted request must always fit its terminal decision into a Raft

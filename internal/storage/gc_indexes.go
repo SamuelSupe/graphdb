@@ -12,7 +12,7 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 	if err := s.cleanupReverseIndexOrphans(ctx, tenantID, checkpoint); err != nil {
 		return err
 	}
-	if !checkpoint.options.SkipEntityRecordCleanup {
+	if (!s.WriteEntityRecords || !s.UseEntityRecordsForRead) && !checkpoint.options.SkipEntityRecordCleanup {
 		deleted, _, err := s.cleanupEntityRecordsLocked(ctx, tenantID, checkpoint)
 		report.DeletedEntityRecords += deleted
 		if err != nil {

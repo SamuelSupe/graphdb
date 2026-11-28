@@ -3,10 +3,13 @@ package storage
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 type ReplicationSnapshotSource struct {
@@ -119,28 +122,75 @@ func (s *ReplicationSnapshotSource) Bytes(ctx context.Context) ([]byte, error) {
 }
 
 func (s *ReplicationSnapshotSource) WriteTo(ctx context.Context, output io.WriteSeeker) error {
+	_, err := s.WriteToWithPayloadDigest(ctx, output)
+	return err
+}
+
+// WriteToWithPayloadDigest returns the SHA-256 of the compressed archive after
+// storing it in the archive's fixed-size prefix.
+func (s *ReplicationSnapshotSource) WriteToWithPayloadDigest(ctx context.Context, output io.WriteSeeker) ([sha256.Size]byte, error) {
+	var checksum [sha256.Size]byte
 	if err := s.validateTenantGraphs(ctx); err != nil {
-		return err
+		return checksum, err
 	}
-	if _, err := output.Write(make([]byte, sha256.Size)); err != nil {
-		return err
+	if _, err := output.Write(checksum[:]); err != nil {
+		return checksum, err
 	}
 	digest := sha256.New()
 	if err := writeSnapshotArchive(ctx, s.view.Store.root, s.checkpoint, s.budget, io.MultiWriter(output, digest)); err != nil {
-		return err
+		return checksum, err
 	}
 	if _, err := output.Seek(0, io.SeekStart); err != nil {
-		return err
+		return checksum, err
 	}
-	_, err := output.Write(digest.Sum(nil))
-	return err
+	checksum = [sha256.Size]byte(digest.Sum(checksum[:0]))
+	_, err := output.Write(checksum[:])
+	return checksum, err
 }
 
 func (s *ReplicationSnapshotSource) Close() error {
 	return s.view.Close()
 }
 
-func (s *FileStore) putReader(ctx context.Context, key string, reader io.Reader) (err error) {
+type stagedSnapshotObject struct {
+	path   string
+	digest [sha256.Size]byte
+}
+
+func (s *FileStore) publishSnapshotObject(ctx context.Context, key string, object stagedSnapshotObject) error {
+	return s.putReplicatedFile(ctx, key, func(filename string, journal *replicationJournal) (string, error) {
+		etag := hex.EncodeToString(object.digest[:])
+		if err := os.Chmod(object.path, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.Rename(object.path, filename); err != nil {
+			if !errors.Is(err, syscall.EXDEV) {
+				return "", err
+			}
+			// A mounted tenant directory may be on another filesystem.
+			file, err := os.Open(object.path)
+			if err != nil {
+				return "", err
+			}
+			return etag, errors.Join(writeReaderAtomicContext(ctx, filename, file, journal, false), file.Close())
+		}
+		journal.deferFileSync(filename)
+		journal.deferDirectorySync(filepath.Dir(filename))
+		return etag, nil
+	})
+}
+
+func (s *FileStore) putReader(ctx context.Context, key string, reader io.Reader) error {
+	return s.putReplicatedFile(ctx, key, func(filename string, journal *replicationJournal) (string, error) {
+		digest := sha256.New()
+		if err := writeReaderAtomicContext(ctx, filename, io.TeeReader(reader, digest), journal, false); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%x", digest.Sum(nil)), nil
+	})
+}
+
+func (s *FileStore) putReplicatedFile(ctx context.Context, key string, publish func(string, *replicationJournal) (string, error)) (err error) {
 	defer func() { recordReplicationFailure(ctx, err) }()
 	if err := s.checkReplicatedWrite(ctx); err != nil {
 		return err
@@ -166,10 +216,10 @@ func (s *FileStore) putReader(ctx context.Context, key string, reader io.Reader)
 	if err := s.journalObject(ctx, key); err != nil {
 		return err
 	}
-	digest := sha256.New()
-	if err := writeReaderAtomicContext(ctx, filename, io.TeeReader(reader, digest), journal, false); err != nil {
+	etag, err := publish(filename, journal)
+	if err != nil {
 		return err
 	}
-	s.changed(key, fmt.Sprintf("%x", digest.Sum(nil)), false)
+	s.changed(key, etag, false)
 	return ctx.Err()
 }

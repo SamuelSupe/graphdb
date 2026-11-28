@@ -79,7 +79,7 @@ func decodeParquetDeadLetter(ctx context.Context, data []byte) (DeadLetter, erro
 	var letter DeadLetter
 	var batchRecord IngestBatchRecord
 	var expectedHash string
-	build := &commitBuild{}
+	build := codec.NewCommitBuilder(table.NumRows())
 	deletes := ingestDeleteRows{}
 	rows := 0
 	reader := array.NewTableReader(table, 4096)
@@ -108,6 +108,9 @@ func decodeParquetDeadLetter(ctx context.Context, data []byte) (DeadLetter, erro
 				return DeadLetter{}, fmt.Errorf("deadletter identity mismatch")
 			}
 			row := codec.ParquetCommitRowFromColumns(columns, i)
+			if err := columns.ValidateOrdinals(i, table.NumRows(), row.Kind != ingestRowFailure && row.Kind != ingestRowConflict); err != nil {
+				return DeadLetter{}, err
+			}
 			switch row.Kind {
 			case deadLetterRowMetadata:
 				letter.ID = row.ID

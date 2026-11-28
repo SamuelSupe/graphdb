@@ -20,6 +20,43 @@ type preparedFileParents struct {
 	checked map[string]bool
 }
 
+// WithPreparedFileParents caches verified parent directories across a bounded
+// multi-object read pass on the underlying local FileStore.
+func WithPreparedFileParents(ctx context.Context, objects ObjectStore) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	files := unwrapAnyFileStore(objects)
+	if files == nil {
+		return ctx
+	}
+	if existing, ok := ctx.Value(preparedFileParentsKey{}).(*preparedFileParents); ok && existing.files == files {
+		return ctx
+	}
+	return context.WithValue(ctx, preparedFileParentsKey{}, &preparedFileParents{
+		files:   files,
+		checked: make(map[string]bool),
+	})
+}
+
+func unwrapAnyFileStore(objects ObjectStore) *FileStore {
+	for objects != nil {
+		if files, ok := objects.(*FileStore); ok {
+			return files
+		}
+		u, ok := objects.(objectStoreUnwrapper)
+		if !ok {
+			return nil
+		}
+		next := u.UnwrapObjectStore()
+		if next == objects {
+			return nil
+		}
+		objects = next
+	}
+	return nil
+}
+
 func (s *FileStore) verifySafeMutationParent(ctx context.Context, filename string) error {
 	parents, ok := ctx.Value(preparedFileParentsKey{}).(*preparedFileParents)
 	if !ok || parents.files != s {

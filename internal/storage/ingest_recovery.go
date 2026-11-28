@@ -12,6 +12,8 @@ import (
 // request prevents its segments from being pruned.
 type ingestRecovery struct {
 	pending    map[string]*ingestPending
+	live       ingestWALLiveRecords
+	selective  bool
 	highestLSN uint64
 	records    int
 }
@@ -21,19 +23,28 @@ func (r *ingestRecovery) apply(record IngestWALRecord) error {
 		r.pending = make(map[string]*ingestPending)
 	}
 	r.records++
+	ref := ingestWALFrameRef{kind: record.Type, lsn: record.LSN, segment: record.Segment, offset: record.Offset}
 	if record.Type == IngestWALPrepared {
 		var batch walPreparedBatchEnvelope
 		if err := json.Unmarshal(record.Payload, &batch); err == nil && len(batch.Items) > 0 {
+			frameBytes := int64(len(record.Payload) + ingestWALHeaderBytes + ingestWALChecksumBytes)
+			share := max(int64(1), frameBytes/int64(len(batch.Items)))
 			for _, prepared := range batch.Items {
 				pending := r.pending[prepared.RecordID]
+				if pending == nil && r.selective {
+					// A shared frame can also contain plans retired after it.
+					continue
+				}
 				if pending == nil || prepared.Prepared == nil {
 					return fmt.Errorf("%w: incomplete prepared batch at LSN %d", ErrIngestWALCorrupt, record.LSN)
 				}
+				pending.bytes += share
 				pending.envelope.State = IngestStatePrepared
 				pending.envelope.Prepared = prepared.Prepared
 				pending.envelope.Result = &prepared.Prepared.Result
 				pending.envelope.Error = ""
 				pending.state = IngestStatePrepared
+				r.live.update(prepared.RecordID, ref)
 			}
 			r.highestLSN = max(r.highestLSN, record.LSN)
 			return nil
@@ -47,6 +58,7 @@ func (r *ingestRecovery) apply(record IngestWALRecord) error {
 		return fmt.Errorf("%w: incomplete envelope at LSN %d", ErrIngestWALCorrupt, record.LSN)
 	}
 	r.highestLSN = max(r.highestLSN, record.LSN)
+	r.live.update(envelope.RecordID, ref)
 	switch record.Type {
 	case IngestWALAccepted:
 		envelope.AcceptedLSN = record.LSN
@@ -60,10 +72,17 @@ func (r *ingestRecovery) apply(record IngestWALRecord) error {
 		}
 		if envelope.Prepared != nil {
 			pending.state = IngestStatePrepared
+			if pending.envelope.Result == nil {
+				pending.envelope.Result = &envelope.Prepared.Result
+			}
 		}
 		r.pending[envelope.RecordID] = pending
 	case IngestWALPrepared, IngestWALPublished:
 		if pending := r.pending[envelope.RecordID]; pending != nil {
+			frameBytes := int64(len(record.Payload) + ingestWALHeaderBytes + ingestWALChecksumBytes)
+			if frameBytes > pending.bytes {
+				pending.bytes = frameBytes
+			}
 			pending.envelope.State = envelope.State
 			if envelope.Prepared != nil {
 				pending.envelope.Prepared = envelope.Prepared

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -53,7 +54,10 @@ func run(args []string) (err error) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		router := sharding.NewRouter(cfg.Catalog, cfg.Token)
+		router := sharding.NewRouterWithGraphLimits(cfg.Catalog, cfg.Token, cfg.GraphLimits)
+		router.AuthToken = cfg.AuthToken
+		router.AdminToken = cfg.AdminToken
+		router.RequireTenantScope = cfg.RequireTenantScope
 		defer router.Client.HTTP.CloseIdleConnections()
 		return runHTTPServer(ctx, newHTTPServerWithHandler(cfg.Addr, router), httpShutdownTimeout)
 	}
@@ -62,7 +66,9 @@ func run(args []string) (err error) {
 		return err
 	}
 	if command.kind == commandRecovery {
-		return runRuntimeRecovery(args, cfg)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runRuntimeRecovery(ctx, args, cfg)
 	}
 	if cfg.Raft.Enabled && command.kind != commandServe {
 		return fmt.Errorf("offline commands are disabled in HA mode; use the cluster HTTP API")
@@ -89,7 +95,7 @@ func run(args []string) (err error) {
 	if command.handler == nil {
 		return fmt.Errorf("command %q is not executable", command.name)
 	}
-	return command.handler(args[1:], store)
+	return command.handler(ctx, args[1:], store)
 }
 
 func serve(cfg config.Config, runtime *bootstrap.StorageRuntime) error {
@@ -98,10 +104,19 @@ func serve(cfg config.Config, runtime *bootstrap.StorageRuntime) error {
 	return serveContext(ctx, cfg, runtime)
 }
 
-func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.StorageRuntime) error {
+func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.StorageRuntime) (returnErr error) {
 	store := runtime.Store
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
+	shutdownDone := false
+	defer func() {
+		if !shutdownDone {
+			stop()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), max(backgroundTaskShutdownTimeout, cfg.IngestShutdownTimeout))
+			defer cancel()
+			returnErr = errors.Join(returnErr, runtime.Shutdown(shutdownCtx))
+		}
+	}()
 	shutdownTrace, err := observability.SetupOTLP(ctx, observability.TraceConfig{
 		Endpoint:    cfg.OTLPEndpoint,
 		Insecure:    cfg.OTLPInsecure,
@@ -166,6 +181,9 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		Store:                 store,
 		Cache:                 cache,
 		Mode:                  cfg.Mode,
+		AuthToken:             cfg.AuthToken,
+		AdminToken:            cfg.AdminToken,
+		RequireTenantScope:    cfg.RequireTenantScope,
 		Admission:             admission,
 		ReadAdmission:         readAdmission,
 		WriteAdmission:        writeAdmission,
@@ -175,6 +193,7 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		IngestService:         apiIngestService,
 		Observability:         obs,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
+		DisableUsageCache:     cfg.TenantUsageCacheTTL <= 0,
 		MaintenanceGC:         cfg.MaintenanceGC,
 	}
 	var cluster *ha.Cluster
@@ -192,7 +211,7 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 	if cfg.Raft.Enabled {
 		cluster = ha.New(cfg, store, runtime.Files)
 		api.Cluster = cluster
-		cluster.App.Handler = api.Handler()
+		cluster.App.Handler = api.InternalHandler()
 		if err := cluster.Start(ctx, cfg.Raft); err != nil {
 			return err
 		}
@@ -215,6 +234,13 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		private.ReadTimeout = 10 * time.Minute
 		privateServers = append(privateServers, private)
 	}
+	if cfg.AuthToken == "" && cfg.AdminToken == "" && !isLoopbackListenAddr(cfg.Addr) {
+		obs.Logger.Info("unauthenticated_non_loopback_listener", map[string]any{
+			"warning": true,
+			"addr":    cfg.Addr,
+			"message": "HTTP API is bound to a non-loopback address without GRAPHDB_AUTH_TOKEN or GRAPHDB_ADMIN_TOKEN; deploy behind an authenticating proxy or configure bearer tokens",
+		})
+	}
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
 		"mode": cfg.Mode, "storage": cfg.StoreKind, "prefix": cfg.Prefix,
@@ -222,15 +248,25 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		"ingest_mode":  cfg.IngestMode,
 		"otlp_enabled": cfg.OTLPEndpoint != "",
 	})
-	serverErr := runStagedHTTPServers(ctx, publicServers, privateServers, httpShutdownTimeout, func() error {
-		stop()
-		return closeCluster()
-	})
+	serverErr := runStagedHTTPServers(ctx, publicServers, privateServers, httpShutdownTimeout, nil)
 	stop()
 	clusterErr := closeCluster()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), max(backgroundTaskShutdownTimeout, cfg.IngestShutdownTimeout))
 	defer cancel()
+	shutdownDone = true
 	return errors.Join(serverErr, clusterErr, runtime.Shutdown(shutdownCtx))
+}
+
+func isLoopbackListenAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
@@ -345,10 +381,12 @@ func printHelp() {
 Environment:
   GRAPHDB_ADDR=:8080
   GRAPHDB_ADMIN_ADDR=127.0.0.1:8081 (optional separate admin listener)
+  GRAPHDB_AUTH_TOKEN= (optional bearer token for data/API endpoints)
+  GRAPHDB_ADMIN_TOKEN= (optional bearer token for admin/lifecycle endpoints)
+  GRAPHDB_REQUIRE_TENANT_SCOPE=false (fail closed when X-Tenant-ID is missing)
   GRAPHDB_PPROF_ENABLED=false (requires GRAPHDB_ADMIN_ADDR)
   GRAPHDB_MODE=all
   GRAPHDB_COORDINATION=local
-  GRAPHDB_WRITE_CAS_MAX_RETRIES=8
   GRAPHDB_READINESS_TIMEOUT=2s
   GRAPHDB_STORAGE=local
   GRAPHDB_DATA_DIR=.graphdb
@@ -381,7 +419,7 @@ Environment:
   GRAPHDB_WRITE_OBJECT_LATENCY_THRESHOLD=2s
   GRAPHDB_WRITE_CAS_CONFLICT_WINDOW=30s
   GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD=5
-  GRAPHDB_WRITE_MAX_COMMIT_TAIL=300
+  GRAPHDB_WRITE_MAX_COMMIT_TAIL=1500
   GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT=0
   GRAPHDB_WRITE_MAX_EDGES_PER_TENANT=0
   GRAPHDB_INGEST_MODE=direct|wal
@@ -417,8 +455,8 @@ Environment:
   GRAPHDB_READER_INDEX_CACHE_DIR= (optional; disabled by default)
   GRAPHDB_INDEX_RANGE_PAGES=false (enable only after all readers upgrade)
   GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB (legacy layout only)
-  GRAPHDB_FAULT_OBJECT_READ_DELAY=25ms
+  GRAPHDB_FAULT_OBJECT_READ_DELAY=0
   GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
-  GRAPHDB_OTLP_INSECURE=true
+  GRAPHDB_OTLP_INSECURE=false
   GRAPHDB_SERVICE_NAME=graphdb`)
 }

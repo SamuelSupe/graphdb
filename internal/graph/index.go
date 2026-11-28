@@ -14,26 +14,26 @@ func (g *Graph) rebuildIndexes() {
 	g.invalidateEntityOrder()
 	g.invalidateFieldIndexOrder()
 	g.cow = nil
-	g.out = NewShardedMap[map[string]struct{}]()
-	g.in = NewShardedMap[map[string]struct{}]()
-	g.edgeAliasIndex = map[string]map[string]struct{}{}
-	g.edgeTypeIndex = map[string]map[string]struct{}{}
-	g.entityAliasIndex = map[string]map[string]struct{}{}
+	g.out = NewShardedMap[*ShardedMap[struct{}]]()
+	g.in = NewShardedMap[*ShardedMap[struct{}]]()
+	g.edgeAliasIndex = NewShardedMap[*ShardedMap[struct{}]]()
+	g.edgeTypeIndex = NewShardedMap[*ShardedMap[struct{}]]()
+	g.entityAliasIndex = NewShardedMap[*ShardedMap[struct{}]]()
 	g.kindCounts = map[string]int{}
 	g.kindEntityIDs = NewShardedMap[*ShardedMap[struct{}]]()
 	g.nonScalarFields = NewShardedMap[int]()
 	g.fieldIndex = map[string]map[string]*fieldValueIndex{}
-	g.identityIndex = map[string]map[string]string{}
+	g.identityIndex = map[string]*ShardedMap[string]{}
 
 	for id, entity := range g.Entities.All() {
 		g.kindCounts[entity.Kind]++
 		g.writableKindEntityIDs(entity.Kind).Set(id, struct{}{})
 		g.addEntityAliasesToIndex(id, entity)
 		if g.identityIndex[entity.Kind] == nil {
-			g.identityIndex[entity.Kind] = map[string]string{}
+			g.identityIndex[entity.Kind] = NewShardedMap[string]()
 		}
 		for _, signature := range g.identitySignatures(entity) {
-			g.identityIndex[entity.Kind][signature.Value] = id
+			g.identityIndex[entity.Kind].Set(signature.Value, id)
 		}
 		for field, value := range entity.Fields {
 			key, ok := ScalarIndexKey(value)
@@ -79,8 +79,8 @@ func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
 	}
 	g.removeEntityAliasesFromIndex(id, entity)
 	for _, signature := range g.identitySignatures(entity) {
-		if identities := g.identityIndex[entity.Kind]; identities != nil && identities[signature.Value] == id {
-			delete(g.writableIdentityKind(entity.Kind), signature.Value)
+		if identities := g.identityIndex[entity.Kind]; identities != nil && identities.At(signature.Value) == id {
+			g.writableIdentityKind(entity.Kind).Delete(signature.Value)
 		}
 	}
 	for field, value := range entity.Fields {
@@ -94,14 +94,14 @@ func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
 
 func (g *Graph) removeEntityAliasesFromIndex(id string, entity Entity) {
 	for _, alias := range entityAliasValues(entity) {
-		entityIDs := g.entityAliasIndex[alias]
+		entityIDs := g.entityAliasIndex.At(alias)
 		if entityIDs == nil {
 			continue
 		}
 		entityIDs = g.writableEntityAlias(alias)
-		delete(entityIDs, id)
-		if len(entityIDs) == 0 {
-			delete(g.entityAliasIndex, alias)
+		entityIDs.Delete(id)
+		if entityIDs.Len() == 0 {
+			g.entityAliasIndex.Delete(alias)
 		}
 	}
 }
@@ -112,7 +112,7 @@ func (g *Graph) addEntityToIndexes(id string, entity Entity) {
 	g.writableKindEntityIDs(entity.Kind).Set(id, struct{}{})
 	g.addEntityAliasesToIndex(id, entity)
 	for _, signature := range g.identitySignatures(entity) {
-		g.writableIdentityKind(entity.Kind)[signature.Value] = id
+		g.writableIdentityKind(entity.Kind).Set(signature.Value, id)
 	}
 	for field, value := range entity.Fields {
 		key, ok := ScalarIndexKey(value)
@@ -138,12 +138,12 @@ func (g *Graph) updateEntityIndexes(id string, before, after Entity) {
 	if !slices.Equal(oldIdentities, newIdentities) {
 		identities := g.writableIdentityKind(after.Kind)
 		for _, signature := range oldIdentities {
-			if identities[signature.Value] == id {
-				delete(identities, signature.Value)
+			if identities.At(signature.Value) == id {
+				identities.Delete(signature.Value)
 			}
 		}
 		for _, signature := range newIdentities {
-			identities[signature.Value] = id
+			identities.Set(signature.Value, id)
 		}
 	}
 	for field, value := range before.Fields {
@@ -178,8 +178,16 @@ func (g *Graph) removeEntityFieldIndex(id, kind, field, key string) {
 	ids := g.writableFieldValue(kind, field, key)
 	ids.Delete(id)
 	if ids.Len() == 0 {
-		g.writableFieldName(kind, field).Delete(key)
+		byField := g.writableFieldName(kind, field)
+		byField.Delete(key)
 		g.invalidateFieldKeyOrder(kind, field)
+		if byField.Len() == 0 {
+			byKind := g.writableFieldKind(kind)
+			delete(byKind, field)
+			if len(byKind) == 0 {
+				delete(g.fieldIndex, kind)
+			}
+		}
 	}
 }
 
@@ -193,7 +201,7 @@ func (g *Graph) addEntityFieldIndex(id, kind, field, key string) {
 
 func (g *Graph) addEntityAliasesToIndex(id string, entity Entity) {
 	for _, alias := range entityAliasValues(entity) {
-		g.writableEntityAlias(alias)[id] = struct{}{}
+		g.writableEntityAlias(alias).Set(id, struct{}{})
 	}
 }
 
@@ -211,49 +219,49 @@ func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
 	g.invalidateNeighborOrder(edge.From, edge.To)
 	if edges := g.out.At(edge.From); edges != nil {
 		edges = g.writableOut(edge.From)
-		delete(edges, id)
-		if len(edges) == 0 {
+		edges.Delete(id)
+		if edges.Len() == 0 {
 			g.out.Delete(edge.From)
 		}
 	}
 	if edges := g.in.At(edge.To); edges != nil {
 		edges = g.writableIn(edge.To)
-		delete(edges, id)
-		if len(edges) == 0 {
+		edges.Delete(id)
+		if edges.Len() == 0 {
 			g.in.Delete(edge.To)
 		}
 	}
 	for _, alias := range edgeAliasValues(edge) {
-		edgeIDs := g.edgeAliasIndex[alias]
+		edgeIDs := g.edgeAliasIndex.At(alias)
 		if edgeIDs == nil {
 			continue
 		}
 		edgeIDs = g.writableEdgeAlias(alias)
-		delete(edgeIDs, id)
-		if len(edgeIDs) == 0 {
-			delete(g.edgeAliasIndex, alias)
+		edgeIDs.Delete(id)
+		if edgeIDs.Len() == 0 {
+			g.edgeAliasIndex.Delete(alias)
 		}
 	}
-	if edgeIDs := g.edgeTypeIndex[edge.Type]; edgeIDs != nil {
+	if edgeIDs := g.edgeTypeIndex.At(edge.Type); edgeIDs != nil {
 		edgeIDs = g.writableEdgeType(edge.Type)
-		delete(edgeIDs, id)
-		if len(edgeIDs) == 0 {
-			delete(g.edgeTypeIndex, edge.Type)
+		edgeIDs.Delete(id)
+		if edgeIDs.Len() == 0 {
+			g.edgeTypeIndex.Delete(edge.Type)
 		}
 	}
 }
 
 func (g *Graph) addEdgeToIndexes(id string, edge Edge) {
 	g.invalidateNeighborOrder(edge.From, edge.To)
-	g.writableOut(edge.From)[id] = struct{}{}
-	g.writableIn(edge.To)[id] = struct{}{}
+	g.writableOut(edge.From).Set(id, struct{}{})
+	g.writableIn(edge.To).Set(id, struct{}{})
 	g.addEdgeAliasesToIndex(id, edge)
-	g.writableEdgeType(edge.Type)[id] = struct{}{}
+	g.writableEdgeType(edge.Type).Set(id, struct{}{})
 }
 
 func (g *Graph) addEdgeAliasesToIndex(id string, edge Edge) {
 	for _, alias := range edgeAliasValues(edge) {
-		g.writableEdgeAlias(alias)[id] = struct{}{}
+		g.writableEdgeAlias(alias).Set(id, struct{}{})
 	}
 }
 

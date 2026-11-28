@@ -16,12 +16,24 @@ func neighborsForBudget(g *graph.Graph, entityID string, request Request, budget
 		}
 		return budget.add(1)
 	}
+	var neighbors []graph.Neighbor
+	var err error
 	if request.DirectionStrategy == "impact" {
-		neighbors, err := g.FilteredNeighbors(entityID, "both", relationTypeSet(request), request.Path.NodeKinds, true, charge)
-		return filterRequestEdges(request, neighbors), err
+		neighbors, err = g.FilteredNeighbors(entityID, "both", relationTypeSet(request), request.Path.NodeKinds, true, charge)
+	} else {
+		neighbors, err = g.FilteredNeighbors(entityID, request.Direction, relationTypeSet(request), request.Path.NodeKinds, false, charge)
 	}
-	neighbors, err := g.FilteredNeighbors(entityID, request.Direction, relationTypeSet(request), request.Path.NodeKinds, false, charge)
-	return filterRequestEdges(request, neighbors), err
+	filtered := filterRequestEdges(request, neighbors)
+	if budget != nil && budget.entityPredicate != nil {
+		allowed := filtered[:0]
+		for _, neighbor := range filtered {
+			if budget.allowsEntity(neighbor.Entity) {
+				allowed = append(allowed, neighbor)
+			}
+		}
+		filtered = allowed
+	}
+	return filtered, err
 }
 
 func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *budget) ([]graph.Neighbor, bool, error) {
@@ -111,19 +123,51 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 		}
 		return edges[left].direction < edges[right].direction
 	})
-	neighbors := make([]graph.Neighbor, 0, len(edges))
+	matched := make([]directedNeighborEdge, 0, len(edges))
+	neighborIDs := make([]string, 0, len(edges))
+	seenNeighbor := make(map[string]struct{}, len(edges))
 	for _, candidate := range edges {
-		edge := candidate.edge
 		if err := budget.add(1); err != nil {
 			return nil, false, err
 		}
-		if !requestEdgeMatches(request, edge) {
+		if !requestEdgeMatches(request, candidate.edge) {
 			continue
 		}
+		matched = append(matched, candidate)
+		neighborID := directedNeighborID(candidate.edge, candidate.direction)
+		if _, ok := seenNeighbor[neighborID]; !ok {
+			seenNeighbor[neighborID] = struct{}{}
+			neighborIDs = append(neighborIDs, neighborID)
+		}
+	}
+	var batchEntities map[string]graph.Entity
+	if len(neighborIDs) > 1 && lazyExecution(g, budget) {
+		if batch, ok := budget.entities.(EntityBatchLookup); ok {
+			fetched, ok, err := batch.GetEntities(budget.ctx, neighborIDs, materializeFieldsForBudget(request, budget))
+			if err != nil {
+				return nil, false, err
+			}
+			if ok {
+				batchEntities = fetched
+			}
+		}
+	}
+	neighbors := make([]graph.Neighbor, 0, len(matched))
+	for _, candidate := range matched {
+		edge := candidate.edge
 		neighborID := directedNeighborID(edge, candidate.direction)
-		entity, ok, err := materializeEntity(g, neighborID, request, budget)
-		if err != nil {
-			return nil, false, err
+		var (
+			entity graph.Entity
+			ok     bool
+			err    error
+		)
+		if batchEntities != nil {
+			entity, ok = batchEntities[neighborID]
+		} else {
+			entity, ok, err = materializeEntity(g, neighborID, request, budget)
+			if err != nil {
+				return nil, false, err
+			}
 		}
 		if !ok {
 			if lazyExecution(g, budget) {
@@ -131,7 +175,7 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 			}
 			continue
 		}
-		if !pathAllowsKind(entity.Kind, request.Path) {
+		if !budget.allowsEntity(entity) || !pathAllowsKind(entity.Kind, request.Path) {
 			continue
 		}
 		neighbors = append(neighbors, graph.Neighbor{

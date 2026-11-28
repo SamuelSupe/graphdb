@@ -12,10 +12,22 @@ func (s *Server) listDeadLetters(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	limit, ok := replayLimitFromRequest(w, r)
+	if !ok {
+		return
+	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	items, err := s.Store.ListDeadLetters(r.Context(), tenantID, source)
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deadletters": items})
 }
@@ -33,7 +45,14 @@ func (s *Server) replayDeadLetters(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	report, err := s.Store.ReplayDeadLetters(r.Context(), tenantID, source, limit)
+	release, ok := s.enterWrite(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
+	writeCtx, cancel := s.writeExecutionContext(r.Context())
+	defer cancel()
+	report, err := s.Store.ReplayDeadLetters(writeCtx, tenantID, source, limit)
 	if err != nil {
 		if replayReportChangedData(report) {
 			s.invalidate(tenantID)

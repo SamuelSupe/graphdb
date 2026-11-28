@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/dirlock"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/wal"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -32,8 +33,8 @@ var (
 	ErrIngestWALClosed               = errors.New("ingest WAL is closed")
 	ErrIngestWALFull                 = errors.New("ingest WAL disk limit reached")
 	ErrIngestWALLocked               = errors.New("ingest WAL is locked by another process")
-	ErrIngestWALCorrupt              = errors.New("ingest WAL is corrupt")
-	ErrIngestWALFailed               = errors.New("ingest WAL writer failed")
+	ErrIngestWALCorrupt              = wal.ErrCorrupt
+	ErrIngestWALFailed               = wal.ErrFailed
 	ErrIngestWALRecordTooLarge       = errors.New("ingest WAL payload is too large")
 	ErrIngestWALRecordExceedsSegment = errors.New("ingest WAL record exceeds segment size")
 )
@@ -47,6 +48,9 @@ const (
 	IngestWALFinalized
 	IngestWALFailed
 )
+
+// A terminal frame contains the record ID, final state, and timestamp only.
+const ingestTerminalFrameBytes = 256
 
 type IngestWALConfig struct {
 	DiskSpace     DiskSpacePolicy
@@ -107,6 +111,11 @@ func (c IngestWALConfig) controlReserveBytes() int64 {
 	return 0
 }
 
+func (c IngestWALConfig) terminalReserveBytes() int64 {
+	control := c.controlReserveBytes()
+	return min(control, max(ingestTerminalFrameBytes, min(control/2, 4<<10)))
+}
+
 func defaultIngestWALControlReserve(c IngestWALConfig) int64 {
 	reserve := c.MaxBytes / 10
 	if reserve > c.SegmentBytes {
@@ -138,10 +147,12 @@ type IngestWALAppendResult struct {
 }
 
 type ingestWALAppendRequest struct {
-	ctx     context.Context
-	kind    IngestWALRecordType
-	payload []byte
-	done    chan ingestWALAppendResponse
+	ctx        context.Context
+	kind       IngestWALRecordType
+	payload    []byte
+	ids        []string
+	headOfLine bool
+	done       chan ingestWALAppendResponse
 }
 
 type ingestWALAppendResponse struct {
@@ -152,6 +163,7 @@ type ingestWALAppendResponse struct {
 type ingestWALBatchRecord struct {
 	kind    IngestWALRecordType
 	payload []byte
+	id      string
 }
 
 type ingestWALPruneRequest struct {
@@ -179,6 +191,7 @@ type IngestWAL struct {
 	hasCheckpoint                atomic.Bool
 	recoveredLSN                 uint64
 	recoveredSegmentsNeedPruning bool
+	legacyTerminalIDs            map[string]struct{}
 	config                       IngestWALConfig
 	lockFile                     *os.File
 
@@ -197,6 +210,10 @@ type IngestWAL struct {
 // before starting the writer. Replay must release completed history as it goes
 // to keep recovery memory proportional to outstanding requests.
 func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (*IngestWAL, error) {
+	return openIngestWAL(config, replay, nil)
+}
+
+func openIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error, live ingestWALLiveRecords) (*IngestWAL, error) {
 	if replay == nil {
 		return nil, fmt.Errorf("ingest WAL recovery callback is required")
 	}
@@ -221,7 +238,7 @@ func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (
 		_ = lockFile.Close()
 		return nil, err
 	}
-	segments, nextLSN, totalBytes, err := scanIngestWAL(config.Dir, replay)
+	segments, nextLSN, totalBytes, err := scanIngestWALWithDurability(config.Dir, config.Durability, replay)
 	if err != nil {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
@@ -238,7 +255,13 @@ func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (
 		done:                         make(chan struct{}),
 		ready:                        make(chan error, 1),
 	}
-	go wal.run(segments, nextLSN, totalBytes)
+	if live != nil && totalBytes > config.MaxBytes-ingestTerminalFrameBytes {
+		wal.legacyTerminalIDs = make(map[string]struct{}, len(live))
+		for id := range live {
+			wal.legacyTerminalIDs[id] = struct{}{}
+		}
+	}
+	go wal.run(segments, nextLSN, totalBytes, live)
 	if err := <-wal.ready; err != nil {
 		closeErr := wal.Close()
 		if closeErr == nil {
@@ -249,7 +272,19 @@ func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (
 	return wal, nil
 }
 
-func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payload []byte) (result IngestWALAppendResult, err error) {
+func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payload []byte) (IngestWALAppendResult, error) {
+	return w.append(ctx, kind, payload, nil)
+}
+
+func (w *IngestWAL) append(ctx context.Context, kind IngestWALRecordType, payload []byte, ids []string) (result IngestWALAppendResult, err error) {
+	return w.appendWithOptions(ctx, kind, payload, ids, false)
+}
+
+func (w *IngestWAL) appendHeadOfLine(ctx context.Context, kind IngestWALRecordType, payload []byte, ids []string) (result IngestWALAppendResult, err error) {
+	return w.appendWithOptions(ctx, kind, payload, ids, true)
+}
+
+func (w *IngestWAL) appendWithOptions(ctx context.Context, kind IngestWALRecordType, payload []byte, ids []string, headOfLine bool) (result IngestWALAppendResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -293,10 +328,12 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 		}
 	}
 	request := ingestWALAppendRequest{
-		ctx:     ctx,
-		kind:    kind,
-		payload: append([]byte(nil), payload...),
-		done:    make(chan ingestWALAppendResponse, 1),
+		ctx:        ctx,
+		kind:       kind,
+		payload:    append([]byte(nil), payload...),
+		ids:        ids,
+		headOfLine: headOfLine,
+		done:       make(chan ingestWALAppendResponse, 1),
 	}
 	select {
 	case w.appendCh <- request:
@@ -342,6 +379,9 @@ func (w *IngestWAL) appendBatch(ctx context.Context, records []ingestWALBatchRec
 			kind:    record.kind,
 			payload: append([]byte(nil), record.payload...),
 			done:    make(chan ingestWALAppendResponse, 1),
+		}
+		if record.id != "" {
+			requests[index].ids = []string{record.id}
 		}
 	}
 

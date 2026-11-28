@@ -217,6 +217,21 @@ func tenantPurgeFenceEpoch(metadata TenantMetadata) int64 {
 	return 0
 }
 
+func IsCompleteTenantPurgeTombstone(ctx context.Context, tenantID string, data []byte) (bool, error) {
+	if len(data) == 0 {
+		return false, nil
+	}
+	metadata, err := decodeParquetTenantMetadata(ctx, data)
+	if err != nil {
+		return false, fmt.Errorf("decode tenant purge tombstone: %w", err)
+	}
+	if metadata.TenantID != tenantID || normalizeTenantStatus(metadata.Status) != TenantStatusDeleted {
+		return false, fmt.Errorf("tenant purge tombstone mismatch for %q", tenantID)
+	}
+	phase, _ := tenantPurgeState(metadata, true)
+	return phase == tenantPurgePhaseComplete, nil
+}
+
 func (s *TenantStore) getTenantPurgeTombstone(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
 	key := s.tenantPurgeTombstoneKey(tenantID)
 	s.clearWriterObjectKey(key)

@@ -14,6 +14,7 @@ func PlanQuery(g *graph.Graph, request Request) Plan {
 }
 
 func PlanQueryWithStats(g *graph.Graph, request Request, stats PlannerStats) Plan {
+	request = normalizeCompiledRequest(request)
 	plan := Plan{Op: request.Op, Strategy: "scan"}
 	if stats.Version != 0 && stats.Version != g.Version {
 		plan.Warnings = append(plan.Warnings, "index catalog version does not match snapshot")
@@ -72,6 +73,10 @@ func PlanQueryWithStats(g *graph.Graph, request Request, stats PlannerStats) Pla
 
 func planPattern(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) {
 	planMatch(plan, g, request, stats)
+	if plan.EstimatedRows == 0 && (g.Version == 0 || g.Entities.Len() > 0 || g.HasKindIndex() || stats.Version == g.Version || plan.Strategy == "field-index" || plan.Strategy == "field-index-scan") {
+		plan.Steps = append(plan.Steps, PlanStep{Name: "bounded-pattern-expand", Detail: fmt.Sprintf("steps=%d", len(request.Path.Steps)), Cost: 0})
+		return
+	}
 	startRows := max(plan.EstimatedRows, 1)
 	edges := estimateEdgeShardTotal(stats, relationTypeSet(request))
 	entities := 0
@@ -196,7 +201,7 @@ func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) 
 
 func estimatedKindScanRows(g *graph.Graph, request Request, stats PlannerStats) int {
 	rows := g.Entities.Len()
-	if request.Kind != "" && canPageMatchEarly(request) && g.KindCount(request.Kind) > 0 {
+	if request.Kind != "" && g.HasKindIndex() {
 		rows = g.KindCount(request.Kind)
 	}
 	lazyPageScan := g.Entities.Len() == 0 && stats.Version == g.Version
@@ -391,51 +396,105 @@ func estimateFanoutFromStats(g *graph.Graph, request Request, stats PlannerStats
 	allowed := relationTypeSet(request)
 	switch request.Direction {
 	case "out":
-		return estimateDirectionalFanout(
+		count, ok, usedGlobal := estimateDirectionalFanout(
 			stats.EdgeShards, shardID, allowed,
 		)
+		if !ok && stats.ForwardEdgeIndexAvailable {
+			count, ok = 0, true
+		}
+		if !ok {
+			return 0, false
+		}
+		return scaleShardFanoutToNodeDegree(count, stats, shardID, usedGlobal), true
 	case "in":
-		return estimateDirectionalFanout(
+		count, ok, usedGlobal := estimateDirectionalFanout(
 			stats.ReverseEdgeShards, shardID, allowed,
 		)
+		if !ok && stats.ReverseEdgeIndexAvailable {
+			count, ok = 0, true
+		}
+		if !ok {
+			return 0, false
+		}
+		return scaleShardFanoutToNodeDegree(count, stats, shardID, usedGlobal), true
 	case "both", "":
-		out, outOK := estimateDirectionalFanout(
+		out, outOK, outGlobal := estimateDirectionalFanout(
 			stats.EdgeShards, shardID, allowed,
 		)
-		in, inOK := estimateDirectionalFanout(
+		if !outOK && stats.ForwardEdgeIndexAvailable {
+			out, outOK = 0, true
+		}
+		in, inOK, inGlobal := estimateDirectionalFanout(
 			stats.ReverseEdgeShards, shardID, allowed,
 		)
+		if !inOK && stats.ReverseEdgeIndexAvailable {
+			in, inOK = 0, true
+		}
 		if !outOK || !inOK {
 			return 0, false
 		}
-		return out + in, true
+		total := addIntClamped(out, in)
+		return scaleShardFanoutToNodeDegree(total, stats, shardID, outGlobal || inGlobal), true
 	default:
 		return 0, false
 	}
+}
+
+// scaleShardFanoutToNodeDegree converts an entire edge shard's total edge count
+// into an estimated average per-node degree when entity-page cardinality stats
+// are available, avoiding catastrophic false admission rejections on large graphs.
+func scaleShardFanoutToNodeDegree(shardEdges int, stats PlannerStats, shardID string, useGlobalTotal bool) int {
+	if shardID == "" || shardEdges <= 0 || len(stats.EntityPages) == 0 {
+		return shardEdges
+	}
+	nodesInShard := 0
+	if useGlobalTotal {
+		nodesInShard = estimateEntityPageTotal(stats)
+	} else {
+		for _, page := range stats.EntityPages {
+			if page.Shard == shardID {
+				nodesInShard = max(page.EntityCount, 0)
+				break
+			}
+		}
+	}
+	if nodesInShard <= 1 {
+		return shardEdges
+	}
+	return max((shardEdges+nodesInShard-1)/nodesInShard, 1)
 }
 
 func estimateDirectionalFanout(
 	shards []PlannerEdgeStat,
 	shardID string,
 	allowed map[string]struct{},
-) (int, bool) {
+) (int, bool, bool) {
 	if len(shards) == 0 {
-		return 0, false
+		return 0, false, false
 	}
 	count := 0
 	matched := false
+	globalCount := 0
+	matchedGlobal := false
 	for _, shard := range shards {
-		if (shardID != "" && shard.Shard != shardID) ||
-			!relationAllowed(shard.RelationType, allowed) {
+		if !relationAllowed(shard.RelationType, allowed) {
 			continue
 		}
-		matched = true
-		count += max(shard.EdgeCount, 0)
+		if shardID == "" || shard.Shard == shardID {
+			matched = true
+			count = addIntClamped(count, max(shard.EdgeCount, 0))
+		} else if shard.Shard == "" {
+			matchedGlobal = true
+			globalCount = addIntClamped(globalCount, max(shard.EdgeCount, 0))
+		}
+	}
+	if !matched && shardID != "" && matchedGlobal {
+		return globalCount, true, true
 	}
 	if shardID == "" {
 		matched = true
 	}
-	return count, matched
+	return count, matched, false
 }
 
 func estimateEdgeCap(
@@ -446,23 +505,23 @@ func estimateEdgeCap(
 	if stats.Version != 0 && stats.Version == g.Version {
 		switch direction {
 		case "in":
-			if count, ok := estimateDirectionalFanout(
+			if count, ok, _ := estimateDirectionalFanout(
 				stats.ReverseEdgeShards, "", nil,
 			); ok {
 				return max(count, 1)
 			}
 		case "both", "":
-			out, outOK := estimateDirectionalFanout(
+			out, outOK, _ := estimateDirectionalFanout(
 				stats.EdgeShards, "", nil,
 			)
-			in, inOK := estimateDirectionalFanout(
+			in, inOK, _ := estimateDirectionalFanout(
 				stats.ReverseEdgeShards, "", nil,
 			)
 			if outOK && inOK {
-				return max(out+in, 1)
+				return max(addIntClamped(out, in), 1)
 			}
 		default:
-			if count, ok := estimateDirectionalFanout(
+			if count, ok, _ := estimateDirectionalFanout(
 				stats.EdgeShards, "", nil,
 			); ok {
 				return max(count, 1)

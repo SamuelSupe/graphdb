@@ -83,7 +83,7 @@ func loadRaftConfig(dataDir string) (RaftConfig, error) {
 	addresses := make(map[string]bool)
 	for id, address := range cfg.Peers {
 		parsed, err := url.Parse(address)
-		if id == 0 || err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		if id == 0 || err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 			return cfg, fmt.Errorf("invalid Raft peer origin for node %d", id)
 		}
 		if addresses[address] {

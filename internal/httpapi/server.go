@@ -34,6 +34,9 @@ type Server struct {
 	Store                 *storage.TenantStore
 	Cache                 *storage.ReaderCache
 	Mode                  string
+	AuthToken             string
+	AdminToken            string
+	RequireTenantScope    bool
 	Admission             *QueryAdmission
 	ReadAdmission         *QueryAdmission
 	WriteAdmission        *WriteAdmission
@@ -44,11 +47,14 @@ type Server struct {
 	IngestService         IngestService
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration
+	DisableUsageCache     bool
 	MaintenanceGC         maintenance.GCConfig
 	maintenance           *maintenance.Runner
 	maintenanceOnce       sync.Once
 	prepareOnce           sync.Once
 	usageCache            *tenantUsageCache
+	emptyProbeMu          sync.Mutex
+	emptyProbes           map[string]time.Time
 }
 
 type IngestService interface {
@@ -67,6 +73,9 @@ type CommitRequest struct {
 }
 
 func (s *Server) tenantUsageCacheTTL() time.Duration {
+	if s.DisableUsageCache {
+		return -1
+	}
 	if s.UsageCacheTTL != 0 {
 		return s.UsageCacheTTL
 	}
@@ -236,10 +245,15 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if writeCtx.Err() != nil {
+			s.auditError("commit_timeout", tenantID, err, map[string]any{"idempotency_key": request.IdempotencyKey})
 			if commitMayHaveChangedData(result) {
 				s.invalidate(tenantID)
+				if strings.TrimSpace(request.IdempotencyKey) == "" {
+					span.SetAttributes(attribute.String("graphdb.commit.result", "write_outcome_unknown"))
+					writeErrorDetail(w, http.StatusServiceUnavailable, ErrorCodeWriteOutcomeUnknown, "commit timed out after mutating state; check status before retrying", false, nil)
+					return
+				}
 			}
-			s.auditError("commit_timeout", tenantID, err, map[string]any{"idempotency_key": request.IdempotencyKey})
 			span.SetAttributes(attribute.String("graphdb.commit.result", "write_context_error"))
 			writeRequestError(w, writeCtx.Err())
 			return
@@ -460,6 +474,12 @@ func (s *Server) invalidate(tenantID string) {
 	if s.Cache != nil {
 		s.Cache.Invalidate(tenantID)
 	}
+	if s.usageCache != nil {
+		s.usageCache.invalidate(tenantID)
+	}
+	s.emptyProbeMu.Lock()
+	delete(s.emptyProbes, tenantID)
+	s.emptyProbeMu.Unlock()
 }
 
 func (s *Server) obs() *observability.Observability {
@@ -532,11 +552,37 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(recorder, r)
 		if recorder.status < 400 && r.Pattern != "" && isTenantScopedRoute(r.URL.Path) && s.Store != nil && storage.ValidateTenantID(tenantID) == nil && !obs.HasTenant(tenantID) {
-			if version, err := s.Store.CurrentVersion(r.Context(), tenantID); err == nil && version > 0 {
-				obs.RegisterTenant(tenantID)
+			if s.shouldProbeEmptyTenant(tenantID) {
+				if version, err := s.Store.CurrentVersion(r.Context(), tenantID); err == nil && version > 0 {
+					obs.RegisterTenant(tenantID)
+				} else if err == nil {
+					s.markEmptyTenantProbed(tenantID)
+				}
 			}
 		}
 	})
+}
+
+func (s *Server) shouldProbeEmptyTenant(tenantID string) bool {
+	s.emptyProbeMu.Lock()
+	defer s.emptyProbeMu.Unlock()
+	if s.emptyProbes == nil {
+		return true
+	}
+	until, ok := s.emptyProbes[tenantID]
+	return !ok || time.Now().After(until)
+}
+
+func (s *Server) markEmptyTenantProbed(tenantID string) {
+	s.emptyProbeMu.Lock()
+	defer s.emptyProbeMu.Unlock()
+	if s.emptyProbes == nil {
+		s.emptyProbes = make(map[string]time.Time)
+	}
+	if len(s.emptyProbes) >= 4096 {
+		clear(s.emptyProbes)
+	}
+	s.emptyProbes[tenantID] = time.Now().Add(30 * time.Second)
 }
 
 func isTenantScopedRoute(path string) bool {

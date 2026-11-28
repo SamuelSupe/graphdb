@@ -14,7 +14,7 @@ import (
 )
 
 func TestSubmitIngestAcceptsWALAndWaitsForOwnerStatus(t *testing.T) {
-	const statusPath = "/v1/ingest/writers/writer-a/aws/collector-a/batch-1"
+	const statusPath = "/v1/ingest/batches/aws/collector-a/batch-1?accepted_epoch=2&accepted_lsn=42"
 	var statusRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
@@ -47,13 +47,13 @@ func TestSubmitIngestAcceptsWALAndWaitsForOwnerStatus(t *testing.T) {
 			w.Header().Set("Location", statusPath)
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = io.WriteString(w, `{"writer_id":"writer-a","batch_id":"batch-1","state":"accepted","durability":"durable","accepted_at":"2026-09-02T10:00:00Z","estimated_flush_at":"2026-09-02T10:00:01Z","status_url":"`+statusPath+`"}`)
-		case r.Method == http.MethodGet && r.URL.Path == statusPath:
+		case r.Method == http.MethodGet && r.URL.RequestURI() == statusPath:
 			call := statusRequests.Add(1)
 			if call == 1 {
 				_, _ = io.WriteString(w, `{"tenant_id":"tenant-a","writer_id":"writer-a","source":"aws","collector_id":"collector-a","batch_id":"batch-1","state":"accepted","durability":"durable","recovery_pending":true}`)
 				return
 			}
-			_, _ = io.WriteString(w, `{"tenant_id":"tenant-a","writer_id":"writer-a","source":"aws","collector_id":"collector-a","batch_id":"batch-1","state":"committed","durability":"durable","result":{"batch_id":"batch-1","version":12,"applied":1,"failed":0}}`)
+			_, _ = io.WriteString(w, `{"tenant_id":"tenant-a","writer_id":"writer-a","source":"aws","collector_id":"collector-a","batch_id":"batch-1","state":"committed","durability":"raft_majority","accepted_lsn":42,"receipt_expires_at":"2026-09-02T11:00:00Z","result":{"batch_id":"batch-1","version":12,"applied":1,"failed":0}}`)
 		default:
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
@@ -97,6 +97,9 @@ func TestSubmitIngestAcceptsWALAndWaitsForOwnerStatus(t *testing.T) {
 	}
 	if terminal.State != "committed" || terminal.Result == nil || terminal.Result.Version != 12 || terminal.Result.Applied != 1 {
 		t.Fatalf("terminal status = %#v", terminal)
+	}
+	if terminal.AcceptedLSN != 42 || terminal.ReceiptExpiresAt == nil || terminal.ReceiptExpiresAt.Hour() != 11 {
+		t.Fatalf("retained terminal status = %#v", terminal)
 	}
 	if got := statusRequests.Load(); got != 2 {
 		t.Fatalf("status requests = %d, want GetIngestStatus plus one WaitIngest poll", got)
@@ -194,6 +197,11 @@ func TestIngestStatusRejectsUntrustedURLs(t *testing.T) {
 		"https://other.example/v1/ingest/batches/agent/collector/batch",
 		"/v1/query/graphql",
 		"/v1/ingest/batches/agent/collector/batch?tenant=other",
+		"/v1/ingest/batches/agent/collector/batch?accepted_lsn=1&accepted_lsn=2",
+		"/v1/ingest/batches/agent/collector/batch?accepted_lsn=0",
+		"/v1/ingest/batches/agent/collector/batch?accepted_lsn=18446744073709551616",
+		"/v1/ingest/batches/agent/collector/batch?accepted_epoch=2",
+		"/v1/ingest/batches/agent/collector/batch?accepted_lsn=42&accepted_epoch=2&accepted_epoch=3",
 	} {
 		if _, err := client.GetIngestStatus(context.Background(), statusURL); err == nil || !strings.Contains(err.Error(), "invalid ingest status URL") {
 			t.Errorf("GetIngestStatus(%q) error = %v, want URL validation error", statusURL, err)

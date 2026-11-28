@@ -5,16 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/lease"
 )
 
-type WriterLease struct {
-	TenantID   string    `json:"tenant_id"`
-	OwnerID    string    `json:"owner_id"`
-	FenceToken string    `json:"fence_token,omitempty"`
-	FenceEpoch int64     `json:"fence_epoch,omitempty"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-}
+type WriterLease = lease.WriterLease
 
 func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) error {
 	if bound, ok := s.writerFenceFromContext(ctx, tenantID); ok {
@@ -64,6 +59,9 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 	}
 	key := s.writerLeaseKey(tenantID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		if s.localFileStore() == nil {
+			s.clearWriterObjectKey(key)
+		}
 		current, meta, err := s.getWriterLease(ctx, tenantID, key)
 		switch {
 		case errors.Is(err, ErrNotFound):
@@ -105,7 +103,7 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 				if retainCache {
 					manifest, manifestMeta, err := s.getManifest(ctx, tenantID)
 					if err == nil && cachedManifestMatches(cached, manifest, manifestMeta) {
-						s.setWriteCache(tenantID, cached)
+						s.setWriteCacheContext(ctx, tenantID, cached)
 					}
 				}
 				return nil

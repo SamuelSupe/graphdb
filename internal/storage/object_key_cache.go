@@ -92,6 +92,25 @@ func (s *TenantStore) indexObjectKeyLocked(key string) {
 	}
 }
 
+func (s *TenantStore) deleteObjectKeyCached(key string) {
+	s.objectKeyMu.Lock()
+	defer s.objectKeyMu.Unlock()
+	if _, exists := s.objectKeyCache[key]; !exists {
+		return
+	}
+	delete(s.objectKeyCache, key)
+	bucket := s.objectKeyBucket(key)
+	if keys, ok := s.objectKeyPrefixes[bucket]; ok {
+		if _, exists := keys[key]; exists {
+			delete(keys, key)
+			s.objectKeyIndexed--
+			if len(keys) == 0 {
+				delete(s.objectKeyPrefixes, bucket)
+			}
+		}
+	}
+}
+
 func (s *TenantStore) clearObjectKeyPrefix(prefix string) {
 	s.objectKeyMu.Lock()
 	defer s.objectKeyMu.Unlock()

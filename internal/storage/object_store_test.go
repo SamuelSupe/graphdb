@@ -120,7 +120,7 @@ func TestFileStorePagesPreserveKeyOrderAndExcludeNewGCCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx = context.WithValue(ctx, fileListBeforeKey{}, cutoff)
-	ctx = context.WithValue(ctx, fileListDirectoriesKey{}, make(fileListDirectories))
+	ctx = WithFileListPageCache(ctx)
 	var got []string
 	cursor := ""
 	for {

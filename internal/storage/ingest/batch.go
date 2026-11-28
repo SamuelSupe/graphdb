@@ -20,6 +20,7 @@ type IngestBatchEntry struct {
 	AcceptedAt         time.Time
 	AcceptedGeneration int64
 	Prepared           *IngestPreparedRequest
+	ReplicatedReceipt  *ReplicatedIngestReceipt
 }
 
 type IngestPreparedRequest struct {
@@ -38,9 +39,10 @@ type IngestPreparedRequest struct {
 }
 
 type IngestBatchHooks struct {
-	Prepared  func(context.Context, []*IngestPreparedRequest) error
-	Published func()
-	Stats     func(IngestBatchStats)
+	Prepared      func(context.Context, []*IngestPreparedRequest) error
+	Published     func()
+	Stats         func(IngestBatchStats)
+	ReceiptStored func(index int)
 }
 
 type IngestBatchStats struct {

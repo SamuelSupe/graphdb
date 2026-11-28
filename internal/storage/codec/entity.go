@@ -93,7 +93,7 @@ func EntityRows(entity graph.Entity) ([]EntityRow, error) {
 	return rows, nil
 }
 
-func ApplyEntityRow(entity *graph.Entity, row EntityRow) error {
+func ApplyEntityRow(entity *graph.Entity, row EntityRow, remaining *int64) error {
 	switch row.Kind {
 	case EntityPageRowMetadata:
 		return nil
@@ -127,7 +127,7 @@ func ApplyEntityRow(entity *graph.Entity, row EntityRow) error {
 		}
 		entity.Identity[row.Key] = value
 	case EntityPageRowSource:
-		if row.Ordinal < 0 {
+		if !consumeEntityOrdinal(remaining, row.Ordinal, len(entity.Sources)) {
 			return fmt.Errorf("entity page source ordinal mismatch")
 		}
 		for len(entity.Sources) <= row.Ordinal {
@@ -135,7 +135,7 @@ func ApplyEntityRow(entity *graph.Entity, row EntityRow) error {
 		}
 		entity.Sources[row.Ordinal] = row.EntitySource
 	case entityPageRowMergedFrom:
-		if row.Ordinal < 0 {
+		if !consumeEntityOrdinal(remaining, row.Ordinal, len(entity.MergedFrom)) {
 			return fmt.Errorf("entity page merged_from ordinal mismatch")
 		}
 		for len(entity.MergedFrom) <= row.Ordinal {
@@ -149,6 +149,26 @@ func ApplyEntityRow(entity *graph.Entity, row EntityRow) error {
 		return fmt.Errorf("unknown entity page row kind %q", row.Kind)
 	}
 	return nil
+}
+
+const defaultMaxEntityOrdinalGap = 4096
+
+func consumeEntityOrdinal(remaining *int64, index, length int) bool {
+	if index < 0 {
+		return false
+	}
+	if index < length {
+		return true
+	}
+	gap := int64(index - length)
+	if remaining == nil {
+		return gap < defaultMaxEntityOrdinalGap
+	}
+	if gap >= *remaining {
+		return false
+	}
+	*remaining -= gap + 1
+	return true
 }
 
 func SortedAnyMapKeys(values map[string]any) []string {

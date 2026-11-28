@@ -27,7 +27,7 @@ type rangeEdgeCursor struct {
 }
 
 func edgeRangeRowsCacheKey(tenantID string, version int64, spec EdgeShard, object IndexObject) string {
-	return edgeLookupCacheKey(tenantID, version, edgeRangeSpec(spec, object), "range_rows") + "\x00" + object.Key
+	return edgeLookupCacheKey(tenantID, version, edgeRangeSpec(spec, object), "range_rows")
 }
 
 func (s *TenantStore) borrowEdgeRange(ctx context.Context, tenantID string, version int64, spec EdgeShard, n int) ([]graph.Edge, bool, error) {

@@ -94,6 +94,7 @@ func DecodeCommitItems(ctx context.Context, data []byte) ([]CommitTableItem, err
 	}
 
 	builders := map[string]*CommitBuilder{}
+	entityOrdinals := table.NumRows()
 	order := []string{}
 	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
@@ -104,17 +105,16 @@ func DecodeCommitItems(ctx context.Context, data []byte) ([]CommitTableItem, err
 			return nil, err
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
-			for _, ordinal := range []int64{columns.parentOrdinal.Value(i), columns.childOrdinal.Value(i), columns.nestedOrdinal.Value(i)} {
-				if ordinal < 0 || ordinal >= table.NumRows() {
-					return nil, fmt.Errorf("invalid parquet commit ordinal %d for %d rows", ordinal, table.NumRows())
-				}
+			if err := columns.ValidateOrdinals(i, table.NumRows(), true); err != nil {
+				return nil, err
 			}
 			key := commitBuildKey(columns.segmentKey.Value(i), columns.commitID.Value(i), columns.version.Value(i))
 			build := builders[key]
 			if build == nil {
 				build = &CommitBuilder{
-					key:         strings.Clone(columns.segmentKey.Value(i)),
-					contentHash: strings.Clone(columns.contentHash.Value(i)),
+					entityOrdinals: &entityOrdinals,
+					key:            strings.Clone(columns.segmentKey.Value(i)),
+					contentHash:    strings.Clone(columns.contentHash.Value(i)),
 					commit: graph.Commit{
 						LayoutVersion: CurrentObjectLayoutVersion,
 						TenantID:      strings.Clone(columns.commitTenantID.Value(i)),

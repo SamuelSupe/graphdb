@@ -118,3 +118,35 @@ func TestPartitionIngestTransactionalFailuresAndRecovery(t *testing.T) {
 		t.Fatalf("best-effort batch after failures: %+v %v", result, err)
 	}
 }
+
+type readBudgetRejectingRemote struct{ Remote }
+
+func (readBudgetRejectingRemote) Read(context.Context, Group, ReadRequest) (ReadResult, error) {
+	return ReadResult{}, ErrReadBudget
+}
+
+func TestPartitionIngestReadBudgetFailureReleasesWriter(t *testing.T) {
+	ctx := t.Context()
+	engine, remote := newLocalGraph(t)
+	engine.Generation = 1
+	remote.revision = MutationBudgetRestartRevision
+	if _, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	input := IngestInput{AcceptedAt: time.Now().UTC(), Request: storage.IngestRequest{
+		Source: "agent", CollectorID: "collector", BatchID: "bounded", Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "left", Kind: "host"}}},
+	}}
+	engine.Remote = readBudgetRejectingRemote{remote}
+	result, err := engine.SubmitIngest(ctx, "ingest:bounded", input)
+	if err != nil || result.Applied != 0 || result.Failed != 1 || result.ErrorCode != storage.IngestErrorMutationBudget {
+		t.Fatalf("budget limited batch: %+v (%v)", result, err)
+	}
+	engine.Remote = remote
+	if result, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "right", Kind: "host"}}}}); err != nil || result.Version != 2 {
+		t.Fatalf("work following budget limited batch: %+v (%v)", result, err)
+	}
+	retry, err := engine.SubmitIngest(ctx, "ingest:bounded", input)
+	if err != nil || !reflect.DeepEqual(retry, result) {
+		t.Fatalf("accepted batch lost its failed receipt: %+v (%v)", retry, err)
+	}
+}

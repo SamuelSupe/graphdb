@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -175,12 +176,39 @@ func ApplySourcePolicy(mutations Mutations, policy SourcePolicy) (Mutations, App
 
 func applyPolicyToEntity(entity *Entity, policy SourcePolicy) {
 	entity.Source = strings.TrimSpace(entity.Source)
-	entity.SourceRank = policy.PriorityFor(entity.Source, entity.SourceRank)
-	entity.Sources = append([]EntitySource(nil), entity.Sources...)
-	for i := range entity.Sources {
-		entity.Sources[i].Source = strings.TrimSpace(entity.Sources[i].Source)
-		entity.Sources[i].Priority = policy.PriorityFor(entity.Sources[i].Source, entity.Sources[i].Priority)
+	entity.ExternalID = strings.TrimSpace(entity.ExternalID)
+	rawSources := entity.Sources
+	entity.Sources = make([]EntitySource, 0, len(rawSources))
+	seen := make(map[string]int, len(rawSources))
+	for _, item := range rawSources {
+		item.Source = strings.TrimSpace(item.Source)
+		item.ExternalID = strings.TrimSpace(item.ExternalID)
+		if item.Source == "" || item.ExternalID == "" {
+			continue
+		}
+		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
+			item.Confidence = 0
+		}
+		item.Priority = policy.PriorityFor(item.Source, item.Priority)
+		key := item.Source + "\x00" + item.ExternalID
+		if idx, exists := seen[key]; exists {
+			if item.Priority > entity.Sources[idx].Priority ||
+				(item.Priority == entity.Sources[idx].Priority && item.Confidence > entity.Sources[idx].Confidence) {
+				entity.Sources[idx] = item
+			}
+			continue
+		}
+		seen[key] = len(entity.Sources)
+		entity.Sources = append(entity.Sources, item)
 	}
+	if entity.Source == "" && entity.ExternalID == "" && len(entity.Sources) == 1 {
+		entity.Source = entity.Sources[0].Source
+		entity.ExternalID = entity.Sources[0].ExternalID
+		entity.Confidence = entity.Sources[0].Confidence
+		entity.SourceRank = entity.Sources[0].Priority
+		return
+	}
+	entity.SourceRank = policy.PriorityFor(entity.Source, entity.SourceRank)
 }
 
 func applyPolicyToEdge(edge *Edge, policy SourcePolicy) {

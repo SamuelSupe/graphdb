@@ -162,6 +162,8 @@ func (s Store) applyDataMove(ctx context.Context, a Action) (any, error) {
 			}
 		}
 		state = DataState{Tenant: a.Tenant, Generation: a.Generation, Partition: a.Partition, Epoch: a.Epoch, State: "importing", LastTxn: a.Txn}
+	} else if a.Operation == "data_move_retire" && (errors.Is(err, storage.ErrNotFound) || (err == nil && state.State == "retired" && state.Epoch < a.Epoch)) {
+		state = DataState{Tenant: a.Tenant, Generation: a.Generation, Partition: a.Partition, Epoch: a.Epoch, State: "retired", LastTxn: a.Txn}
 	} else {
 		if err != nil {
 			return nil, err
@@ -298,11 +300,11 @@ func (s Store) applyDataMove(ctx context.Context, a Action) (any, error) {
 				if paged, ok := s.Objects.(interface {
 					ListPage(context.Context, string, string, int) ([]storage.ObjectInfo, string, error)
 				}); ok {
-					objects, _, err = paged.ListPage(ctx, prefix, "", 4)
+					objects, _, err = paged.ListPage(ctx, prefix, "", 64)
 				} else {
 					objects, err = s.Objects.List(ctx, prefix)
-					if len(objects) > 4 {
-						objects = objects[:4]
+					if len(objects) > 64 {
+						objects = objects[:64]
 					}
 				}
 				if err != nil {
@@ -329,6 +331,9 @@ func (s Store) applyGraphMove(ctx context.Context, g Graph, a Action) (any, erro
 	if a.Operation == "graph_move_begin" {
 		if g.State != "active" || g.Active != nil || g.GC != nil || g.Move != nil || a.Target == nil || !validTokenID(a.Txn) || a.Target.ID == "" || a.Target.ID == g.Partitions[a.Partition].Group || g.Partitions[a.Partition].Epoch > math.MaxUint64-2 {
 			return nil, conflict("graph is not ready for this partition move")
+		}
+		if a.CatalogVersion != 0 && a.CatalogVersion < g.CatalogVersion {
+			return nil, conflict("graph topology changed before move began")
 		}
 		source, err := g.GroupFor(a.Partition)
 		if err != nil {

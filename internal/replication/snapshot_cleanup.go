@@ -11,16 +11,21 @@ func (n *Node) scheduleSnapshotCleanup(index uint64) {
 	if index == 0 {
 		return
 	}
-	// A single producer replaces obsolete cleanup work without retaining graph
-	// snapshots or waiting for filesystem cleanup on the Raft control path.
-	select {
-	case n.snapshotCleanupRequests <- index:
-	default:
-		select {
-		case <-n.snapshotCleanupRequests:
-		default:
+	for {
+		current := n.snapshotCleanupTarget.Load()
+		if index <= current {
+			break
 		}
-		n.snapshotCleanupRequests <- index
+		if n.snapshotCleanupTarget.CompareAndSwap(current, index) {
+			break
+		}
+	}
+	if n.snapshotCleanupWake == nil {
+		return
+	}
+	select {
+	case n.snapshotCleanupWake <- struct{}{}:
+	default:
 	}
 }
 
@@ -28,15 +33,16 @@ func (n *Node) snapshotCleanupLoop(orphans []os.FileInfo) {
 	defer n.workers.Done()
 	retry := time.NewTicker(5 * time.Second)
 	defer retry.Stop()
-	var pending uint64
+	var cleaned uint64
 	for {
+		woke := false
 		select {
 		case <-n.ctx.Done():
 			return
-		case request := <-n.snapshotCleanupRequests:
-			pending = request
+		case <-n.snapshotCleanupWake:
+			woke = true
 		case <-retry.C:
-			if pending == 0 && len(orphans) == 0 {
+			if n.snapshotCleanupTarget.Load() <= cleaned && len(orphans) == 0 {
 				continue
 			}
 		}
@@ -63,11 +69,12 @@ func (n *Node) snapshotCleanupLoop(orphans []os.FileInfo) {
 		// The application worker may still be restoring an older delivered snapshot.
 		// Keep its file until durable application has passed that position.
 		applied := n.applied.Load()
-		if pending > 0 {
-			_, cleanupErr := pruneSnapshotFilesBefore(n.cfg.Dir, min(pending, applied), "", false)
+		target := n.snapshotCleanupTarget.Load()
+		if target > cleaned || (woke && target > 0) {
+			_, cleanupErr := pruneSnapshotFilesBefore(n.cfg.Dir, min(target, applied), "", false)
 			err = errors.Join(err, cleanupErr)
-			if cleanupErr == nil && applied >= pending {
-				pending = 0
+			if cleanupErr == nil && applied >= target && target > cleaned {
+				cleaned = target
 			}
 		}
 		finish(err)

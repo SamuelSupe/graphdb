@@ -8,6 +8,7 @@ import (
 type localViewGate struct {
 	clock                  uint64
 	active                 map[uint64]struct{}
+	cancelers              map[uint64]context.CancelFunc
 	retired                map[string]uint64
 	rootGeneration         uint64
 	refs, readers, waiting int
@@ -56,7 +57,7 @@ func (s *TenantStore) beginIngestAcceptance(ctx context.Context, tenantID string
 }
 
 func (s *TenantStore) pauseLocalIngest(ctx context.Context, tenantID string) (release func(), err error) {
-	if admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok &&
+	if admission, ok := s.taskAdmissionFromContext(ctx); ok &&
 		s.localFileStore() != nil && s.ingestBarrier != nil {
 		// WAL backpressure may require compact. Do not hold either task slot
 		// while draining, or while waiting for another direct writer to drain.
@@ -110,10 +111,25 @@ func (s *TenantStore) lockLocalGate(ctx context.Context, tenantID string, write,
 		gates[key] = g
 	}
 	g.refs++
+	var cancelStreams []context.CancelFunc
 	if write {
 		g.waiting++
+		if !admission && len(g.cancelers) > 0 {
+			cancelStreams = make([]context.CancelFunc, 0, len(g.cancelers))
+			for id, fn := range g.cancelers {
+				cancelStreams = append(cancelStreams, fn)
+				delete(g.cancelers, id)
+			}
+		}
 	} else {
 		g.waitingReaders++
+	}
+	if len(cancelStreams) > 0 {
+		r.mu.Unlock()
+		for _, fn := range cancelStreams {
+			fn()
+		}
+		r.mu.Lock()
 	}
 	leaveQueue := func() {
 		if write {
@@ -199,6 +215,51 @@ func (s *TenantStore) ReadViewContext(ctx context.Context, tenantID string) (con
 	}
 	view := &localViewReference{refs: 1, unpin: release}
 	return context.WithValue(ctx, key, view), sync.OnceFunc(view.release), nil
+}
+
+// ReadViewContextCancelable pins a local read view like ReadViewContext, and
+// also registers a canceler on the tenant's localViewGate so an incoming
+// exclusive lifecycle operation (purge, restore, recover, repair) cancels
+// long-lived streaming reads promptly instead of stalling for minutes.
+func (s *TenantStore) ReadViewContextCancelable(ctx context.Context, tenantID string) (context.Context, func(), error) {
+	viewCtx, release, err := s.ReadViewContext(ctx, tenantID)
+	if err != nil {
+		return ctx, nil, err
+	}
+	files := s.localFileStore()
+	if files == nil || tenantID == "" || ValidateTenantID(tenantID) != nil {
+		return viewCtx, release, nil
+	}
+	streamCtx, cancel := context.WithCancel(viewCtx)
+	r := files.runtime
+	r.mu.Lock()
+	g := r.views[s.tenantObjectPrefix(tenantID)]
+	var cancelID uint64
+	registered := false
+	if g != nil {
+		if g.waiting > 0 {
+			r.mu.Unlock()
+			cancel()
+			return streamCtx, release, nil
+		}
+		g.clock++
+		cancelID = g.clock
+		if g.cancelers == nil {
+			g.cancelers = make(map[uint64]context.CancelFunc)
+		}
+		g.cancelers[cancelID] = cancel
+		registered = true
+	}
+	r.mu.Unlock()
+	return streamCtx, sync.OnceFunc(func() {
+		if registered {
+			r.mu.Lock()
+			delete(g.cancelers, cancelID)
+			r.mu.Unlock()
+		}
+		cancel()
+		release()
+	}), nil
 }
 
 type localViewContextKey struct {

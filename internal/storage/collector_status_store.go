@@ -15,7 +15,9 @@ func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, 
 	}
 	defer unlock()
 	if !s.MaterializeCollectorStatus {
-		return s.cacheCollectorStatusFromBatches(ctx, tenantID, request, result, started, finished)
+		return s.cacheCollectorStatusFromBatches(ctx, tenantID, []ingestCollectorStatusUpdate{{
+			request: request, result: result, started: started, finished: finished,
+		}})
 	}
 	key := s.collectorStatusKey(tenantID, request.Source, request.CollectorID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
@@ -65,14 +67,6 @@ func (s *TenantStore) saveCollectorStatusBatch(
 		return nil
 	}
 	first := updates[0]
-	if !s.MaterializeCollectorStatus {
-		for _, update := range updates {
-			if err := s.saveCollectorStatus(ctx, tenantID, update.request, update.result, update.started, update.finished); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 	for _, update := range updates[1:] {
 		if update.request.Source != first.request.Source || update.request.CollectorID != first.request.CollectorID {
 			return fmt.Errorf("collector status batch contains multiple collectors")
@@ -83,6 +77,9 @@ func (s *TenantStore) saveCollectorStatusBatch(
 		return err
 	}
 	defer unlock()
+	if !s.MaterializeCollectorStatus {
+		return s.cacheCollectorStatusFromBatches(ctx, tenantID, updates)
+	}
 	key := s.collectorStatusKey(tenantID, first.request.Source, first.request.CollectorID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
 		status, meta, ok := s.getCachedCollectorStatus(key)

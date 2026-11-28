@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -257,14 +259,19 @@ func TestHTTPQueryStreamLazyPreflightErrorUsesHTTPStatus(t *testing.T) {
 
 func TestHTTPQueryStreamLazyRejectsCursorAfterOutsideResultSet(t *testing.T) {
 	handler := lazyReadHandler(t)
-	cursor := encodeTestCursor(t, map[string]any{"version": float64(1), "after": "entity:host:missing"})
 	body := query.Request{
-		Op:     "match",
-		Kind:   "host",
-		Where:  []query.Filter{{Field: "hostname", Op: "eq", Value: "app-01"}},
-		Limit:  1,
-		Cursor: cursor,
+		Op:    "match",
+		Kind:  "host",
+		Where: []query.Filter{{Field: "hostname", Op: "eq", Value: "app-01"}},
 	}
+	canonical, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body.Cursor = encodeTestCursor(t, map[string]any{
+		"version": 1, "after": "entity:host:missing", "query": fmt.Sprintf("%x", sha256.Sum256(canonical)),
+	})
+	body.Limit = 1
 	rr := serveJSON(handler, "POST", "/v1/query/stream", "tenant-a", body)
 	if rr.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("stream = %d body=%s", rr.Code, rr.Body.String())

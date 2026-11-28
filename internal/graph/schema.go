@@ -4,6 +4,31 @@ import (
 	"fmt"
 )
 
+func (g *Graph) validateExplicitEntityFieldsWithSpecs(
+	entity *Entity,
+	specs map[string]FieldSpec,
+) error {
+	for name, spec := range specs {
+		value, exists := entity.Fields[name]
+		if !exists {
+			continue
+		}
+		if !valueMatchesType(value, spec.Type) {
+			return fmt.Errorf("entity %q field %q does not match type %q", entity.ID, name, spec.Type)
+		}
+		if len(spec.Enum) > 0 && !valueInEnum(value, spec.Enum) {
+			return fmt.Errorf("entity %q field %q value is not in enum", entity.ID, name)
+		}
+	}
+	for name, value := range entity.Identity {
+		if value == nil {
+			delete(entity.Identity, name)
+		}
+	}
+	g.populateIdentity(entity)
+	return nil
+}
+
 func (g *Graph) applyEntitySchemaWithSpecs(
 	entity *Entity,
 	specs map[string]FieldSpec,
@@ -90,12 +115,26 @@ func (g *Graph) effectiveFields(
 	return fields, nil
 }
 
+func copyFieldSpec(spec FieldSpec) FieldSpec {
+	spec.Default = copyAny(spec.Default)
+	spec.Enum = copyAnySlice(spec.Enum)
+	return spec
+}
+
 func (g *Graph) EffectiveFields(kind string) (map[string]FieldSpec, error) {
-	return g.effectiveFields(
+	resolved, err := g.effectiveFields(
 		kind,
 		map[string]struct{}{},
 		map[string]map[string]FieldSpec{},
 	)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]FieldSpec, len(resolved))
+	for name, spec := range resolved {
+		out[name] = copyFieldSpec(spec)
+	}
+	return out, nil
 }
 
 func (g *Graph) validateCITypes() error {

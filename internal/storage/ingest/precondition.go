@@ -19,6 +19,7 @@ const (
 	IngestErrorVersionConflict     = "version_conflict"
 	IngestErrorPreconditionFailed  = "precondition_failed"
 	IngestErrorAtomicValidation    = "atomic_validation_failed"
+	IngestErrorMutationBudget      = "mutation_budget_exceeded"
 	IngestErrorAtomicSuppressed    = "atomic_suppressed"
 	IngestErrorIdempotencyConflict = "idempotency_conflict"
 

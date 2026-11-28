@@ -1,5 +1,11 @@
 package graph
 
+import (
+	"reflect"
+	"slices"
+	"time"
+)
+
 func copyCIType(ciType CIType) CIType {
 	ciType.Extends = append([]string(nil), ciType.Extends...)
 	if ciType.IdentityKeys != nil {
@@ -101,8 +107,8 @@ func copyIdentity(identity map[string]any) map[string]any {
 
 func copyAny(value any) any {
 	switch typed := value.(type) {
-	case nil:
-		return nil
+	case nil, string, bool, float64, float32, int, int64, int32, int16, int8, uint, uint64, uint32, uint16, uint8, time.Time:
+		return value
 	case Fields:
 		return copyFields(typed)
 	case map[string]any:
@@ -114,17 +120,47 @@ func copyAny(value any) any {
 	case []any:
 		return copyAnySlice(typed)
 	case []string:
-		return append([]string(nil), typed...)
+		return slices.Clone(typed)
 	case []int:
-		return append([]int(nil), typed...)
+		return slices.Clone(typed)
 	case []int64:
-		return append([]int64(nil), typed...)
+		return slices.Clone(typed)
 	case []float64:
-		return append([]float64(nil), typed...)
+		return slices.Clone(typed)
 	case []bool:
-		return append([]bool(nil), typed...)
+		return slices.Clone(typed)
 	default:
-		return value
+		rv := reflect.ValueOf(value)
+		switch rv.Kind() {
+		case reflect.Slice:
+			if rv.IsNil() {
+				return value
+			}
+			out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				if cloned := copyAny(rv.Index(i).Interface()); cloned != nil {
+					out.Index(i).Set(reflect.ValueOf(cloned))
+				}
+			}
+			return out.Interface()
+		case reflect.Map:
+			if rv.IsNil() {
+				return value
+			}
+			out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+			iter := rv.MapRange()
+			for iter.Next() {
+				clonedVal := copyAny(iter.Value().Interface())
+				if clonedVal == nil {
+					out.SetMapIndex(iter.Key(), reflect.Zero(rv.Type().Elem()))
+				} else {
+					out.SetMapIndex(iter.Key(), reflect.ValueOf(clonedVal))
+				}
+			}
+			return out.Interface()
+		default:
+			return value
+		}
 	}
 }
 
@@ -150,14 +186,6 @@ func copyFieldSources(sources map[string]FieldSource) map[string]FieldSource {
 	return out
 }
 
-func copySetMap(values map[string]map[string]struct{}) map[string]map[string]struct{} {
-	out := make(map[string]map[string]struct{}, len(values))
-	for key, set := range values {
-		out[key] = copySet(set)
-	}
-	return out
-}
-
 func copyFieldIndex(index map[string]map[string]*fieldValueIndex) map[string]map[string]*fieldValueIndex {
 	out := make(map[string]map[string]*fieldValueIndex, len(index))
 	for kind, byField := range index {
@@ -173,13 +201,10 @@ func copyFieldIndex(index map[string]map[string]*fieldValueIndex) map[string]map
 	return out
 }
 
-func copyStringMap(values map[string]map[string]string) map[string]map[string]string {
-	out := make(map[string]map[string]string, len(values))
+func copyStringMap(values map[string]*ShardedMap[string]) map[string]*ShardedMap[string] {
+	out := make(map[string]*ShardedMap[string], len(values))
 	for key, inner := range values {
-		out[key] = make(map[string]string, len(inner))
-		for innerKey, innerValue := range inner {
-			out[key][innerKey] = innerValue
-		}
+		out[key] = inner.Clone()
 	}
 	return out
 }
@@ -190,12 +215,4 @@ func copySet(values map[string]struct{}) map[string]struct{} {
 		out[value] = struct{}{}
 	}
 	return out
-}
-
-func copyAdjacency(source *ShardedMap[map[string]struct{}]) *ShardedMap[map[string]struct{}] {
-	result := NewShardedMap[map[string]struct{}]()
-	for key, ids := range source.All() {
-		result.Set(key, copyStringSet(ids))
-	}
-	return result
 }

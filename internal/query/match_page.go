@@ -67,7 +67,12 @@ func executeFieldIndexPage(g *graph.Graph, request Request, plan Plan, cursor cu
 				filters := filtersForIndexField(plan.IndexField, requestIndexFilters(request))
 				if budget.lookup == nil {
 					match := IndexScanKeyMatcher(filters)
-					err = g.VisitFilteredFieldIDs(request.Kind, plan.IndexField, runtimeIndexBounds(filters), startID, func(key string) (bool, error) { return match(key), budget.check() }, visit)
+					err = g.VisitFilteredFieldIDs(request.Kind, plan.IndexField, runtimeIndexBounds(filters), startID, func(key string) (bool, error) {
+						if err := budget.add(1); err != nil {
+							return false, err
+						}
+						return match(key), nil
+					}, visit)
 				} else {
 					used, err = scanner.VisitFilteredFieldIndex(budget.ctx, request.Kind, plan.IndexField, filters, startID, visit)
 				}
@@ -148,6 +153,9 @@ func pageMatchedIDs(g *graph.Graph, request Request, cursor cursorState, budget 
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	cursorID, skipByID := cursorEntityID(cursor)
+	if !cursor.Legacy && cursor.After != "" && !skipByID {
+		return Response{}, invalidCursorAfter(cursor)
+	}
 	err := budget.measure("filter-project", "", len(ids), func() (int, error) {
 		startScanned := budget.scanned
 		for _, id := range ids {
@@ -166,8 +174,8 @@ func pageMatchedIDs(g *graph.Graph, request Request, cursor cursorState, budget 
 				return budget.scanned - startScanned, err
 			}
 			if !ok {
-				if lazyExecution(g, budget) {
-					return budget.scanned - startScanned, ErrIndexUnavailable
+				if lazyExecution(g, budget) && !budget.authoritativeEntities {
+					return budget.scanned - startScanned, ErrMaterializedFallback
 				}
 				continue
 			}
@@ -195,8 +203,8 @@ func confirmCursorEntity(g *graph.Graph, id string, request Request, cursor curs
 		return err
 	}
 	if !ok {
-		if lazyExecution(g, budget) {
-			return ErrIndexUnavailable
+		if lazyExecution(g, budget) && !budget.authoritativeEntities {
+			return ErrMaterializedFallback
 		}
 		return invalidCursorAfter(cursor)
 	}
@@ -204,7 +212,7 @@ func confirmCursorEntity(g *graph.Graph, id string, request Request, cursor curs
 		return err
 	}
 	budget.scanned++
-	if !requestEntityMatches(&request, &entity) {
+	if !requestEntityMatches(&request, &entity) || !budget.allowsEntity(entity) {
 		return invalidCursorAfter(cursor)
 	}
 	return nil
@@ -246,6 +254,9 @@ func appendPageMatch(results *[]Result, entity graph.Entity, request Request, cu
 	}
 	budget.scanned++
 	if !requestEntityMatches(&request, &entity) {
+		return false, nil
+	}
+	if budget.entityPredicate != nil && !budget.entityPredicate(entity) {
 		return false, nil
 	}
 	result := Result{Entity: &entity}

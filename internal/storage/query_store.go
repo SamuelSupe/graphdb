@@ -46,7 +46,7 @@ func (s *TenantStore) SaveQuery(ctx context.Context, tenantID string, saved Save
 		return SavedQuery{}, err
 	}
 	saved.TenantID = tenantID
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	if saved.CreatedAt.IsZero() && exists {
 		saved.CreatedAt = existing.CreatedAt
 	}

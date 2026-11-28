@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -214,14 +215,17 @@ func (s *Server) readerTrafficGateReport(r *http.Request, tenantID string) (Read
 	refreshSuccess := false
 	if refresh && !allowStale && s.Cache != nil && freshness.VisibleVersion < targetVersion {
 		refreshAttempt = true
-		if _, _, err := s.Cache.LoadAtLeast(r.Context(), tenantID, targetVersion); err != nil {
+		refreshCtx, refreshCancel := s.readGraphLoadContext(r.Context(), tenantID, readTarget{TargetVersion: targetVersion})
+		refreshErr := s.Cache.WithReadOnlyGraphAtLeast(refreshCtx, tenantID, targetVersion, func(*graph.Graph, storage.Manifest) error { return nil })
+		refreshCancel()
+		if refreshErr != nil {
 			return ReaderTrafficGateReport{
 				TenantID:       tenantID,
 				CheckedAt:      freshness.CheckedAt,
 				ServeTraffic:   false,
 				Status:         "draining",
 				Reason:         "refresh_failed",
-				Message:        err.Error(),
+				Message:        refreshErr.Error(),
 				TargetVersion:  targetVersion,
 				MaxStalenessMS: maxStalenessMS,
 				AllowStale:     allowStale,
@@ -527,7 +531,7 @@ func (s *Server) repairTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request RepairRequest
-	if r.ContentLength != 0 && !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
+	if !decodeOptionalJSONBody(w, r, &request, maxConfigRequestBytes) {
 		return
 	}
 	if request.Apply && !s.writeAllowed() {
@@ -590,11 +594,15 @@ func (s *Server) runGC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request GCRequest
-	if r.ContentLength != 0 && !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
+	if !decodeOptionalJSONBody(w, r, &request, maxConfigRequestBytes) {
 		return
 	}
 	if request.KeepSnapshots < 0 || request.DeadLetterMaxAgeSeconds < 0 || request.TaskMaxAgeSeconds < 0 || request.MaxDeletes < 0 {
 		writeError(w, http.StatusBadRequest, "keep_snapshots, deadletter_max_age_seconds, task_max_age_seconds, and max_deletes must be non-negative")
+		return
+	}
+	if request.DeadLetterMaxAgeSeconds > storage.MaxDurationSeconds || request.TaskMaxAgeSeconds > storage.MaxDurationSeconds {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("deadletter_max_age_seconds and task_max_age_seconds must be at most %d", storage.MaxDurationSeconds))
 		return
 	}
 	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)

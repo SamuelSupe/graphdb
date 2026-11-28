@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -94,8 +95,8 @@ func decodeParquetWriterLease(ctx context.Context, data []byte) (WriterLease, er
 		return WriterLease{}, err
 	}
 	lease := WriterLease{
-		TenantID:  tenantColumn.Value(0),
-		OwnerID:   ownerColumn.Value(0),
+		TenantID:  strings.Clone(tenantColumn.Value(0)),
+		OwnerID:   strings.Clone(ownerColumn.Value(0)),
 		ExpiresAt: parquetio.ParseTime(expiresColumn.Value(0)),
 		UpdatedAt: parquetio.ParseTime(updatedColumn.Value(0)),
 	}
@@ -104,7 +105,7 @@ func decodeParquetWriterLease(ctx context.Context, data []byte) (WriterLease, er
 		if err != nil {
 			return WriterLease{}, err
 		}
-		lease.FenceToken = fenceColumn.Value(0)
+		lease.FenceToken = strings.Clone(fenceColumn.Value(0))
 	}
 	if table.NumCols() > int64(parquetWriterLeaseColumnFenceEpoch) {
 		fenceEpochColumn, err := parquetio.Int64Column(batch, parquetWriterLeaseColumnFenceEpoch, "fence_epoch")

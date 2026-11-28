@@ -12,9 +12,9 @@ import (
 )
 
 type tenantAdmission struct {
-	active  int
-	paused  bool
-	changed chan struct{}
+	active     int
+	pauseCount int
+	changed    chan struct{}
 }
 
 func (c *Cluster) tenantAdmission(tenant string) *tenantAdmission {
@@ -36,7 +36,7 @@ func (c *Cluster) admitTenantMutation(cmd command) (func(), error) {
 	c.admissionMu.Lock()
 	defer c.admissionMu.Unlock()
 	entry := c.tenantAdmission(cmd.Tenant)
-	if entry.paused {
+	if entry.pauseCount > 0 {
 		taskControl := false
 		if cmd.Kind == "http" && cmd.Method == http.MethodPost {
 			uri, err := url.ParseRequestURI(cmd.URI)
@@ -57,7 +57,7 @@ func (c *Cluster) admitTenantMutation(cmd command) (func(), error) {
 		entry.active--
 		close(entry.changed)
 		entry.changed = make(chan struct{})
-		if entry.active == 0 && !entry.paused {
+		if entry.active == 0 && entry.pauseCount == 0 {
 			delete(c.admissions, cmd.Tenant)
 		}
 	}, nil
@@ -66,18 +66,19 @@ func (c *Cluster) admitTenantMutation(cmd command) (func(), error) {
 // Only the current leader admits mutations. A local pause need not enter the
 // log: late proposals or a leader change still invalidate the prepared token.
 // Draining accepted WAL prevents a pause from stranding acknowledged writes.
-// The maintenance worker serializes pauses with maintenanceMu.
 func (c *Cluster) pauseTenantWrites(ctx context.Context, tenant string) (func(), error) {
 	c.admissionMu.Lock()
 	entry := c.tenantAdmission(tenant)
-	entry.paused = true
+	entry.pauseCount++
 	c.admissionMu.Unlock()
 	c.metrics.Event("maintenance_write_pause")
 	resume := sync.OnceFunc(func() {
 		c.admissionMu.Lock()
 		defer c.admissionMu.Unlock()
-		entry.paused = false
-		if entry.active == 0 {
+		if entry.pauseCount > 0 {
+			entry.pauseCount--
+		}
+		if entry.active == 0 && entry.pauseCount == 0 {
 			delete(c.admissions, tenant)
 		}
 	})
@@ -100,6 +101,7 @@ func (c *Cluster) pauseTenantWrites(ctx context.Context, tenant string) (func(),
 			resume()
 			return nil, err
 		}
+		waitCh := c.App.ingestWaitCh()
 		queue, err := c.App.pendingSnapshot(ctx)
 		if err != nil {
 			resume()
@@ -107,7 +109,10 @@ func (c *Cluster) pauseTenantWrites(ctx context.Context, tenant string) (func(),
 		}
 		pending := false
 		for _, request := range queue {
-			pending = pending || request.tenant == tenant
+			if !request.partitioned && request.tenant == tenant {
+				pending = true
+				break
+			}
 		}
 		if !pending {
 			return resume, nil
@@ -116,6 +121,31 @@ func (c *Cluster) pauseTenantWrites(ctx context.Context, tenant string) (func(),
 			resume()
 			return nil, err
 		}
+		queueAfter, err := c.App.pendingSnapshot(ctx)
+		if err != nil {
+			resume()
+			return nil, err
+		}
+		stillPending := false
+		for _, request := range queueAfter {
+			if !request.partitioned && request.tenant == tenant {
+				stillPending = true
+				break
+			}
+		}
+		if !stillPending {
+			return resume, nil
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-waitCh:
+			timer.Stop()
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			resume()
+			return nil, ctx.Err()
+		}
 	}
 }
 
@@ -123,7 +153,7 @@ func (c *Cluster) maintenanceWritesPaused() bool {
 	c.admissionMu.Lock()
 	defer c.admissionMu.Unlock()
 	for _, entry := range c.admissions {
-		if entry.paused {
+		if entry.pauseCount > 0 {
 			return true
 		}
 	}

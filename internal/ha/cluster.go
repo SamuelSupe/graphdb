@@ -25,38 +25,41 @@ import (
 )
 
 type Cluster struct {
-	cancel             context.CancelFunc
-	background         sync.WaitGroup
-	closeOnce          sync.Once
-	closeErr           error
-	Node               *replication.Node
-	App                *Application
-	WAL                bool
-	FlushInterval      time.Duration
-	FlushMaxRequests   int
-	FlushMaxBytes      int64
-	receiptRetention   time.Duration
-	flushWake          chan struct{}
-	partitionWake      chan string
-	config             config.RaftConfig
-	diskPolicy         storage.DiskSpacePolicy
-	shards             *sharding.Client
-	metrics            *observability.OperationMetrics
-	maintenanceMu      sync.Mutex
-	maintenanceCursor  string
-	maintenanceRetries map[string]int
-	admissionMu        sync.Mutex
-	admissions         map[string]*tenantAdmission
-	exportMu           sync.Mutex
-	exports            map[string]*tenantExport
-	exportBuildSlots   chan struct{}
-	exportChunkSlots   chan struct{}
-	exportClosed       bool
+	cancel                   context.CancelFunc
+	background               sync.WaitGroup
+	closeOnce                sync.Once
+	closeErr                 error
+	Node                     *replication.Node
+	App                      *Application
+	WAL                      bool
+	FlushInterval            time.Duration
+	FlushMaxRequests         int
+	FlushMaxBytes            int64
+	MaintenanceInterval      time.Duration
+	receiptRetention         time.Duration
+	ordinaryReceiptRetention time.Duration
+	flushWake                chan struct{}
+	partitionWake            chan string
+	config                   config.RaftConfig
+	requireTenantScope       bool
+	diskPolicy               storage.DiskSpacePolicy
+	shards                   *sharding.Client
+	metrics                  *observability.OperationMetrics
+	maintenanceMu            sync.Mutex
+	maintenanceCursor        string
+	maintenanceRetries       map[string]maintenanceRetry
+	admissionMu              sync.Mutex
+	admissions               map[string]*tenantAdmission
+	exportMu                 sync.Mutex
+	exports                  map[string]*tenantExport
+	exportBuildSlots         chan struct{}
+	exportChunkSlots         chan struct{}
+	exportClosed             bool
 }
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{flushWake: make(chan struct{}, 1), partitionWake: make(chan string, 1), diskPolicy: cfg.DiskSpacePolicy(), receiptRetention: cfg.PartitionIngestReceiptRetention, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{flushWake: make(chan struct{}, 1), partitionWake: make(chan string, 1), requireTenantScope: cfg.RequireTenantScope, diskPolicy: cfg.DiskSpacePolicy(), MaintenanceInterval: cfg.MaintenanceInterval, receiptRetention: cfg.PartitionIngestReceiptRetention, ordinaryReceiptRetention: cfg.HAIngestReceiptRetention, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
@@ -99,10 +102,61 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	if cfg.Protocol >= 2 {
 		c.background.Add(1)
 		go func() { defer c.background.Done(); c.runTaskBackground(ctx) }()
+		if c.MaintenanceInterval > 0 && !cfg.Catalog {
+			c.background.Add(1)
+			go func() { defer c.background.Done(); c.runScheduledMaintenance(ctx) }()
+		}
+	}
+	if cfg.Protocol >= ingestQueueCheckpointProtocol && !cfg.Catalog {
+		wake := make(chan struct{}, 1)
+		generationPrefix := c.App.ingestGenerationPrefix()
+		removeListener := c.App.Files.OnChange(func(key string) {
+			if strings.HasPrefix(key, generationPrefix) {
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
+			}
+		})
+		c.background.Add(1)
+		go func() {
+			defer c.background.Done()
+			defer removeListener()
+			c.runReceiptSweep(ctx, "ordinary receipt cleanup", 50*time.Millisecond, 0, wake, c.ordinaryReceiptCleanupStep)
+		}()
+	}
+	if !cfg.Catalog && (cfg.ShardID == "" && cfg.Protocol >= ingestQueueCheckpointProtocol ||
+		cfg.ShardID != "" && cfg.Protocol >= partition.CompactIngestProtocol) {
+		c.background.Add(1)
+		go func() {
+			defer c.background.Done()
+			c.runReceiptExpiry(ctx)
+		}()
 	}
 	if cfg.Catalog {
-		c.background.Add(1)
-		go func() { defer c.background.Done(); c.runShardMigrations(ctx) }()
+		c.background.Add(2)
+		go func() {
+			defer c.background.Done()
+			c.runCatalogWorker(ctx, 200*time.Millisecond, 2*time.Minute, c.advanceShardMigration)
+		}()
+		go func() {
+			defer c.background.Done()
+			c.runCatalogWorker(ctx, 200*time.Millisecond, 3*time.Second, c.advanceShardAssignments)
+		}()
+		if cfg.Protocol >= partition.ConversionCancellationProtocol {
+			c.background.Add(1)
+			go func() {
+				defer c.background.Done()
+				c.runCatalogWorker(ctx, 200*time.Millisecond, 0, c.advanceConversionCancellations)
+			}()
+		}
+		if cfg.Protocol >= 5 {
+			c.background.Add(1)
+			go func() {
+				defer c.background.Done()
+				c.runCatalogWorker(ctx, 5*time.Second, 0, c.syncPartitionGroupTopology)
+			}()
+		}
 	}
 	if cfg.ShardID != "" {
 		if cfg.Protocol >= 5 {
@@ -110,18 +164,10 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 			go func() { defer c.background.Done(); c.runPartitionBackground(ctx) }()
 		}
 		if cfg.Protocol >= partition.CompactIngestProtocol {
-			c.background.Add(2)
+			c.background.Add(1)
 			go func() {
 				defer c.background.Done()
-				c.runPartitionReceiptSweep(ctx, "partition receipt cleanup", time.Second, 0, c.partitionReceiptCleanupStep)
-			}()
-			go func() {
-				defer c.background.Done()
-				interval := time.Minute
-				if c.receiptRetention > 0 {
-					interval = min(interval, max(time.Second, c.receiptRetention/4))
-				}
-				c.runPartitionReceiptSweep(ctx, "partition receipt expiry", 200*time.Millisecond, interval, c.partitionReceiptExpiryStep)
+				c.runReceiptSweep(ctx, "partition receipt cleanup", time.Second, 0, nil, c.partitionReceiptCleanupStep)
 			}()
 		}
 		c.background.Add(1)
@@ -138,8 +184,14 @@ func newCommand(kind string) (command, error) {
 	return command{ID: hex.EncodeToString(id[:]), At: time.Now().UTC(), Kind: kind, TenantScopeValidation: true}, nil
 }
 func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
+	if cmd.ID == "" || cmd.At.IsZero() {
+		return nil, fmt.Errorf("replicated command requires non-empty id and timestamp")
+	}
 	if (cmd.Kind == "partition_ingest_compact" || cmd.Kind == "partition_ingest_expire") && c.config.Protocol < partition.CompactIngestProtocol {
 		return nil, fmt.Errorf("%w: partition receipt cleanup requires home Raft protocol %d", replication.ErrUnavailable, partition.CompactIngestProtocol)
+	}
+	if (cmd.Kind == "ordinary_ingest_compact" || cmd.Kind == "ordinary_ingest_reclaim" || cmd.Kind == "ordinary_ingest_expire" || cmd.Kind == "shard_ingest_expire") && c.config.Protocol < ingestQueueCheckpointProtocol {
+		return nil, fmt.Errorf("%w: ordinary receipt cleanup requires Raft protocol %d", replication.ErrUnavailable, ingestQueueCheckpointProtocol)
 	}
 	if c.config.Protocol < partition.IngestProtocol && (cmd.Kind == "partition_accept" || cmd.Kind == "partition_ingest_complete") {
 		return nil, fmt.Errorf("%w: partitioned ingest requires home Raft protocol %d", replication.ErrUnavailable, partition.IngestProtocol)
@@ -170,6 +222,13 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 		budget := c.App.MaxPendingBytes
 		cmd.QueueBudget = &budget
 	}
+	if c.config.Protocol >= ingestQueueCheckpointProtocol && (cmd.Kind == "flush" || cmd.Kind == "accept") {
+		cmd.IndexIngestQueue = true
+		cmd.CompactOrdinaryReceipts = c.App.ShardID == ""
+		if cmd.Kind == "accept" {
+			cmd.OrdinaryReceiptRetention = c.ordinaryReceiptRetention
+		}
+	}
 	if cmd.Kind == "http" {
 		namespace := c.App.Store.Backups.Namespace()
 		cmd.BackupNamespace = &namespace
@@ -179,7 +238,22 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	response, err := c.Node.Propose(ctx, data)
+	submit := c.Node.ProposeJSON
+	if cmd.snapshotCleanup {
+		submit = c.Node.ProposeSnapshotCleanup
+	}
+	switch cmd.Kind {
+	case "partition_ingest_complete", "partition_ingest_expire", "partition_ingest_compact", "ordinary_ingest_compact", "ordinary_ingest_reclaim", "ordinary_ingest_expire", "shard_ingest_expire", "graph_conversion_reclaim":
+		submit = c.Node.ProposeSnapshotCleanup
+	case "http":
+		if cmd.Method == http.MethodPost && strings.HasPrefix(cmd.URI, "/v1/tenants/") && storage.ValidateTenantID(cmd.Tenant) == nil {
+			requestPath, _, _ := strings.Cut(cmd.URI, "?")
+			if decoded, err := url.PathUnescape(requestPath); err == nil && decoded == "/v1/tenants/"+cmd.Tenant+"/purge" {
+				submit = c.Node.ProposeSnapshotCleanup
+			}
+		}
+	}
+	response, err := submit(ctx, data)
 	if err == nil && cmd.Kind == "partition_accept" {
 		select {
 		case c.partitionWake <- cmd.Tenant:
@@ -255,12 +329,13 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	if err := c.Node.ReadBarrier(ctx); err != nil {
-		if errors.Is(err, replication.ErrNotLeader) {
-			c.forward(w, r.WithContext(ctx), body, false, mutation)
+	shardWrite := mutation && c.App.ShardID != "" && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+	if !mutation || c.App.Catalog || (c.App.ShardID != "" && !shardWrite) {
+		if !c.routeReadBarrier(w, r.WithContext(ctx), body, mutation) {
 			return
 		}
-		c.writeError(w, err)
+	} else if c.Node.LeaderID() != c.Node.ID() || c.Node.Draining() {
+		c.forward(w, r.WithContext(ctx), body, false, mutation)
 		return
 	}
 	tenant := r.Header.Get("X-Tenant-ID")
@@ -286,11 +361,8 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 			tenant, _ = url.PathUnescape(segments[0])
 		}
 	}
-	routeEpoch, valid := c.checkShardRequest(ctx, w, r, tenant)
-	if !valid {
-		return
-	}
-	if c.servePartitionedGraph(w, r.WithContext(ctx), body, tenant) {
+	routeEpoch, proceed := c.routeShardRequest(w, r.WithContext(ctx), body, tenant, shardWrite)
+	if !proceed {
 		return
 	}
 	var expectedGeneration int64
@@ -332,6 +404,7 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	cmd.Tenant = tenant
 	cmd.RouteEpoch = routeEpoch
 	cmd.ExpectedGeneration = expectedGeneration
+	cmd.AdminAuthorized = storage.IsAdminAuthorized(r.Context())
 	if r.URL.Path == "/v1/commits" || r.URL.Path == "/v1/ingest/batches" || r.URL.Path == "/v1/imports" {
 		if err := c.checkAdmissionDiskSpace(ctx, int64(len(body))*4); err != nil {
 			c.writeError(w, err)
@@ -382,6 +455,19 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	writeResult(w, data)
 }
 
+func (c *Cluster) routeReadBarrier(w http.ResponseWriter, r *http.Request, body []byte, mutation bool) bool {
+	err := c.Node.ReadBarrier(r.Context())
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, replication.ErrNotLeader) {
+		c.forward(w, r, body, false, mutation)
+	} else {
+		c.writeError(w, err)
+	}
+	return false
+}
+
 func (c *Cluster) serveRead(ctx context.Context, w http.ResponseWriter, r *http.Request, tenant string, routeEpoch uint64, expectedGeneration int64, next http.Handler) {
 	graphRead := tenant != "" && (strings.HasPrefix(r.URL.Path, "/v1/query") && r.URL.Path != "/v1/query/templates" ||
 		strings.HasPrefix(r.URL.Path, "/v1/entities") || strings.HasPrefix(r.URL.Path, "/v1/edges") || strings.HasPrefix(r.URL.Path, "/v1/export/snapshot"))
@@ -430,6 +516,17 @@ func (c *Cluster) serveRead(ctx context.Context, w http.ResponseWriter, r *http.
 	}
 	c.App.mu.RUnlock()
 	locked = false
+	if c.App.ShardID != "" && c.config.Protocol >= 5 && tenant == "" && r.Method == http.MethodGet && r.URL.Path == "/v1/tenants" {
+		if c.requireTenantScope && !storage.IsAdminAuthorized(r.Context()) {
+			http.Error(w, "tenant scope header X-Tenant-ID is required", http.StatusForbidden)
+			return
+		}
+		values := r.URL.Query()
+		if !values.Has("limit") && !values.Has("q") && !values.Has("cursor") {
+			c.listShardTenantSummaries(w, r)
+			return
+		}
+	}
 	next.ServeHTTP(w, r)
 }
 

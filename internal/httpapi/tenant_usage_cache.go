@@ -42,6 +42,15 @@ func newTenantUsageCache(ttl time.Duration) *tenantUsageCache {
 	}
 }
 
+func (c *tenantUsageCache) invalidate(tenantID string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	delete(c.entries, tenantID)
+	c.mu.Unlock()
+}
+
 func (c *tenantUsageCache) freshLocked(
 	tenantID string,
 	now time.Time,
@@ -102,6 +111,7 @@ func (c *tenantUsageCache) getOrLoad(
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
+					active.canceled = true
 					c.mu.Lock()
 					delete(c.loading, tenantID)
 					close(active.done)
@@ -110,15 +120,19 @@ func (c *tenantUsageCache) getOrLoad(
 				}
 			}()
 			report, err = loader(ctx, tenantID)
+			finished := time.Now().UTC()
+			if finished.Before(now) {
+				finished = now
+			}
 			active.report = cloneTenantUsageReport(report)
 			active.err = err
 			active.canceled = err != nil && ctx.Err() != nil
-			active.cachedAt = now
+			active.cachedAt = finished
 			active.cached = err == nil && c.ttl >= 0
 
 			c.mu.Lock()
 			if active.cached {
-				c.putLocked(tenantID, report, now)
+				c.putLocked(tenantID, report, finished)
 			}
 			delete(c.loading, tenantID)
 			close(active.done)
@@ -153,9 +167,27 @@ func (c *tenantUsageCache) putLocked(
 ) {
 	if _, exists := c.entries[tenantID]; !exists &&
 		len(c.entries) >= maxTenantUsageCacheEntries {
-		for cachedTenantID := range c.entries {
-			delete(c.entries, cachedTenantID)
-			break
+		evicted := false
+		if c.ttl >= 0 {
+			for cachedTenantID, entry := range c.entries {
+				if now.Sub(entry.cachedAt) > c.ttl {
+					delete(c.entries, cachedTenantID)
+					evicted = true
+					break
+				}
+			}
+		}
+		if !evicted {
+			oldestID := ""
+			var oldestTime time.Time
+			for cachedTenantID, entry := range c.entries {
+				if oldestID == "" || entry.cachedAt.Before(oldestTime) {
+					oldestID, oldestTime = cachedTenantID, entry.cachedAt
+				}
+			}
+			if oldestID != "" {
+				delete(c.entries, oldestID)
+			}
 		}
 	}
 	report.Cached = false

@@ -28,7 +28,8 @@ export function toast(message, error = false) {
   toast.timer = setTimeout(() => { target.className = ''; }, error ? 9000 : 4500);
 }
 export function download(value, filename, type = 'application/json') {
-  const url = URL.createObjectURL(new Blob([typeof value === 'string' ? value : json(value)], { type }));
+  const blob = value instanceof Blob ? value : new Blob([typeof value === 'string' ? value : json(value)], { type });
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url; anchor.download = filename; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);

@@ -48,12 +48,12 @@ func TestRuntimeRecoveryRejectsCrossRoleDestinations(t *testing.T) {
 			}
 			sort.Strings(manifest.Roles)
 			archive := filepath.Join(t.TempDir(), "runtime.backup")
-			if err := backupRuntime(archive, source, manifest, 32<<20); err != nil {
+			if err := backupRuntime(t.Context(), archive, source, manifest, 32<<20); err != nil {
 				t.Fatal(err)
 			}
 			root := filepath.Join(t.TempDir(), "nested-target")
 			target := map[string]string{"data": root, role: filepath.Join(root, role)}
-			if err := restoreRuntime(archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+			if err := restoreRuntime(t.Context(), archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
 				actual, _ := os.ReadFile(filepath.Join(target[role], "state"))
 				t.Errorf("restore accepted two roles for the same destination and retained only %q", actual)
 			}
@@ -61,7 +61,7 @@ func TestRuntimeRecoveryRejectsCrossRoleDestinations(t *testing.T) {
 				t.Errorf("rejected archive changed target: %v", err)
 			}
 			target = map[string]string{"data": filepath.Join(t.TempDir(), "data"), role: filepath.Join(t.TempDir(), role)}
-			if err := restoreRuntime(archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
+			if err := restoreRuntime(t.Context(), archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
 				t.Fatal(err)
 			}
 			for _, name := range []string{"data/" + role + "/state", role + "/state"} {
@@ -98,7 +98,7 @@ func TestRuntimeRecoveryRejectsLiveAuxiliaryDirectory(t *testing.T) {
 			}
 			defer closeOwner()
 			archive := filepath.Join(t.TempDir(), "runtime.backup")
-			if err := backupRuntime(archive, roots, manifest, 32<<20); err == nil {
+			if err := backupRuntime(t.Context(), archive, roots, manifest, 32<<20); err == nil {
 				t.Error("backup accepted a live " + role + " directory under an independently owned data root")
 			}
 			if _, err := os.Stat(archive); !os.IsNotExist(err) {
@@ -108,14 +108,14 @@ func TestRuntimeRecoveryRejectsLiveAuxiliaryDirectory(t *testing.T) {
 				t.Fatal(err)
 			}
 			archive = filepath.Join(t.TempDir(), "offline.backup")
-			if err := backupRuntime(archive, roots, manifest, 32<<20); err != nil {
+			if err := backupRuntime(t.Context(), archive, roots, manifest, 32<<20); err != nil {
 				t.Fatal(err)
 			}
 			raw, err := os.ReadFile(archive)
 			if err != nil {
 				t.Fatal(err)
 			}
-			contents, err := inspectRuntimeArchive(bytes.NewReader(raw), roots, manifest, 32<<20)
+			contents, err := inspectRuntimeArchive(t.Context(), bytes.NewReader(raw), roots, manifest, 32<<20)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,7 +133,7 @@ func TestRuntimeRecoveryRejectsLiveAuxiliaryDirectory(t *testing.T) {
 				if _, err := wal.Append(context.Background(), storage.IngestWALAccepted, []byte("acknowledged after backup")); err != nil {
 					t.Fatal(err)
 				}
-				if err := restoreRuntime(archive, roots, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+				if err := restoreRuntime(t.Context(), archive, roots, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
 					t.Error("resume replaced a live WAL")
 				}
 				if err := wal.Close(); err != nil {
@@ -157,7 +157,7 @@ func TestRuntimeRecoveryRejectsLiveAuxiliaryDirectory(t *testing.T) {
 				if err := db.Update(func(tx *bolt.Tx) error { _, err := tx.CreateBucket([]byte("committed-after-backup")); return err }); err != nil {
 					t.Fatal(err)
 				}
-				if err := restoreRuntime(archive, roots, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+				if err := restoreRuntime(t.Context(), archive, roots, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
 					t.Error("resume replaced a live Raft database")
 				}
 				if err := db.Close(); err != nil {
@@ -253,7 +253,7 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	}
 	archive := filepath.Join(t.TempDir(), "runtime.backup")
 	manifest := runtimeArchiveManifest{Format: 1, IngestMode: "wal", Roles: []string{"data", "wal"}}
-	if err := backupRuntime(archive, map[string]string{"data": data, "wal": walDir}, manifest, 32<<20); err != nil {
+	if err := backupRuntime(t.Context(), archive, map[string]string{"data": data, "wal": walDir}, manifest, 32<<20); err != nil {
 		t.Fatal(err)
 	}
 	// Older backups included the process lock as a regular WAL object.
@@ -298,7 +298,7 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := map[string]string{"data": filepath.Join(t.TempDir(), "data"), "wal": filepath.Join(t.TempDir(), "wal")}
-	if err := restoreRuntime(archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
+	if err := restoreRuntime(t.Context(), archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -307,7 +307,7 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		contents, err := inspectRuntimeArchive(bytes.NewReader(raw), target, manifest, 32<<20)
+		contents, err := inspectRuntimeArchive(t.Context(), bytes.NewReader(raw), target, manifest, 32<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -349,7 +349,7 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 		}
 		unexpected := filepath.Join(partial["data"], "operator-data")
 		os.WriteFile(unexpected, []byte("keep"), 0600)
-		if err := restoreRuntime(archive, partial, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+		if err := restoreRuntime(t.Context(), archive, partial, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
 			t.Fatal("resume ignored unknown data")
 		}
 		if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, original) {
@@ -360,7 +360,7 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := restoreRuntime(archive, partial, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
+		if err := restoreRuntime(t.Context(), archive, partial, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
 			t.Fatal(err)
 		}
 		afterLock, err := os.Stat(filepath.Join(partial["wal"], ".lock"))
@@ -437,13 +437,13 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh := map[string]string{"data": filepath.Join(t.TempDir(), "data"), "wal": filepath.Join(t.TempDir(), "wal")}
-	if err := restoreRuntime(corrupt, fresh, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+	if err := restoreRuntime(t.Context(), corrupt, fresh, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
 		t.Fatal("corrupt archive restored")
 	}
 	if _, err := os.Stat(fresh["data"]); !os.IsNotExist(err) {
 		t.Fatalf("corrupt archive changed target: %v", err)
 	}
-	if err := backupRuntime(filepath.Join(t.TempDir(), "live.backup"), target, manifest, 32<<20); err == nil {
+	if err := backupRuntime(t.Context(), filepath.Join(t.TempDir(), "live.backup"), target, manifest, 32<<20); err == nil {
 		t.Fatal("live directory was archived")
 	}
 }
@@ -577,7 +577,7 @@ func httptestResponse(handler http.Handler, method, path string) *httptest.Respo
 func TestRaftRuntimeRestoreRequiresIsolatedClusterAcknowledgement(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Raft.Enabled = true
-	err := runRuntimeRecovery([]string{"runtime-restore", filepath.Join(t.TempDir(), "archive")}, cfg)
+	err := runRuntimeRecovery(t.Context(), []string{"runtime-restore", filepath.Join(t.TempDir(), "archive")}, cfg)
 	if err == nil || !strings.Contains(err.Error(), "--isolated-cluster-recovery") {
 		t.Fatalf("unacknowledged Raft rollback: %v", err)
 	}

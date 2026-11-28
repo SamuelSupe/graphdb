@@ -134,8 +134,9 @@ func edgeLookupCacheKey(
 	spec EdgeShard,
 	direction string,
 ) string {
+	objectKey := firstIndexObjectKey(spec.Objects, "shard", "")
 	return tenantID + "\x00" + direction + "\x00" +
-		strconv.FormatInt(version, 10) + "\x00" + spec.RelationType +
+		strconv.FormatInt(indexObjectVersion(version, objectKey), 10) + "\x00" + objectKey + "\x00" + spec.RelationType +
 		"\x00" + spec.Shard + "\x00" + spec.ContentHash +
 		"\x00" + spec.SchemaHash
 }

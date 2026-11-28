@@ -57,6 +57,8 @@ func graphRemoteError(err error) error {
 			return errors.Join(partition.ErrInputExpired, err)
 		case "reader_not_fresh":
 			return errors.Join(partition.ErrVersionNotReady, err)
+		case "graph_prepare_snapshot_budget":
+			return errors.Join(partition.ErrPrepareSnapshotBudget, partition.ErrShardUnavailable, err)
 		case "graph_busy":
 			return errors.Join(partition.ErrGraphBusy, err)
 		case "graph_layout_changed":
@@ -97,7 +99,10 @@ func (p GraphRemote) Describe(ctx context.Context, g partition.Group, tenant str
 	if err != nil {
 		return partition.Graph{}, graphRemoteError(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		response.Body.Close()
+	}()
 	if response.StatusCode == http.StatusNotModified {
 		return cached.graph, nil
 	}
@@ -108,14 +113,24 @@ func (p GraphRemote) Describe(ctx context.Context, g partition.Group, tenant str
 		}
 		return partition.Graph{}, graphRemoteError(&HTTPError{Status: response.StatusCode, Body: string(body)})
 	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 32<<20))
+	if err != nil {
+		return partition.Graph{}, err
+	}
 	var result partition.Graph
-	if err := json.NewDecoder(io.LimitReader(response.Body, 32<<20)).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return result, err
 	}
 	if etag := response.Header.Get("ETag"); etag != "" {
 		p.Client.mu.Lock()
-		if p.Client.graphDescriptors == nil || len(p.Client.graphDescriptors) >= 128 {
+		if p.Client.graphDescriptors == nil {
 			p.Client.graphDescriptors = make(map[string]cachedGraph)
+		}
+		if _, exists := p.Client.graphDescriptors[key]; !exists && len(p.Client.graphDescriptors) >= 128 {
+			for id := range p.Client.graphDescriptors {
+				delete(p.Client.graphDescriptors, id)
+				break
+			}
 		}
 		p.Client.graphDescriptors[key] = cachedGraph{graph: result, etag: etag}
 		p.Client.mu.Unlock()

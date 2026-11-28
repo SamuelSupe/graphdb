@@ -36,7 +36,7 @@ func (g *Graph) findEntityByIdentity(entity Entity) (string, identitySignature, 
 	ownerID := ""
 	var ownerSignature identitySignature
 	for _, signature := range signatures {
-		id := g.identityIndex[entity.Kind][signature.Value]
+		id := g.identityIndex[entity.Kind].At(signature.Value)
 		if id == "" {
 			continue
 		}
@@ -177,6 +177,7 @@ func (g *Graph) WithCommitIdentity(commit Commit) (*Graph, error) {
 	if err := clone.useCommitIdentity(commit); err != nil {
 		return nil, err
 	}
+	clone.cow = nil
 	return clone, nil
 }
 
@@ -191,13 +192,13 @@ func (g *Graph) useCommitIdentity(commit Commit) error {
 		return nil
 	}
 	g.legacyIdentity = legacy
-	g.identityIndex = make(map[string]map[string]string)
+	g.identityIndex = make(map[string]*ShardedMap[string])
 	for id, entity := range g.Entities.All() {
 		if g.identityIndex[entity.Kind] == nil {
-			g.identityIndex[entity.Kind] = make(map[string]string)
+			g.identityIndex[entity.Kind] = NewShardedMap[string]()
 		}
 		for _, signature := range g.identitySignatures(entity) {
-			g.identityIndex[entity.Kind][signature.Value] = id
+			g.identityIndex[entity.Kind].Set(signature.Value, id)
 		}
 	}
 	return nil
@@ -227,14 +228,32 @@ func mergeEntityWithSpecs(existing, incoming Entity, fieldSpecs map[string]Field
 				}
 			}
 		}
-		if _, ok := merged.Fields[key]; !ok || entityRankCanOverwrite(incoming, existing) {
-			merged.Fields[key] = value
+		current, exists := merged.Fields[key]
+		if !exists || isEmptyFieldValue(current) {
+			if !exists || !isEmptyFieldValue(value) {
+				merged.Fields[key] = copyAny(value)
+				setFieldSource(&merged, key, fieldSourceOrEntityOwner(incoming, key))
+			}
+			continue
+		}
+		if isEmptyFieldValue(value) {
+			continue
+		}
+		if incomingCanOverwrite(fieldSourceOrEntityOwner(merged, key), fieldSourceOrEntityOwner(incoming, key)) {
+			merged.Fields[key] = copyAny(value)
 			setFieldSource(&merged, key, fieldSourceOrEntityOwner(incoming, key))
 		}
 	}
 	for key, value := range incoming.Identity {
-		if _, ok := merged.Identity[key]; !ok || entityRankCanOverwrite(incoming, existing) {
-			merged.Identity[key] = value
+		if fieldVal, hasField := merged.Fields[key]; hasField {
+			merged.Identity[key] = copyAny(fieldVal)
+		} else if _, ok := merged.Identity[key]; !ok || entityRankCanOverwrite(incoming, existing) {
+			merged.Identity[key] = copyAny(value)
+		}
+	}
+	for key := range merged.Identity {
+		if fieldVal, hasField := merged.Fields[key]; hasField {
+			merged.Identity[key] = copyAny(fieldVal)
 		}
 	}
 	merged.Sources = mergeSources(merged.Sources, incoming.Sources)
@@ -242,6 +261,14 @@ func mergeEntityWithSpecs(existing, incoming Entity, fieldSpecs map[string]Field
 	merged.SourceRank = maxInt(existing.SourceRank, incoming.SourceRank)
 	merged.Source = firstNonEmpty(existing.Source, incoming.Source)
 	merged.ExternalID = firstNonEmpty(existing.ExternalID, incoming.ExternalID)
+	incomingOwner := writeOwnerFromEntity(incoming, incoming.Version, incoming.UpdatedAt)
+	if incoming.ExistenceSource != nil {
+		incomingOwner = *incoming.ExistenceSource
+	}
+	if merged.ExistenceSource == nil || incomingCanOverwrite(*merged.ExistenceSource, incomingOwner) {
+		ownerCopy := incomingOwner
+		merged.ExistenceSource = &ownerCopy
+	}
 	if incoming.ID != "" && incoming.ID != existing.ID {
 		merged.MergedFrom = appendUnique(merged.MergedFrom, incoming.ID)
 	}

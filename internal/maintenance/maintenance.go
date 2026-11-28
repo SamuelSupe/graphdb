@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,7 +42,15 @@ func (s *Runner) gcConfig() GCConfig {
 	if s.GC == (GCConfig{}) {
 		return DefaultGCConfig()
 	}
-	return s.GC
+	config := s.GC
+	defaults := DefaultGCConfig()
+	if config.ContinuationInterval <= 0 {
+		config.ContinuationInterval = defaults.ContinuationInterval
+	}
+	if config.InodePressureMultiplier <= 0 {
+		config.InodePressureMultiplier = defaults.InodePressureMultiplier
+	}
+	return config
 }
 
 func (s *Runner) tenantUsage(ctx context.Context, tenant string) (storage.TenantUsageReport, error) {
@@ -113,36 +122,54 @@ func (s *Runner) Start(ctx context.Context, interval time.Duration) {
 	if interval <= 0 || s.Store == nil {
 		return
 	}
+	// Run full multi-tenant sweeps independently from fast receipt packing and
+	// inode-pressure/GC continuation so a slow compaction cannot starve them.
 	s.Store.StartBackground(ctx, func(ctx context.Context) {
-		gc := s.gcConfig()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		followup := time.NewTicker(gc.ContinuationInterval)
-		defer followup.Stop()
-		var receiptTick, pressureTick <-chan time.Time
-		if s.Store.LocalReceiptPackingEnabled() {
-			receipts := time.NewTicker(time.Second)
-			defer receipts.Stop()
-			receiptTick = receipts.C
-		}
-		if gc.InodePressureInterval > 0 {
-			pressure := time.NewTicker(gc.InodePressureInterval)
-			defer pressure.Stop()
-			pressureTick = pressure.C
-		}
-		packs := map[string]receiptPackProgress{}
-		var discovery receiptPackDiscovery
-		receiptOffset, gcOffset := 0, 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				_ = s.Run(ctx, time.Now().UTC())
+			}
+		}
+	})
+	if s.Store.LocalReceiptPackingEnabled() {
+		s.Store.StartBackground(ctx, func(ctx context.Context) {
+			receipts := time.NewTicker(time.Second)
+			defer receipts.Stop()
+			packs := map[string]receiptPackProgress{}
+			var discovery receiptPackDiscovery
+			receiptOffset := 0
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-receipts.C:
+					s.packLocalReceipts(ctx, &discovery, packs, &receiptOffset)
+				}
+			}
+		})
+	}
+	s.Store.StartBackground(ctx, func(ctx context.Context) {
+		gc := s.gcConfig()
+		followup := time.NewTicker(gc.ContinuationInterval)
+		defer followup.Stop()
+		var pressureTick <-chan time.Time
+		if gc.InodePressureInterval > 0 {
+			pressure := time.NewTicker(gc.InodePressureInterval)
+			defer pressure.Stop()
+			pressureTick = pressure.C
+		}
+		gcOffset := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
 			case <-pressureTick:
 				_ = s.run(ctx, time.Now().UTC(), true)
-			case <-receiptTick:
-				s.packLocalReceipts(ctx, &discovery, packs, &receiptOffset)
 			case <-followup.C:
 				s.continueGC(ctx, &gcOffset)
 			}
@@ -176,6 +203,11 @@ func (s *Runner) packLocalReceipts(ctx context.Context, discovery *receiptPackDi
 	work, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
 	defer cancel()
 	pending := s.Store.PendingLocalReceiptPacks()
+	for tenant := range packs {
+		if _, ok := pending[tenant]; !ok {
+			delete(packs, tenant)
+		}
+	}
 	tenants := slices.Sorted(maps.Keys(pending))
 	for count := 0; count < len(tenants) && work.Err() == nil; count++ {
 		tenant := tenants[*offset%len(tenants)]
@@ -216,30 +248,39 @@ func (s *Runner) continueGC(ctx context.Context, offset *int) {
 	if !pending {
 		return
 	}
-	tenants, err := s.Store.ListManagedTenants(ctx)
+	opCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	tenants, err := s.Store.ListManagedTenants(opCtx)
 	if err != nil {
 		s.auditError("maintenance_gc_list_failed", "", err, nil)
 		return
 	}
+	state.mu.Lock()
+	for tenant := range state.gcCursor {
+		if _, managed := slices.BinarySearch(tenants, tenant); !managed {
+			delete(state.gcCursor, tenant)
+		}
+	}
+	state.mu.Unlock()
 	for range tenants {
 		tenant := tenants[*offset%len(tenants)]
 		*offset = (*offset + 1) % len(tenants)
 		if s.gcCursor(tenant) == "" {
 			continue
 		}
-		config, _, err := s.Store.GetTenantConfig(ctx, tenant)
+		config, _, err := s.Store.GetTenantConfig(opCtx, tenant)
 		if err != nil {
 			s.auditError("maintenance_gc_config_failed", tenant, err, nil)
-			return
+			continue
 		}
 		config = storage.TenantConfigWithDefaults(config)
 		if int64Value(config.Maintenance.GCIntervalSeconds, 0) <= 0 {
 			state.mu.Lock()
 			delete(state.gcCursor, tenant)
 			state.mu.Unlock()
-			return
+			continue
 		}
-		s.maybeRunGC(ctx, tenant, time.Now(), config.Maintenance, false, &MaintenanceReport{}, &TenantMaintenanceReport{})
+		s.maybeRunGC(opCtx, tenant, time.Now(), config.Maintenance, false, &MaintenanceReport{}, &TenantMaintenanceReport{})
 		return
 	}
 }
@@ -272,6 +313,11 @@ func (s *Runner) run(ctx context.Context, now time.Time, pressureOnly bool) (rep
 			delete(state.gcCursor, tenant)
 		}
 	}
+	for tenant := range state.lastGC {
+		if _, managed := slices.BinarySearch(tenants, tenant); !managed {
+			delete(state.lastGC, tenant)
+		}
+	}
 	state.mu.Unlock()
 	for _, tenantID := range tenants {
 		if err := ctx.Err(); err != nil {
@@ -281,7 +327,9 @@ func (s *Runner) run(ctx context.Context, now time.Time, pressureOnly bool) (rep
 		if pressureOnly && s.gcCursor(tenantID) != "" {
 			continue
 		}
-		tenantReport := s.maintainTenant(ctx, tenantID, now, inodePressure, pressureOnly, &report)
+		tenantCtx, cancelTenant := context.WithTimeout(ctx, 2*time.Minute)
+		tenantReport := s.maintainTenant(tenantCtx, tenantID, now, inodePressure, pressureOnly, &report)
+		cancelTenant()
 		report.TenantsChecked++
 		report.Tenants = append(report.Tenants, tenantReport)
 	}
@@ -452,6 +500,9 @@ func (s *Runner) maybeRunGC(ctx context.Context, tenantID string, now time.Time,
 		RunBudget:           gc.RunBudget,
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "gc checkpoint") {
+			s.clearGCCursor(tenantID)
+		}
 		report.addError(tenantID, "gc", err)
 		s.auditError("maintenance_gc_failed", tenantID, err, map[string]any{"keep_snapshots": keepSnapshots})
 		return
@@ -578,6 +629,13 @@ func (s *Runner) gcCursor(tenantID string) string {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return state.gcCursor[tenantID]
+}
+
+func (s *Runner) clearGCCursor(tenantID string) {
+	state := &s.maintenance
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	delete(state.gcCursor, tenantID)
 }
 
 func (s *Runner) markGC(tenantID string, now time.Time, checkpoint storage.GCCheckpoint) {

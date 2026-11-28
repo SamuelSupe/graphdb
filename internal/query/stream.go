@@ -22,23 +22,19 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	if !canStreamLazyMatch(request, options) {
 		return false, nil
 	}
-	if request.Op == "profile" {
-		target, err := targetRequest(request)
-		if err != nil {
-			return true, err
-		}
-		target.Profile = true
-		request = target
-	}
-	if err := validateRequest(request); err != nil {
+	compiled, err := CompileRequest(request)
+	if err != nil {
 		return true, err
 	}
+	request = compiled.Normalized
 	profiler := newProfiler(request.Profile)
 	plan := measureQueryPlan(ctx, g, request, options.PlannerStats, profiler)
 	budget, cancel := newBudget(
 		ctx, request, profiler, options.IndexLookup, options.EntityLookup,
 		options.PlannerStats,
 	)
+	budget.authoritativeEntities = options.AuthoritativeEntityLookup
+	budget.entityPredicate = options.EntityPredicate
 	defer cancel()
 	if err := budget.measure("admission", "", plan.EstimatedCost, func() (int, error) {
 		return 0, admitQuery(plan, budget)
@@ -76,7 +72,7 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 		results, nextCursor, err = streamLazyMatch(g, request, cursor, budget, ids)
 	} else if lazyKindScanAvailable(g, request, plan, budget) {
 		if cursor.Order != "" && cursor.Order != lazyEntityPageOrder(budget) {
-			return true, ErrIndexUnavailable
+			return true, ErrMaterializedFallback
 		}
 		results, nextCursor, err = streamLazyKindMatch(g, request, cursor, budget)
 	} else {
@@ -142,13 +138,16 @@ func streamLazyMatch(g *graph.Graph, request Request, cursor cursorState, budget
 			return nil, "", err
 		}
 		if !ok {
-			return nil, "", ErrIndexUnavailable
+			if lazyExecution(g, budget) && !budget.authoritativeEntities {
+				return nil, "", ErrMaterializedFallback
+			}
+			continue
 		}
 		if err := budget.add(1); err != nil {
 			return nil, "", err
 		}
 		budget.scanned++
-		if !requestEntityMatches(&request, &entity) {
+		if !requestEntityMatches(&request, &entity) || !budget.allowsEntity(entity) {
 			continue
 		}
 		result := Result{Entity: &entity}
@@ -187,8 +186,14 @@ func streamLazyKindMatch(g *graph.Graph, request Request, cursor cursorState, bu
 	order := lazyEntityPageOrder(budget)
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
-	afterID, _ := cursorEntityID(cursor)
+	afterID, hasAfter := cursorEntityID(cursor)
+	if !cursor.Legacy && cursor.After != "" && !hasAfter {
+		return nil, "", invalidCursorAfter(cursor)
+	}
 	ok, err := visitLazyKindScanEntities(request, budget, afterID, func(entity graph.Entity) (bool, error) {
+		if hasAfter && !state.pastCursor && entity.ID != afterID {
+			return false, invalidCursorAfter(cursor)
+		}
 		stop, err := appendPageMatch(&results, entity, request, cursor, state, budget)
 		if err != nil {
 			return false, err

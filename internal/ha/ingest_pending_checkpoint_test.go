@@ -1,14 +1,22 @@
 package ha
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -31,6 +39,349 @@ func (s *queueRecoveryReads) List(ctx context.Context, prefix string) ([]storage
 		s.historyLists++
 	}
 	return s.ObjectStore.List(ctx, prefix)
+}
+
+func TestHAProtocol13PersistsOrdinaryIngestQueue(t *testing.T) {
+	group := newTestCluster(t, true)
+	ctx := t.Context()
+	leader := group.leader(-1)
+	group.mustRequest(leader, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	legacyBody := `{"source":"agent","collector_id":"collector","batch_id":"legacy","items":[{"entity":{"id":"host:legacy","kind":"host"}}]}`
+	legacyURL := group.mustRequest(leader, http.MethodPost, "/v1/ingest/batches", legacyBody, http.StatusAccepted).Header().Get("Location")
+	if err := group.nodes[leader].cluster.flushPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	readStatus := func(leader int, url string) storage.IngestBatchStatus {
+		t.Helper()
+		response := group.mustRequest(leader, http.MethodGet, url, "", http.StatusOK)
+		var status storage.IngestBatchStatus
+		if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.State != "committed" || status.Result == nil {
+			t.Fatalf("terminal receipt: %s (%v)", response.Body.String(), err)
+		}
+		return status
+	}
+	legacy := readStatus(leader, legacyURL)
+	t.Run("historical cleanup frees snapshot capacity", func(t *testing.T) {
+		replica := group.nodes[leader]
+		const budget = 64 << 20
+		snapshot, err := replica.cluster.App.Snapshot(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkpoint, err := replica.files.ReplicationCheckpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		files, err := storage.OpenFileStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { files.Close() })
+		app := &Application{Store: storage.NewTenantStore(files, replica.store.Prefix), Files: files, MaxSnapshotBytes: budget}
+		if err := app.Restore(t.Context(), checkpoint.Index, snapshot); err != nil {
+			t.Fatal(err)
+		}
+		archive, err := gzip.NewReader(bytes.NewReader(snapshot[sha256.Size:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rawBytes, err := io.Copy(io.Discard, archive)
+		if err := errors.Join(err, archive.Close()); err != nil {
+			t.Fatal(err)
+		}
+		app.MaxSnapshotBytes = rawBytes - 1
+		if _, err := app.Snapshot(t.Context()); !errors.Is(err, replication.ErrSnapshotTooLarge) {
+			t.Fatalf("legacy snapshot should exceed the byte budget: %v", err)
+		}
+		generation, err := app.Store.ReplicationTenantGeneration(t.Context(), legacy.TenantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd, err := newCommand("ordinary_ingest_compact")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.IDs = []string{app.ingestKey(legacy.TenantID, legacy.Source, legacy.CollectorID, legacy.BatchID, generation)}
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.Apply(t.Context(), checkpoint.Index+1, data); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.Snapshot(t.Context()); err != nil {
+			t.Fatalf("compacted snapshot did not fit the same raw byte budget: %v", err)
+		}
+	})
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i := range group.nodes {
+		group.nodes[i].cfg.Raft.Protocol = ingestQueueCheckpointProtocol
+		group.nodes[i].cfg.Raft.StreamSnapshots = true
+		group.start(i)
+	}
+	leader = group.leader(-1)
+	body := `{"source":"agent","collector_id":"collector","batch_id":"pending","idempotency_key":"once","items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host"}}]}`
+	acceptance := group.mustRequest(leader, http.MethodPost, "/v1/ingest/batches", body, http.StatusAccepted)
+	replica := group.nodes[leader]
+	app := replica.cluster.App
+	generation, err := replica.store.ReplicationTenantGeneration(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := app.ingestKey("tenant-a", "agent", "collector", "pending", generation)
+	recoveryReads := &queueRecoveryReads{ObjectStore: replica.files, history: replica.cluster.App.ingestPrefix()}
+	cold := &Application{Files: replica.files, Store: storage.NewTenantStore(recoveryReads, replica.store.Prefix)}
+	queue, err := cold.pendingSnapshot(ctx)
+	if err != nil || len(queue) != 1 || recoveryReads.historyLists != 0 || recoveryReads.gets != 1 {
+		t.Fatalf("pending=%d list=%d reads=%d error=%v", len(queue), recoveryReads.historyLists, recoveryReads.gets, err)
+	}
+	if err := replica.cluster.flushPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := replica.files.ReplicationCheckpoint()
+	if err != nil || checkpoint.IngestQueue == nil || checkpoint.IngestQueue.Count != 0 {
+		t.Fatalf("drained checkpoint queue=%+v error=%v", checkpoint.IngestQueue, err)
+	}
+	if _, err := replica.files.Get(ctx, key); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("terminal control object still exists: %v", err)
+	}
+	flush, err := newCommand("flush")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flush.Tenant, flush.IDs = "tenant-a", []string{key}
+	if data, err := replica.cluster.propose(ctx, flush); err != nil || string(data) != "[]" {
+		t.Fatalf("repeated flush: %s (%v)", data, err)
+	}
+	statusURL := acceptance.Header().Get("Location")
+	terminal := readStatus(leader, statusURL)
+	legacyKey := app.ingestKey("tenant-a", "agent", "collector", "legacy", generation)
+	if _, err := replica.cluster.ordinaryReceiptCleanupStep(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replica.files.Get(ctx, legacyKey); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("verified legacy control object still exists: %v", err)
+	}
+	alias := strings.Replace(body, `"pending"`, `"alias"`, 1)
+	aliasURL := group.mustRequest(leader, http.MethodPost, "/v1/ingest/batches", alias, http.StatusAccepted).Header().Get("Location")
+	if err := replica.cluster.flushPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replica.cluster.ordinaryReceiptCleanupStep(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if replay := readStatus(leader, aliasURL); replay.Result.SkipReason != storage.IngestSkipReasonIdempotentReplay {
+		t.Fatalf("alias lost its original result: %+v", replay)
+	}
+	snapshot, err := app.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err = replica.files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { target.Close() })
+	restored := &Application{Store: storage.NewTenantStore(target, replica.store.Prefix), Files: target, MaxSnapshotBytes: 64 << 20}
+	if err := restored.Restore(ctx, checkpoint.Index, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []storage.IngestBatchStatus{terminal, legacy} {
+		got, err := restored.ordinaryIngestReceipt(ctx, want.TenantID, generation, want.Source, want.CollectorID, want.BatchID)
+		if err != nil || got.Index != want.AcceptedLSN || got.Result == nil || got.Result.Version != want.Result.Version {
+			t.Fatalf("snapshot-restored receipt: %+v (%v)", got, err)
+		}
+	}
+
+	follower := (leader + 1) % len(group.nodes)
+	group.stop(follower)
+	lateBody := strings.NewReplacer(`"pending"`, `"late"`, `"once"`, `"late-key"`).Replace(body)
+	lateURL := group.mustRequest(leader, http.MethodPost, "/v1/ingest/batches", lateBody, http.StatusAccepted).Header().Get("Location")
+	if err := replica.cluster.flushPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	late := readStatus(leader, lateURL)
+	lateCheckpoint, err := replica.files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotDeadline := time.Now().Add(10 * time.Second)
+	for replica.cluster.Node.Status()["snapshot_index"].(uint64) < lateCheckpoint.Index {
+		if time.Now().After(snapshotDeadline) {
+			t.Fatalf("Raft did not compact the missing receipt entries: %v", replica.cluster.Node.Status())
+		}
+		advance, err := newCommand("flush")
+		if err != nil {
+			t.Fatal(err)
+		}
+		advance.Tenant = late.TenantID
+		if _, err := replica.cluster.propose(ctx, advance); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	group.start(follower)
+	group.waitApplied(follower, lateCheckpoint.Index)
+	caughtUp, err := group.nodes[follower].cluster.App.ordinaryIngestReceipt(ctx, late.TenantID, generation, late.Source, late.CollectorID, late.BatchID)
+	if err != nil || caughtUp.Index != late.AcceptedLSN || caughtUp.Result == nil || caughtUp.Result.Version != late.Result.Version {
+		t.Fatalf("follower's streamed snapshot changed the receipt: %+v (%v)", caughtUp, err)
+	}
+
+	group.stop(leader)
+	replacement := group.leader(leader)
+	for _, item := range []struct {
+		url  string
+		body string
+		want storage.IngestBatchStatus
+	}{{statusURL, body, terminal}, {legacyURL, legacyBody, legacy}} {
+		pinned := fmt.Sprintf("%s?accepted_lsn=%d", item.url, item.want.AcceptedLSN)
+		got := readStatus(replacement, pinned)
+		if got.AcceptedLSN != item.want.AcceptedLSN || !got.AcceptedAt.Equal(item.want.AcceptedAt) ||
+			!got.FinishedAt.Equal(item.want.FinishedAt) || got.Result.Version != item.want.Result.Version {
+			t.Fatalf("receipt changed after migration or failover: got %+v, want %+v", got, item.want)
+		}
+		replay := group.mustRequest(replacement, http.MethodPost, "/v1/ingest/batches", item.body, http.StatusAccepted)
+		var replayed storage.IngestBatchStatus
+		if err := json.Unmarshal(replay.Body.Bytes(), &replayed); err != nil || replayed.AcceptedLSN != got.AcceptedLSN {
+			t.Fatalf("repeated accept: %s (%v)", replay.Body.String(), err)
+		}
+	}
+	group.mustRequest(replacement, http.MethodGet, statusURL+"?accepted_lsn=0", "", http.StatusNotFound)
+	group.mustRequest(replacement, http.MethodPost, "/v1/ingest/batches", strings.ReplaceAll(body, "host:1", "host:changed"), http.StatusConflict)
+	request := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", strings.NewReader(body)).WithContext(ctx)
+	request.Header.Set("X-Tenant-ID", "tenant-a")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Prefer", "wait=committed")
+	response := httptest.NewRecorder()
+	group.nodes[replacement].handler.ServeHTTP(response, request)
+	var result storage.IngestResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != http.StatusOK ||
+		response.Header().Get("Preference-Applied") != "wait=committed" || result.Version != terminal.Result.Version {
+		t.Fatalf("committed wait: HTTP %d %s (%v)", response.Code, response.Body.String(), err)
+	}
+}
+
+func TestHAPurgeReclaimsObsoleteIngestReceipts(t *testing.T) {
+	t.Run("ordinary", func(t *testing.T) { testHAPurgeReclaimsObsoleteIngestReceipts(t, "") })
+	t.Run("tenant_shard", func(t *testing.T) { testHAPurgeReclaimsObsoleteIngestReceipts(t, "a") })
+}
+
+func testHAPurgeReclaimsObsoleteIngestReceipts(t *testing.T, shardID string) {
+	t.Helper()
+	group := newTestClusterRole(t, true, shardID, false)
+	ctx := t.Context()
+	request := func(node int, method, uri, body string, status int) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, uri, strings.NewReader(body)).WithContext(ctx)
+		if !strings.HasPrefix(uri, "/v1/tenants") {
+			r.Header.Set("X-Tenant-ID", "tenant-a")
+		}
+		r.Header.Set("Content-Type", "application/json")
+		if shardID != "" {
+			r.Header.Set(sharding.EpochHeader, "1")
+		}
+		w := httptest.NewRecorder()
+		group.nodes[node].handler.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("%s %s: got %d, want %d: %s", method, uri, w.Code, status, w.Body.String())
+		}
+		return w
+	}
+	leader := group.leader(-1)
+	if shardID != "" {
+		own, err := newCommand("sharding")
+		if err != nil {
+			t.Fatal(err)
+		}
+		own.Body, err = json.Marshal(sharding.Action{Operation: "own", Tenant: "tenant-a", Epoch: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := group.nodes[leader].cluster.propose(ctx, own)
+		var response httpResult
+		if err != nil || json.Unmarshal(data, &response) != nil || response.Status != http.StatusOK {
+			t.Fatalf("assign tenant: %s (%v)", data, err)
+		}
+	}
+	request(leader, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	const batch = `{"source":"agent","collector_id":"collector","batch_id":"reuse","items":[{"entity":{"id":"host:before","kind":"host"}}]}`
+	request(leader, http.MethodPost, "/v1/ingest/batches", batch, http.StatusAccepted)
+	if err := group.nodes[leader].cluster.flushPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i, node := range group.nodes {
+		node.cfg.Raft.Protocol = ingestQueueCheckpointProtocol
+		group.start(i)
+	}
+	leader = group.leader(-1)
+	app := group.nodes[leader].cluster.App
+	generation, err := app.Store.ReplicationTenantGeneration(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingBatch := strings.ReplaceAll(batch, `"reuse"`, `"queued"`)
+	pendingURL := request(leader, http.MethodPost, "/v1/ingest/batches", pendingBatch, http.StatusAccepted).Header().Get("Location")
+	oldPending := app.ingestKey("tenant-a", "agent", "collector", "queued", generation)
+	oldTerminal := app.ingestKey("tenant-a", "agent", "collector", "reuse", generation)
+	request(leader, http.MethodPost, "/v1/tenants/tenant-a/purge?force=true", "", http.StatusOK)
+	group.stop(leader)
+	next := group.leader(leader)
+
+	request(next, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	freshBatch := strings.ReplaceAll(batch, "host:before", "host:after")
+	freshURL := request(next, http.MethodPost, "/v1/ingest/batches", freshBatch, http.StatusAccepted).Header().Get("Location")
+	replica := group.nodes[next]
+	deadline := time.Now().Add(6 * time.Second)
+	for {
+		_, pendingErr := replica.files.Get(ctx, oldPending)
+		_, terminalErr := replica.files.Get(ctx, oldTerminal)
+		if errors.Is(pendingErr, storage.ErrNotFound) && errors.Is(terminalErr, storage.ErrNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("obsolete receipts survived purge and failover: pending=%v terminal=%v", pendingErr, terminalErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// An already queued flush may be applied after the cleanup command.
+	delayed, err := newCommand("flush")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delayed.Tenant, delayed.IDs = "tenant-a", []string{oldPending}
+	if shardID != "" {
+		delayed.RouteEpoch = 1
+	}
+	if data, err := replica.cluster.propose(ctx, delayed); err != nil || string(data) != "[]" {
+		t.Fatalf("delayed flush after reclamation: %s (%v)", data, err)
+	}
+	if err := replica.cluster.flushPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	request(next, http.MethodGet, pendingURL, "", http.StatusNotFound)
+	request(next, http.MethodGet, freshURL, "", http.StatusOK)
+	request(next, http.MethodGet, "/v1/entities/host:after", "", http.StatusOK)
+	request(next, http.MethodGet, "/v1/entities/host:before", "", http.StatusNotFound)
+
+	checkpoint, err := replica.files.ReplicationCheckpoint()
+	if err != nil || checkpoint.IngestQueue == nil || checkpoint.IngestQueue.Count != 0 {
+		t.Fatalf("drained durable queue: %+v (%v)", checkpoint.IngestQueue, err)
+	}
+	group.start(leader)
+	group.waitApplied(leader, checkpoint.Index)
+	group.stop(next)
+	reopened := group.leader(next)
+	request(reopened, http.MethodGet, freshURL, "", http.StatusOK)
+	request(reopened, http.MethodGet, pendingURL, "", http.StatusNotFound)
 }
 
 func TestPendingRecoveryAcrossLegacyCheckpointSpillAndRollback(t *testing.T) {

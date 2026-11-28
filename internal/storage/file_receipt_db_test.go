@@ -62,7 +62,7 @@ func TestPackedReceiptPublicationDrainsPendingDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending := filepath.Join(root, "not-yet-durable")
-	files.runtime.pendingDirectories = map[string]struct{}{pending: {}}
+	files.runtime.pendingDirectories.mark(pending)
 	single := "graphdb/tenants/hot/ingest/agent/batches/collector/one.parquet"
 	batch := "graphdb/tenants/hot/ingest/agent/batches/collector/two.parquet"
 	alias := "graphdb/tenants/hot/ingest/agent/idempotency/collector/two.parquet"
@@ -84,7 +84,7 @@ func TestPackedReceiptPublicationDrainsPendingDirectories(t *testing.T) {
 	if _, stored, err := files.putNewIngestReceiptPair(ctx, batch, alias, data); !stored || err != nil {
 		t.Fatalf("paired publication did not recover: stored=%v err=%v", stored, err)
 	}
-	if len(files.runtime.pendingDirectories) != 0 {
+	if files.runtime.pendingDirectories.pendingCount() != 0 {
 		t.Fatal("successful receipt did not drain pending directories")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -24,9 +25,11 @@ type budget struct {
 	truncated bool
 	timedOut  bool
 	profiler  *profiler
-	lookup    IndexLookup
-	entities  EntityLookup
-	planner   PlannerStats
+	lookup                IndexLookup
+	entities              EntityLookup
+	planner               PlannerStats
+	authoritativeEntities bool
+	entityPredicate       func(graph.Entity) bool
 }
 
 func newBudget(parent context.Context, request Request, profiler *profiler, lookup IndexLookup, entities EntityLookup, planner PlannerStats) (*budget, context.CancelFunc) {

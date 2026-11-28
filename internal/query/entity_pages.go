@@ -15,7 +15,7 @@ func visitLazyKindScanEntities(request Request, budget *budget, afterID string, 
 	if !ok {
 		return false, nil
 	}
-	return pager.VisitEntities(budget.ctx, request.Kind, materializeFields(request), afterID, visit)
+	return pager.VisitEntities(budget.ctx, request.Kind, materializeFieldsForBudget(request, budget), afterID, visit)
 }
 
 func entityPageLookup(budget *budget) (EntityPageLookup, bool) {

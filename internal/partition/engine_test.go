@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -119,6 +121,80 @@ func newLocalGraph(t *testing.T) (Engine, *localRemote) {
 	return engine, r
 }
 
+type commitReadCounter struct {
+	Remote
+	describes int
+	stages    int
+	begins    int
+}
+
+func (r *commitReadCounter) Describe(ctx context.Context, group Group, tenant string) (Graph, error) {
+	r.describes++
+	return r.Remote.Describe(ctx, group, tenant)
+}
+
+func (r *commitReadCounter) Action(ctx context.Context, group Group, action Action, result any) error {
+	switch action.Operation {
+	case "stage_input":
+		r.stages++
+	case "begin":
+		r.begins++
+	}
+	return r.Remote.Action(ctx, group, action, result)
+}
+
+func TestSubmitWithGraphReusesDescriptorAndRefreshesStaleBase(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		stale     bool
+		expected  bool
+		describes int
+		begins    int
+	}{
+		{name: "current", describes: 1, begins: 1},
+		{name: "stale base", stale: true, describes: 2, begins: 2},
+		{name: "newer expected version", stale: true, expected: true, describes: 2, begins: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			engine, remote := newLocalGraph(t)
+			schema := CommitRequest{Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}}}
+			if _, err := engine.Submit(ctx, schema); err != nil {
+				t.Fatal(err)
+			}
+			initial, err := remote.Describe(ctx, engine.Home, engine.Tenant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			version := initial.Version
+			if tc.stale {
+				intervening, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "other", Kind: "host"}}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				version = intervening.Version
+			}
+			counter := &commitReadCounter{Remote: remote}
+			engine.Remote, engine.Generation = counter, initial.Generation
+			request := CommitRequest{IdempotencyKey: "with-graph", Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "new", Kind: "host"}}}}
+			if tc.expected {
+				request.ExpectedVersion = &version
+			}
+			result, err := engine.SubmitWithGraph(ctx, request, &initial)
+			if err != nil || result.Version != version+1 {
+				t.Fatalf("commit: %+v %v", result, err)
+			}
+			if counter.describes != tc.describes || counter.stages != 1 || counter.begins != tc.begins {
+				t.Fatalf("describes=%d stages=%d begins=%d", counter.describes, counter.stages, counter.begins)
+			}
+			replay, err := engine.SubmitWithGraph(ctx, request, &initial)
+			if err != nil || !replay.IdempotentReplay || replay.Version != result.Version || replay.DataHash != result.DataHash {
+				t.Fatalf("replay: %+v %v", replay, err)
+			}
+		})
+	}
+}
+
 func TestPlanBatchesDirectoryReads(t *testing.T) {
 	ctx := context.Background()
 	engine, remote := newLocalGraph(t)
@@ -183,9 +259,271 @@ func TestPlanBatchesDirectoryReads(t *testing.T) {
 			t.Fatalf("%T changed the transaction rows: %s", reader, digest)
 		}
 	}
-	t.Logf("single fragment RPCs: %d, batched fragment RPCs: %d", single.calls, batched.calls)
-	if batched.calls > 12 || single.calls <= batched.calls {
+	batchedCalls := batched.calls.Load()
+	t.Logf("single fragment RPCs: %d, batched fragment RPCs: %d", single.calls, batchedCalls)
+	if batchedCalls > 12 || int64(single.calls) <= batchedCalls {
 		t.Fatal("plan did not batch primary, identity and alias reads")
+	}
+}
+
+func seedHubGraph(t *testing.T, degree int) (Engine, *localRemote, Graph) {
+	t.Helper()
+	ctx := t.Context()
+	engine, remote := newLocalGraph(t)
+	g, err := remote.Describe(ctx, engine.Home, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Version = 1
+	g.CITypes = []graph.CIType{{Name: "host"}}
+	g.RelationTypes = []graph.RelationType{{Name: "calls", FromKind: "host", ToKind: "host", Directed: true}}
+	g.EdgeCount, g.EntityCount = int64(degree), int64(degree+2)
+	g.EdgeTypeCounts = map[string]int64{"calls": int64(degree)}
+	schema, err := graph.FromSnapshot(graph.Snapshot{Version: g.Version, CITypes: g.CITypes, RelationTypes: g.RelationTypes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := &changeBuilder{changes: ChangeSet{}, ownerEdits: map[string]map[string]bool{}}
+	addEntity := func(id string) {
+		t.Helper()
+		if err := seed.entity(schema, graph.Entity{ID: id, Kind: "host", Version: g.Version}, true); err != nil {
+			t.Fatal(err)
+		}
+		g.EntityCounts[Bucket(id)]++
+	}
+	addEntity("hub")
+	addEntity("retained")
+	for i := range degree {
+		id := fmt.Sprintf("source-%05d", i)
+		addEntity(id)
+		edge := graph.Edge{Type: "calls", From: id, To: "hub", Version: g.Version}
+		edge.ID = graph.CanonicalEdgeID(edge)
+		if err := seed.edge(schema, edge, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, bucket := range seed.changes.Participants() {
+		group, err := g.GroupFor(bucket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := remote.stores[group.ID]
+		tree := store.Tree(g.Tenant, g.Generation, bucket)
+		rows := seed.changes.Rows(bucket)
+		state, err := store.Data(ctx, g.Tenant, g.Generation, bucket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for chunk := range slices.Chunk(rows, MaxChanges) {
+			state.Root, err = tree.Update(ctx, state.Root, chunk)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		g.Roots[bucket] = state.Root
+		digests, err := tree.LogicalBuckets(ctx, state.Root, rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for index, digest := range digests {
+			g.HashBuckets[index] = digest
+		}
+		if err := store.save(ctx, store.dataKey(g.Tenant, g.Generation, bucket), state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.DataHash, err = graph.ContentHashFromBuckets(g.HashBuckets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := remote.stores[engine.Home.ID]
+	if err := home.save(ctx, home.graphKey(g.Tenant), g); err != nil {
+		t.Fatal(err)
+	}
+	return engine, remote, g
+}
+
+func TestDistributedMergeAndDeleteHubWithinReadBudget(t *testing.T) {
+	ctx := t.Context()
+	const degree = 5001
+	engine, remote, g := seedHubGraph(t, degree)
+	batched := &scanRPCRemote{Remote: remote, stores: remote.stores}
+	remote.revision = LargeFragmentRevision
+	engine.Remote = batched
+	merge, err := engine.Submit(ctx, CommitRequest{IdempotencyKey: "merge-hub", Mutations: graph.Mutations{
+		MergeEntities: []graph.MergeRequest{{TargetID: "retained", SourceIDs: []string{"hub"}}},
+	}})
+	if err != nil || merge.Version != g.Version+1 {
+		t.Fatalf("hub merge result %+v (%v)", merge, err)
+	}
+	merged, err := remote.Describe(ctx, engine.Home, g.Tenant)
+	if err != nil || merged.EntityCount != degree+1 || merged.EdgeCount != degree || merged.Active != nil {
+		t.Fatalf("merged entity count=%d edge count=%d active=%v (%v)", merged.EntityCount, merged.EdgeCount, merged.Active != nil, err)
+	}
+	t.Logf("%d fragment read RPCs to merge %d incoming edges", batched.calls.Load(), degree)
+	if batched.calls.Load() > 2048 {
+		t.Fatal("merging a hub consumed an excessive fraction of the read budget")
+	}
+	batched.calls.Store(0)
+	split := CommitRequest{Mutations: graph.Mutations{SplitEntities: []graph.SplitRequest{
+		{SourceID: "retained", Entities: []graph.Entity{{ID: "split-a", Kind: "host"}, {ID: "split-b", Kind: "host"}}},
+	}}}
+	plan, err := BuildPlan(ctx, View{Graph: merged, Remote: batched}, split, time.Now().UTC())
+	if err != nil || plan.EntityCount != degree+2 || plan.EdgeCount != 0 {
+		t.Fatalf("hub split plan has %d entities and %d edges (%v)", plan.EntityCount, plan.EdgeCount, err)
+	}
+	t.Logf("%d fragment read RPCs to plan splitting a hub with %d incoming edges", batched.calls.Load(), degree)
+	batched.calls.Store(0)
+	result, err := engine.Submit(ctx, CommitRequest{IdempotencyKey: "delete-hub", Mutations: graph.Mutations{DeleteEntities: []string{"retained"}}})
+	if err != nil || result.Version != g.Version+2 {
+		t.Fatalf("hub delete result %+v (%v)", result, err)
+	}
+	after, err := remote.Describe(ctx, engine.Home, g.Tenant)
+	if err != nil || after.EntityCount != degree || after.EdgeCount != 0 || after.Active != nil {
+		t.Fatalf("published entity count=%d edge count=%d active=%v (%v)", after.EntityCount, after.EdgeCount, after.Active != nil, err)
+	}
+	t.Logf("%d fragment read RPCs for %d incoming edges", batched.calls.Load(), degree)
+	if batched.calls.Load() > 1024 {
+		t.Fatal("deleting a hub consumed an excessive fraction of the read budget")
+	}
+}
+
+func TestDistributedHubBudgetFailureCanRetryOnNewVersion(t *testing.T) {
+	ctx := t.Context()
+	const degree = 8200
+	engine, remote, initial := seedHubGraph(t, degree)
+	remote.revision = MutationBudgetRestartRevision
+	batched := &scanRPCRemote{Remote: remote, stores: remote.stores}
+	engine.Remote = batched
+	request := CommitRequest{IdempotencyKey: "delete-hub", Mutations: graph.Mutations{DeleteEntities: []string{"hub"}}}
+	remote.lose = "complete"
+	var budget *MutationBudgetError
+	if _, err := engine.Submit(ctx, request); !errors.As(err, &budget) {
+		t.Fatalf("expected budget failure after lost completion response, got %v", err)
+	}
+	failed, err := remote.Transaction(ctx, engine.Home, initial.Tenant, initial.Generation, "direct:delete-hub")
+	if err != nil || failed.State != "retryable" || len(failed.Inputs) != 0 || len(failed.Participants) != 0 {
+		t.Fatalf("missing completed retryable receipt: %+v (%v)", failed, err)
+	}
+	g, err := remote.Describe(ctx, engine.Home, initial.Tenant)
+	if err != nil || g.Active != nil || g.Version != initial.Version || g.Roots != initial.Roots || g.DataHash != initial.DataHash {
+		t.Fatalf("budget failure changed the graph: version=%d active=%v (%v)", g.Version, g.Active != nil, err)
+	}
+	batched.calls.Store(0)
+	if _, err := engine.Submit(ctx, request); !errors.As(err, &budget) || batched.calls.Load() != 0 {
+		t.Fatalf("same version repeated planning: %d reads (%v)", batched.calls.Load(), err)
+	}
+	changed := request
+	changed.Mutations = graph.Mutations{DeleteEntities: []string{"retained"}}
+	if _, err := engine.Submit(ctx, changed); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("budget receipt allowed idempotency key to accept different content: %v", err)
+	}
+	edges := make([]string, degree-5001)
+	for i := range edges {
+		edges[i] = graph.CanonicalEdgeIDParts("calls", fmt.Sprintf("source-%05d", i), "hub")
+	}
+	for i, chunk := range [][]string{edges[:1600], edges[1600:]} {
+		if _, err := engine.Submit(ctx, CommitRequest{IdempotencyKey: fmt.Sprintf("trim-%d", i), Mutations: graph.Mutations{DeleteEdges: chunk}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := engine.SubmitWithGraph(ctx, request, &initial)
+	if err != nil || result.Version != initial.Version+3 || result.IdempotentReplay {
+		t.Fatalf("retry against the new graph version: %+v (%v)", result, err)
+	}
+	replay, err := engine.Submit(ctx, request)
+	if err != nil || !replay.IdempotentReplay || replay.Version != result.Version || replay.DataHash != result.DataHash {
+		t.Fatalf("successful retry did not publish exactly once: %+v (%v)", replay, err)
+	}
+	final, err := remote.Describe(ctx, engine.Home, initial.Tenant)
+	if err != nil || final.Active != nil || final.EntityCount != initial.EntityCount-1 || final.EdgeCount != 0 {
+		t.Fatalf("unexpected graph after retry: entities=%d edges=%d active=%v (%v)", final.EntityCount, final.EdgeCount, final.Active != nil, err)
+	}
+}
+
+func TestDistributedBudgetRetryPreservesLegacyReceiptsAndExpectedVersion(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		revision int
+	}{
+		{name: "legacy completion", revision: LargeFragmentRevision},
+		{name: "version precondition", revision: MutationBudgetRestartRevision},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			engine, remote := newLocalGraph(t)
+			remote.revision = test.revision
+			schema, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := CommitRequest{IdempotencyKey: "bounded", Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}}
+			if test.revision == MutationBudgetRestartRevision {
+				request.ExpectedVersion = &schema.Version
+			}
+			engine.Remote = readBudgetRejectingRemote{remote}
+			var budget *MutationBudgetError
+			if _, err := engine.Submit(ctx, request); !errors.As(err, &budget) {
+				t.Fatalf("first planning failure: %v", err)
+			}
+			engine.Remote = remote
+			if _, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "other", Kind: "host"}}}}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = engine.Submit(ctx, request)
+			if test.revision == MutationBudgetRestartRevision {
+				if !errors.Is(err, storage.ErrConflict) {
+					t.Fatalf("retry bypassed expected_version: %v", err)
+				}
+			} else if !errors.As(err, &budget) {
+				t.Fatalf("legacy completion did not retain original failure: %v", err)
+			}
+		})
+	}
+}
+
+func TestImportPlanBatchesRepeatedEndpoints(t *testing.T) {
+	ctx := t.Context()
+	engine, remote := newLocalGraph(t)
+	mutations := graph.Mutations{
+		UpsertCITypes:       []graph.CIType{{Name: "host"}},
+		UpsertRelationTypes: []graph.RelationType{{Name: "calls", FromKind: "host", ToKind: "host", Directed: true}},
+		UpsertEntities:      []graph.Entity{{ID: "source", Kind: "host"}},
+	}
+	chunk := ImportChunk{}
+	for i := range 16 {
+		id := fmt.Sprintf("target-%02d", i)
+		mutations.UpsertEntities = append(mutations.UpsertEntities, graph.Entity{ID: id, Kind: "host"})
+		edge := graph.Edge{Type: "calls", From: "source", To: id}
+		edge.ID = graph.CanonicalEdgeID(edge)
+		chunk.Edges = append(chunk.Edges, edge)
+	}
+	if _, err := engine.Submit(ctx, CommitRequest{IdempotencyKey: "seed-import", Mutations: mutations}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := remote.Describe(ctx, engine.Home, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.State = "initializing"
+	batched := &scanRPCRemote{Remote: remote, stores: remote.stores}
+	single := &countedReadRemote{Remote: remote}
+	want, err := BuildImportPlan(ctx, View{Graph: g, Remote: single}, chunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := BuildImportPlan(ctx, View{Graph: g, Remote: batched}, chunk)
+	if err != nil || !reflect.DeepEqual(got.Changes, want.Changes) {
+		t.Fatalf("batched import changed the planned rows: %v", err)
+	}
+	t.Logf("single fragment RPCs: %d, batched fragment RPCs: %d", single.calls, batched.calls.Load())
+	if batched.calls.Load() > 4 || batched.calls.Load() >= int64(single.calls) {
+		t.Fatal("import plan did not batch primary edge and endpoint reads")
+	}
+	chunk.Edges[0].To = "missing"
+	chunk.Edges[0].ID = graph.CanonicalEdgeID(chunk.Edges[0])
+	if _, err := BuildImportPlan(ctx, View{Graph: g, Remote: batched}, chunk); !errors.Is(err, storage.ErrInvalidArgument) {
+		t.Fatalf("import accepted an edge with a missing endpoint: %v", err)
 	}
 }
 

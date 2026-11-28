@@ -45,6 +45,7 @@ func (work *commitIndexUpdate) retainIndexInputs() {
 }
 
 type orderedIndexUpdateKey struct{}
+type explicitOnlineRebuildKey struct{}
 
 func (s *TenantStore) enqueueCommitIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) {
 	if work == nil {
@@ -220,7 +221,14 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		attribute.Bool("graphdb.commit.outside_tenant_lock", true),
 	)
 	if s.localFileStore() != nil && s.writerFenceBound(ctx, tenantID) {
-		indexCtx = context.WithValue(indexCtx, orderedIndexUpdateKey{}, true)
+		indexCtx = s.withBuildOpts(indexCtx, func(opts *IndexBuildOpts) {
+			opts.OrderedCatchup = true
+		})
+	}
+	if work.onlineRebuild {
+		indexCtx = s.withBuildOpts(indexCtx, func(opts *IndexBuildOpts) {
+			opts.ExplicitOnlineRebuild = true
+		})
 	}
 	indexErr = s.updateIndexesAfterCommit(
 		indexCtx,
@@ -640,7 +648,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		}
 
 		loaded.Manifest = manifest
-		s.setWriteCache(tenantID, loaded)
+		s.setWriteCacheContext(ctx, tenantID, loaded)
 		return result, nil
 	}
 	_, hashSpan := startStorageSpan(ctx, "graphdb.storage.commit.compute_content_hash", tenantTraceAttr(tenantID))

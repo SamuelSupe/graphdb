@@ -22,6 +22,12 @@ func visitPathsInIdentityOrder(
 	}
 	matched := 0
 	depth := normalizedDepth(request.Depth)
+	if len(request.Path.Steps) > 0 {
+		if depth < len(request.Path.Steps) {
+			return 0, nil
+		}
+		depth = len(request.Path.Steps)
+	}
 	var walk func(pendingPath, int) (bool, error)
 	walk = func(current pendingPath, level int) (bool, error) {
 		if err := budget.check(); err != nil {

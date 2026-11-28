@@ -142,16 +142,8 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 		return fmt.Errorf("truncated replication snapshot: %w", err)
 	}
 	digest := sha256.New()
-	if _, err := io.Copy(digest, io.LimitReader(source, maxBytes+(32<<20)+1)); err != nil {
-		return err
-	}
-	if !bytes.Equal(digest.Sum(nil), checksum[:]) {
-		return fmt.Errorf("replication snapshot checksum mismatch")
-	}
-	if _, err := source.Seek(sha256.Size, io.SeekStart); err != nil {
-		return err
-	}
-	compressed, err := gzip.NewReader(source)
+	input := &io.LimitedReader{R: source, N: maxBytes + (32 << 20) + 1}
+	compressed, err := gzip.NewReader(io.TeeReader(input, digest))
 	if err != nil {
 		return err
 	}
@@ -164,7 +156,7 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 	}
 	defer staged.Close()
 	staging := staged.workspace()
-	objects := make(map[string]string)
+	objects := make(map[string]stagedSnapshotObject)
 	var checkpoint ReplicationCheckpoint
 	var total int64
 	metadataFound := false
@@ -215,7 +207,8 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 		if err != nil {
 			return err
 		}
-		written, copyErr := io.Copy(file, archive)
+		objectDigest := sha256.New()
+		written, copyErr := io.Copy(io.MultiWriter(file, objectDigest), archive)
 		closeErr := file.Close()
 		if copyErr != nil || written != header.Size {
 			return fmt.Errorf("truncated snapshot object")
@@ -223,26 +216,29 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 		if closeErr != nil {
 			return closeErr
 		}
-		objects[key] = filename
+		objects[key] = stagedSnapshotObject{path: filename, digest: [sha256.Size]byte(objectDigest.Sum(nil))}
 	}
 	// Consume padding and verify gzip's checksum before changing live data.
 	if _, err := io.Copy(io.Discard, limited); err != nil {
 		return err
 	}
-	if limited.N == 0 {
+	if limited.N == 0 || input.N == 0 {
 		return ErrReplicationSnapshotTooLarge
+	}
+	if !bytes.Equal(digest.Sum(nil), checksum[:]) {
+		return fmt.Errorf("replication snapshot checksum mismatch")
 	}
 	if !metadataFound || checkpoint.Index != index {
 		return fmt.Errorf("snapshot applied position mismatch")
 	}
 	if prefix != "" || validate != nil {
 		view := staged.Store
-		for key, filename := range objects {
+		for key, object := range objects {
 			destination := filepath.Join(view.root, key)
 			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
 				return err
 			}
-			if err := os.Link(filename, destination); err != nil {
+			if err := os.Link(object.path, destination); err != nil {
 				return err
 			}
 		}
@@ -288,13 +284,7 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 			}
 		}
 		for _, key := range keys {
-			file, err := os.Open(objects[key])
-			if err != nil {
-				return nil, err
-			}
-			putErr := s.putReader(applyCtx, key, file)
-			closeErr := file.Close()
-			if err := errors.Join(putErr, closeErr); err != nil {
+			if err := s.publishSnapshotObject(applyCtx, key, objects[key]); err != nil {
 				return nil, err
 			}
 		}

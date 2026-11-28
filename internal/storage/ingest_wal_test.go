@@ -494,10 +494,13 @@ func TestIngestWALReservesControlStateCapacity(t *testing.T) {
 	if _, err := wal.Append(context.Background(), IngestWALAccepted, nil); !errors.Is(err, ErrIngestWALFull) {
 		t.Fatalf("second accepted payload err = %v, want reserved capacity rejection", err)
 	}
-	if _, err := wal.Append(context.Background(), IngestWALPrepared, make([]byte, 400)); err != nil {
+	if _, err := wal.Append(context.Background(), IngestWALPrepared, make([]byte, 400)); !errors.Is(err, ErrIngestWALFull) {
+		t.Fatalf("prepared state used the terminal reserve: %v", err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALPrepared, make([]byte, 200)); err != nil {
 		t.Fatalf("prepared state did not fit in reserved capacity: %v", err)
 	}
-	if _, err := wal.Append(context.Background(), IngestWALFinalized, make([]byte, 60)); err != nil {
+	if _, err := wal.Append(context.Background(), IngestWALFinalized, make([]byte, 200)); err != nil {
 		t.Fatalf("finalized state did not fit in reserved capacity: %v", err)
 	}
 	if err := wal.Close(); err != nil {
@@ -528,7 +531,7 @@ func TestIngestWALReportsBackgroundWriterStartupFailure(t *testing.T) {
 		ready:    make(chan error, 1),
 	}
 	missing := filepath.Join(config.Dir, "missing", ingestWALSegmentName(1))
-	go wal.run([]ingestWALSegment{{path: missing, startLSN: 1}}, 1, 0)
+	go wal.run([]ingestWALSegment{{path: missing, startLSN: 1}}, 1, 0, nil)
 
 	if err := <-wal.ready; err == nil {
 		t.Fatal("background WAL writer startup unexpectedly succeeded")

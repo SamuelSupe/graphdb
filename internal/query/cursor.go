@@ -57,11 +57,27 @@ func validateCursor(cursor cursorState, version int64, request Request) error {
 	if cursor.Version != 0 && cursor.Version != version {
 		return fmt.Errorf("%w: cursor version %d does not match graph version %d", ErrInvalid, cursor.Version, version)
 	}
-	if cursor.Query != "" && cursor.Query != cursorQueryHash(request) {
+	if cursor.Version != 0 && cursor.Query != cursorQueryHash(request) {
 		return fmt.Errorf("%w: cursor query does not match request", ErrInvalid)
 	}
 	if cursor.Order != "" && request.Op != "match" {
 		return fmt.Errorf("%w: cursor order does not match request", ErrInvalid)
+	}
+	if !cursor.Legacy && cursor.After != "" && len(request.GroupBy) == 0 && len(request.Aggregate) == 0 {
+		switch request.Op {
+		case "match":
+			if strings.HasPrefix(cursor.After, "edge:") || strings.HasPrefix(cursor.After, "path:") {
+				return invalidCursorAfter(cursor)
+			}
+		case "neighbors":
+			if strings.HasPrefix(cursor.After, "entity:") || strings.HasPrefix(cursor.After, "path:") {
+				return invalidCursorAfter(cursor)
+			}
+		case "traverse", "shortest_path", "pattern", "impact":
+			if strings.HasPrefix(cursor.After, "entity:") || strings.HasPrefix(cursor.After, "edge:") {
+				return invalidCursorAfter(cursor)
+			}
+		}
 	}
 	return nil
 }
@@ -120,12 +136,14 @@ func encodeCursor(cursor cursorState) string {
 }
 
 func cursorQueryHash(request Request) string {
-	canonical := request
+	canonical := normalizeCompiledRequest(request)
 	canonical.Cursor = ""
 	canonical.Limit = 0
 	canonical.TimeoutMS = 0
 	canonical.CostLimit = 0
 	canonical.Profile = false
+	canonical.MinVersion = 0
+	canonical.AllowStale = false
 	data, _ := json.Marshal(canonical)
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%x", sum[:])

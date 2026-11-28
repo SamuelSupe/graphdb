@@ -231,6 +231,10 @@ func (s *TenantStore) ScheduleObjectBackup(ctx context.Context, tenant string, n
 		if state.Failures > 0 && state.Failures < 64 && state.Failures%max(s.retryCount(), 1) != 0 {
 			params = retryTaskParams(previous)
 			params["retry_of"] = previous.ID
+		} else if previous.ID != "" && previous.Status != TaskStatusSucceeded {
+			if err := s.cleanupAutomaticBackupCapture(ctx, previous); err != nil {
+				return state, err
+			}
 		}
 		state.TaskID, state.PlannedParams = id, params
 		if err := s.saveBackupSchedule(ctx, tenant, state); err != nil {

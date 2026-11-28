@@ -24,6 +24,25 @@ func (a *Application) replayPartitionSourceIngest(ctx context.Context, candidate
 		if !errors.Is(err, storage.ErrNotFound) {
 			return acceptedRequest{}, false, err
 		}
+		if request.IdempotencyKey != "" {
+			alias, found, err := a.ingestAlias(ctx, candidate.Tenant, sourceGeneration, request)
+			if err != nil {
+				return acceptedRequest{}, false, err
+			}
+			if found && alias.Epoch != 0 {
+				if alias.Digest != ingestAliasDigest(request) {
+					return acceptedRequest{}, false, fmt.Errorf("%w: source WAL alias already has different content", storage.ErrIngestIdentityConflict)
+				}
+				receipt, err := a.accepted(ctx, alias.Key)
+				if err != nil {
+					return acceptedRequest{}, false, err
+				}
+				if receipt.Index != alias.Index || receipt.AcceptedEpoch != alias.Epoch || receipt.receiptExpiresAt().IsZero() {
+					return acceptedRequest{}, false, fmt.Errorf("%w: source WAL alias no longer matches its acceptance", storage.ErrIngestIdentityConflict)
+				}
+				return receipt, true, nil
+			}
+		}
 		stored, found, err := a.Store.LookupIngestReplay(ctx, candidate.Tenant, request)
 		if err != nil || !found {
 			return acceptedRequest{}, false, err
@@ -37,6 +56,10 @@ func (a *Application) replayPartitionSourceIngest(ctx context.Context, candidate
 		} else if previous.Result == nil || previous.State == "accepted" {
 			return acceptedRequest{}, false, fmt.Errorf("%w: source WAL receipt is unfinished", storage.ErrIngestIdentityConflict)
 		}
+	}
+	if previous.AcceptedEpoch != 0 {
+		// The source expiry job owns this receipt and its Parquet binding.
+		return previous, true, nil
 	}
 	data, err := json.Marshal(request)
 	if err != nil {
@@ -69,7 +92,7 @@ func (a *Application) replayPartitionSourceIngest(ctx context.Context, candidate
 		// terminal acceptance only keeps its identity and digest.
 		alias := previous
 		alias.Request = request
-		if err := a.savePartitionIngestAlias(ctx, alias, key); err != nil {
+		if err := a.saveIngestAlias(ctx, alias, key); err != nil {
 			return acceptedRequest{}, false, err
 		}
 	}

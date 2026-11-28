@@ -28,7 +28,7 @@ func TestRunGQLCommandExecutesQueryFile(t *testing.T) {
 	}
 
 	output := captureStdout(t, func() {
-		if err := runGQL([]string{"tenant-a", queryPath}, store); err != nil {
+		if err := runGQL(t.Context(), []string{"tenant-a", queryPath}, store); err != nil {
 			t.Fatalf("run gql: %v", err)
 		}
 	})
@@ -43,7 +43,7 @@ func TestRunGQLCommandRejectsBadSyntax(t *testing.T) {
 	if err := os.WriteFile(queryPath, []byte(`FIND host WHERE cpu BETWEEN 1 AND 2`), 0o600); err != nil {
 		t.Fatalf("write query file: %v", err)
 	}
-	if err := runGQL([]string{"tenant-a", queryPath}, store); err == nil {
+	if err := runGQL(t.Context(), []string{"tenant-a", queryPath}, store); err == nil {
 		t.Fatal("expected bad gql syntax error")
 	}
 }
@@ -64,7 +64,7 @@ func TestRunGraphQLCommandExecutesDocument(t *testing.T) {
 		t.Fatalf("write GraphQL request: %v", err)
 	}
 	output := captureStdout(t, func() {
-		if err := runGraphQL([]string{"tenant-a", queryPath}, store); err != nil {
+		if err := runGraphQL(t.Context(), []string{"tenant-a", queryPath}, store); err != nil {
 			t.Fatalf("run graphql: %v", err)
 		}
 	})

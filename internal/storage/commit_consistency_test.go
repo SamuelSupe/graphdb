@@ -115,6 +115,32 @@ func TestCommitDoesNotExposeUnpublishedGraphThroughWriteCache(t *testing.T) {
 	}
 }
 
+func TestColdLoadFindsManifestPublishedDuringMissingHeadCheck(t *testing.T) {
+	ctx := t.Context()
+	const tenant = "tenant-a"
+	objects := NewMemoryStore()
+	writer := NewTenantStore(objects, "test")
+	duringProbe := &commitAfterTenantListStore{
+		ObjectStore: objects,
+		prefix:      writer.snapshotPrefix(tenant),
+		afterList: func() error {
+			_, err := writer.Commit(ctx, tenant, graph.Mutations{
+				UpsertEntities: []graph.Entity{{ID: "host:first", Kind: "host"}},
+			}, CommitOptions{})
+			return err
+		},
+	}
+	cached := NewWriterObjectCache(duringProbe, WriterObjectCacheConfig{MaxKeys: 32, MaxBytes: 1 << 20, NegativeTTL: time.Minute})
+	reader := NewTenantStore(cached, "test")
+	g, manifest, err := reader.Load(ctx, tenant)
+	if err != nil || manifest.Version != 1 {
+		t.Fatalf("load during first publication: version=%d err=%v", manifest.Version, err)
+	}
+	if _, found := g.GetEntity("host:first"); !found {
+		t.Fatal("first published entity is missing")
+	}
+}
+
 func TestCommitObjectWriteUsesConditionalCreateAndRetriesCollision(t *testing.T) {
 	ctx := context.Background()
 	objects := &conflictOnceCommitObjectStore{ObjectStore: NewMemoryStore()}

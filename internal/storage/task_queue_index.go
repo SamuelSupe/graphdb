@@ -42,7 +42,7 @@ func (s *TenantStore) queuedTasks(ctx context.Context, tenant string, options Ta
 					overflow = true
 					return
 				}
-				catalog.tasks[task.ID] = queuedTaskHeader(task)
+				catalog.tasks[task.ID] = taskListHeader(task)
 			}
 		}
 		if err := s.scanStoredTasks(ctx, tenant, visit); err != nil {
@@ -68,7 +68,7 @@ func (s *TenantStore) queuedTasks(ctx context.Context, tenant string, options Ta
 			return nil, err
 		}
 		if err == nil && task.Status == TaskStatusQueued {
-			catalog.tasks[id] = queuedTaskHeader(task)
+			catalog.tasks[id] = taskListHeader(task)
 		} else {
 			delete(catalog.tasks, id)
 		}
@@ -112,19 +112,23 @@ func (s *TenantStore) discardQueuedCatalog(tenant string, catalog *queuedTaskCat
 }
 
 // Do not retain request, checkpoint, result or error payloads in the index.
-func queuedTaskHeader(task Task) Task {
+func taskListHeader(task Task) Task {
 	return Task{ID: task.ID, TenantID: task.TenantID, Type: task.Type, Status: task.Status, StartedAt: task.StartedAt}
 }
 
 func (s *TenantStore) taskObjectChanged(tenant, name string) {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
-	catalog := s.queuedTaskCatalogs[tenant]
-	if catalog == nil {
-		return
-	}
 	id, ok := taskIDFromKey(name)
 	if !ok {
+		return
+	}
+	s.taskHeaderEpoch++
+	// Legacy index lookup can resolve to the unified task with the same ID.
+	delete(s.terminalTaskHeaders, taskListKey{tenant: tenant, id: id})
+	delete(s.terminalTaskHeaders, taskListKey{tenant: tenant, id: id, legacy: true})
+	catalog := s.queuedTaskCatalogs[tenant]
+	if catalog == nil {
 		return
 	}
 	if catalog.dirty == nil {

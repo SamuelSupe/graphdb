@@ -34,7 +34,7 @@ func (g *Graph) sortedNeighborRefs(id, selectedDirection string, charge func() e
 		if direction == "in" {
 			adjacency = g.in
 		}
-		for edgeID := range adjacency.At(id) {
+		for edgeID := range adjacency.At(id).Keys() {
 			if charge != nil {
 				if err := charge(); err != nil {
 					return nil, err

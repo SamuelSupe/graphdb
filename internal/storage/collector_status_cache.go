@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	collectorStatusCacheLimit = 4096
@@ -47,4 +50,15 @@ func (s *TenantStore) deleteCachedCollectorStatus(key string) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
 	delete(s.collectorStatusCache, key)
+}
+
+func (s *TenantStore) deleteCachedTenantCollectorStatuses(tenantID string) {
+	prefix := s.tenantObjectPrefix(tenantID) + "ingest/"
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	for key := range s.collectorStatusCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.collectorStatusCache, key)
+		}
+	}
 }

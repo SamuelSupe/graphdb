@@ -45,6 +45,31 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any, maxBytes 
 	return true
 }
 
+func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request, value any, maxBytes int64) (ok bool) {
+	if r.Body == nil || r.ContentLength == 0 {
+		return true
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(value); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		_ = writeDecodeError(w, r, err)
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			writeError(w, http.StatusBadRequest, "request body must contain a single JSON document")
+			return false
+		}
+		_ = writeDecodeError(w, r, err)
+		return false
+	}
+	return true
+}
+
 func traceRequestAttributes(r *http.Request, maxBytes int64) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.Int64("graphdb.request.max_bytes", maxBytes),

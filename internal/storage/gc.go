@@ -222,7 +222,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 
 func (s *TenantStore) validateGCSnapshotCursor(tenantID string, manifest Manifest, cursor string) error {
 	version, ok := shardedSnapshotVersionFromCursor(s.snapshotPrefix(tenantID), cursor)
-	if !ok || manifest.SnapshotKey == "" || version < manifest.SnapshotVersion {
+	if !ok || !manifest.ProtectedSnapshotSelector().ProtectsVersion(version) {
 		return nil
 	}
 	return fmt.Errorf("gc checkpoint cursor references current or future snapshot version %d", version)
@@ -352,6 +352,8 @@ func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID strin
 			return deleted, keys, errGCPaused
 		}
 		pageCursor = s.snapshotKey(tenantID, version)
+		checkpoint.options.CheckpointCursor = pageCursor
+		checkpoint.checkpoint.Cursor = pageCursor
 	} else {
 		var skip bool
 		pageCursor, skip = checkpoint.pageCursor(prefix)
@@ -363,26 +365,39 @@ func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID strin
 	if pageLimit > 0 {
 		pageLimit += keepSnapshots
 	}
-	objects, next, err := listObjectPage(ctx, s.Objects, prefix, pageCursor, pageLimit)
-	if err != nil {
-		return deleted, keys, err
-	}
-	items := make([]snapshotObject, 0, min(len(objects), pageLimit))
+	items := make([]snapshotObject, 0)
 	reachedSharded := false
-	for _, object := range objects {
-		if strings.HasPrefix(object.Key, prefix+"sharded/") {
-			reachedSharded = true
+	next := ""
+	listCursor := pageCursor
+	for {
+		if err := ctx.Err(); err != nil {
+			return deleted, keys, err
+		}
+		objects, pageNext, err := listObjectPage(ctx, s.Objects, prefix, listCursor, pageLimit)
+		if err != nil {
+			return deleted, keys, err
+		}
+		next = pageNext
+		for _, object := range objects {
+			if strings.HasPrefix(object.Key, prefix+"sharded/") {
+				reachedSharded = true
+				break
+			}
+			version, ok := snapshotIdentityFromKey(object.Key)
+			if !ok {
+				continue
+			}
+			items = append(items, snapshotObject{Key: object.Key, Version: version})
+		}
+		if next == "" || reachedSharded || len(items) > keepSnapshots {
 			break
 		}
-		version, ok := snapshotIdentityFromKey(object.Key)
-		if !ok {
-			continue
-		}
-		items = append(items, snapshotObject{Key: object.Key, Version: version})
+		listCursor = next
 	}
 	safeCount := max(0, len(items)-keepSnapshots)
+	protected := manifest.ProtectedSnapshotSelector()
 	for _, item := range items[:safeCount] {
-		if item.Key == manifest.SnapshotKey {
+		if protected.ProtectsSnapshotKey(item.Key, item.Version) {
 			continue
 		}
 		shardedKeys, err := s.deleteShardedSnapshotVersionObjectsLocked(ctx, tenantID, item.Version, checkpoint)
@@ -403,7 +418,7 @@ func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID strin
 		return deleted, keys, errGCPaused
 	}
 	if next != "" && !reachedSharded {
-		resume := pageCursor
+		resume := next
 		if safeCount > 0 {
 			resume = items[safeCount-1].Key
 		}
@@ -635,12 +650,36 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 				}
 			}
 		}
-		if task.ResultKey != "" {
-			if err := s.validateTenantObjectKey(tenantID, task.ResultKey); err != nil {
+		resultKeys := make([]string, 0, 4)
+		seenResult := map[string]struct{}{}
+		addResultKey := func(k string) {
+			if k == "" {
+				return
+			}
+			if _, ok := seenResult[k]; ok {
+				return
+			}
+			seenResult[k] = struct{}{}
+			resultKeys = append(resultKeys, k)
+		}
+		addResultKey(task.ResultKey)
+		if sourceResultKey := taskCheckpointString(task, "source_result_key"); sourceResultKey != "" && strings.HasPrefix(sourceResultKey, s.tenantObjectPrefix(tenantID)+"tasks/results/") {
+			addResultKey(sourceResultKey)
+		}
+		if task.Type == TaskTypeTenantBackup {
+			addResultKey(s.taskResultKey(tenantID, objectBackupID(task)))
+			addResultKey(s.taskResultKey(tenantID, "scheduled-"+task.ID))
+		}
+		if task.Type == TaskTypeTenantRestoreDrill {
+			addResultKey(s.taskResultKey(tenantID, task.ID+"-backup"))
+			addResultKey(s.backupManifestKey(tenantID, task.ID+"-backup"))
+		}
+		for _, resultKey := range resultKeys {
+			if err := s.validateTenantObjectKey(tenantID, resultKey); err != nil {
 				return err
 			}
 			deleted, err := checkpoint.deleteExistingKeyIgnoringCursor(
-				ctx, s.Objects, task.ResultKey,
+				ctx, s.Objects, resultKey,
 			)
 			if gcPaused(err) || checkpoint.checkpoint.Paused {
 				checkpoint.pauseBeforeObject(object.Key)
@@ -651,7 +690,7 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 			}
 			if deleted {
 				report.DeletedTaskResults++
-				report.DeletedKeys = append(report.DeletedKeys, task.ResultKey)
+				report.DeletedKeys = append(report.DeletedKeys, resultKey)
 			}
 		}
 		deleted, err := checkpoint.deleteKeyIgnoringCursor(
@@ -781,7 +820,7 @@ func (s *TenantStore) cleanupShardedSnapshotOrphansLocked(ctx context.Context, t
 			return keys, err
 		}
 		version, ok := shardedSnapshotVersionFromCursor(s.snapshotPrefix(tenant), object.Key)
-		if !ok || version >= manifest.SnapshotVersion {
+		if !ok || manifest.ProtectedSnapshotSelector().ProtectsShardedOrphanVersion(version) {
 			continue
 		}
 		anchored, checked := anchors[version]

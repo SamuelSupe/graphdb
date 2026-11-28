@@ -10,6 +10,43 @@ import (
 	"time"
 )
 
+func TestLocalTaskReadKeepsListCacheAndObservesDirectReplacement(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	cache := NewWriterObjectCache(files, WriterObjectCacheConfig{MaxBytes: 1 << 20, MaxKeys: 100})
+	store := NewTenantStore(cache, "db")
+	task := Task{ID: "cleanup", TenantID: "tenant-a", Type: TaskTypeGC, Status: TaskStatusQueued}
+	write := func() {
+		t.Helper()
+		data, err := marshalParquetTask(t.Context(), task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := files.Put(t.Context(), store.taskKey(task.TenantID, task.ID), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write()
+	prefix := store.taskPrefix(task.TenantID)
+	if _, err := cache.List(t.Context(), prefix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.getTaskObject(t.Context(), task.TenantID, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := cache.cachedList(prefix); !ok {
+		t.Fatal("reading an unchanged local task evicted its list")
+	}
+	task.Status = TaskStatusSucceeded
+	write()
+	if got, err := store.getTaskObject(t.Context(), task.TenantID, task.ID); err != nil || got.Status != task.Status {
+		t.Fatalf("direct task update was hidden by cache: %+v, %v", got, err)
+	}
+}
+
 func TestWriterObjectCachePutConditionalCachesMetaReads(t *testing.T) {
 	ctx := context.Background()
 	base := newCountingObjectStore(NewMemoryStore())
@@ -71,12 +108,57 @@ func TestWriterObjectCacheDoesNotRetainOversizedList(t *testing.T) {
 
 func TestWriterObjectCacheCountsListsAgainstByteLimit(t *testing.T) {
 	cache := NewWriterObjectCache(NewMemoryStore(), WriterObjectCacheConfig{MaxBytes: 512, MaxKeys: 100})
-	cache.cacheList("objects/", []ObjectInfo{{Key: "objects/a", ETag: "etag"}}, 0)
+	_, fill, _ := cache.cachedList("objects/")
+	cache.cacheList("objects/", []ObjectInfo{{Key: "objects/a", ETag: "etag"}}, fill)
+	cache.releaseListFill("objects/", fill)
 	cache.fillObject("objects/data", cache.generation("objects/data"), writerObjectEntry{data: make([]byte, 480), hasData: true})
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	if cache.bytes+cache.listBytes > cache.maxBytes {
 		t.Fatalf("cache bytes = %d + %d, max = %d", cache.bytes, cache.listBytes, cache.maxBytes)
+	}
+}
+
+func TestWriterObjectCacheFencesOnlyRelatedListFills(t *testing.T) {
+	for _, test := range []struct {
+		name, writeKey, clearPrefix string
+		wantItems, wantLists        int
+	}{
+		{"related write", "objects/sub/new", "", 2, 2},
+		{"unrelated write", "elsewhere/new", "", 1, 1},
+		{"related replacement", "objects/sub/new", "objects/sub/", 2, 2},
+		{"unrelated replacement", "elsewhere/new", "elsewhere/", 1, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := newCountingObjectStore(NewMemoryStore())
+			held := &delayedCacheRead{ObjectStore: base, entered: make(chan struct{}), release: make(chan struct{})}
+			cache := NewWriterObjectCache(held, WriterObjectCacheConfig{MaxKeys: 100})
+			ctx := t.Context()
+			if err := cache.Put(ctx, "objects/original", []byte("original")); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := cache.List(context.WithValue(ctx, held, true), "objects/")
+				done <- err
+			}()
+			<-held.entered
+			var err error
+			if test.clearPrefix == "" {
+				err = cache.Put(ctx, test.writeKey, []byte("new"))
+			} else {
+				err = base.Put(ctx, test.writeKey, []byte("new"))
+				cache.ClearPrefix(test.clearPrefix)
+			}
+			close(held.release)
+			if readErr := <-done; err != nil || readErr != nil {
+				t.Fatalf("write error %v, read error %v", err, readErr)
+			}
+			items, err := cache.List(ctx, "objects/")
+			if err != nil || len(items) != test.wantItems || base.listCalls != test.wantLists {
+				t.Fatalf("found %d keys after %d storage list calls (%v)", len(items), base.listCalls, err)
+			}
+		})
 	}
 }
 
@@ -164,6 +246,27 @@ func TestWriterObjectCacheConflictInvalidatesStaleEntry(t *testing.T) {
 	}
 	if base.getWithMetaCalls != 1 {
 		t.Fatalf("get_with_meta calls = %d, want stale entry invalidated", base.getWithMetaCalls)
+	}
+}
+
+func TestWriterObjectCacheHeadDoesNotGiveOldBytesANewETag(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	cache := NewWriterObjectCache(base, WriterObjectCacheConfig{MaxKeys: 100})
+	const key = "objects/current.json"
+	if err := cache.Put(ctx, key, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Put(ctx, key, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	head, err := cache.Head(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, meta, err := cache.GetWithMeta(ctx, key)
+	if err != nil || string(data) != "new" || meta.ETag != head.ETag {
+		t.Fatalf("conditional read = %q, %+v, %v", data, meta, err)
 	}
 }
 
@@ -269,6 +372,15 @@ type delayedCacheRead struct {
 	ObjectStore
 	entered chan struct{}
 	release chan struct{}
+}
+
+func (s *delayedCacheRead) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	items, err := s.ObjectStore.List(ctx, prefix)
+	if ctx.Value(s) == true {
+		close(s.entered)
+		<-s.release
+	}
+	return items, err
 }
 
 func (s *delayedCacheRead) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {

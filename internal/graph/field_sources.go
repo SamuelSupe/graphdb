@@ -27,7 +27,8 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, fie
 	incomingOwner := writeOwnerFromEntity(incoming, version, updatedAt)
 	incomingID := firstNonEmpty(incoming.ExternalID, incoming.ID)
 	report := ApplyReport{}
-	for field, value := range incoming.Fields {
+	for _, field := range sortedFieldKeys(incoming.Fields) {
+		value := incoming.Fields[field]
 		current, exists := merged.Fields[field]
 		fieldOwner := incomingFieldOwner(incoming, field, incomingOwner, version, updatedAt)
 		if shouldAppendUnique(fieldSpecs[field], incoming, field) {
@@ -45,9 +46,19 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, fie
 				continue
 			}
 		}
-		if !exists || isEmptyFieldValue(current) {
+		if !exists {
 			merged.Fields[field] = copyAny(value)
 			setFieldSource(&merged, field, fieldOwner)
+			continue
+		}
+		if isEmptyFieldValue(current) {
+			if !isEmptyFieldValue(value) {
+				merged.Fields[field] = copyAny(value)
+				setFieldSource(&merged, field, fieldOwner)
+			} else if incomingCanOverwrite(fieldSourceOrEntityOwner(merged, field), fieldOwner) {
+				merged.Fields[field] = copyAny(value)
+				setFieldSource(&merged, field, fieldOwner)
+			}
 			continue
 		}
 		existingOwner := fieldSourceOrEntityOwner(merged, field)
@@ -90,8 +101,15 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, fie
 		})
 	}
 	for key, value := range incoming.Identity {
-		if _, ok := merged.Identity[key]; !ok || entityRankCanOverwrite(incoming, existing) {
+		if fieldVal, hasField := merged.Fields[key]; hasField {
+			merged.Identity[key] = copyAny(fieldVal)
+		} else if _, ok := merged.Identity[key]; !ok || entityRankCanOverwrite(incoming, existing) {
 			merged.Identity[key] = copyAny(value)
+		}
+	}
+	for key := range merged.Identity {
+		if fieldVal, hasField := merged.Fields[key]; hasField {
+			merged.Identity[key] = copyAny(fieldVal)
 		}
 	}
 	merged.Sources = mergeSources(merged.Sources, incoming.Sources)
@@ -99,6 +117,10 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, fie
 	merged.SourceRank = maxInt(existing.SourceRank, incoming.SourceRank)
 	merged.Source = firstNonEmpty(existing.Source, incoming.Source)
 	merged.ExternalID = firstNonEmpty(existing.ExternalID, incoming.ExternalID)
+	if merged.ExistenceSource == nil || incomingCanOverwrite(*merged.ExistenceSource, incomingOwner) {
+		ownerCopy := incomingOwner
+		merged.ExistenceSource = &ownerCopy
+	}
 	if incoming.ID != "" && incoming.ID != existing.ID {
 		merged.MergedFrom = appendUnique(merged.MergedFrom, incoming.ID)
 	}

@@ -8,6 +8,8 @@ import (
 )
 
 const maxAggregateBuckets = 10000
+const maxAggregateKeyBytes = 4 << 10
+const maxAggregateTotalKeyBytes = 32 << 20
 
 func aggregateResults(results []Result, specs []Aggregation) (map[string]any, error) {
 	if len(specs) == 0 {
@@ -23,8 +25,10 @@ func aggregateResults(results []Result, specs []Aggregation) (map[string]any, er
 }
 
 type aggregateAccumulator struct {
-	specs  []Aggregation
-	states []aggregateState
+	specs          []Aggregation
+	states         []aggregateState
+	remaining      *int
+	remainingBytes *int
 }
 
 type aggregateState struct {
@@ -40,7 +44,9 @@ func newAggregateAccumulator(specs []Aggregation) *aggregateAccumulator {
 	if len(specs) == 0 {
 		return nil
 	}
-	return &aggregateAccumulator{specs: specs, states: make([]aggregateState, len(specs))}
+	remaining := maxAggregateBuckets
+	remainingBytes := maxAggregateTotalKeyBytes
+	return &aggregateAccumulator{specs: specs, states: make([]aggregateState, len(specs)), remaining: &remaining, remainingBytes: &remainingBytes}
 }
 
 func (a *aggregateAccumulator) add(result Result) error {
@@ -68,9 +74,25 @@ func (a *aggregateAccumulator) addValues(valueFor func(string) any) error {
 			if state.counts == nil {
 				state.counts = map[string]int{}
 			}
-			key := fmt.Sprint(valueFor(spec.Field))
-			if _, exists := state.counts[key]; !exists && len(state.counts) >= maxAggregateBuckets {
-				return fmt.Errorf("%w: aggregate supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
+			raw := valueFor(spec.Field)
+			if text, ok := raw.(string); ok && len(text) > maxAggregateKeyBytes {
+				return fmt.Errorf("%w: count_by key exceeds %d bytes", ErrLimitExceeded, maxAggregateKeyBytes)
+			}
+			key := fmt.Sprint(raw)
+			if len(key) > maxAggregateKeyBytes {
+				return fmt.Errorf("%w: count_by key exceeds %d bytes", ErrLimitExceeded, maxAggregateKeyBytes)
+			}
+			if _, exists := state.counts[key]; !exists {
+				if *a.remaining == 0 {
+					return fmt.Errorf("%w: aggregate supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
+				}
+				if a.remainingBytes != nil {
+					if *a.remainingBytes < len(key) {
+						return fmt.Errorf("%w: aggregate key memory exceeds %d bytes", ErrLimitExceeded, maxAggregateTotalKeyBytes)
+					}
+					*a.remainingBytes -= len(key)
+				}
+				*a.remaining--
 			}
 			state.counts[key]++
 		case "sum", "avg", "min", "max":

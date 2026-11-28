@@ -13,26 +13,28 @@ import (
 )
 
 type ingestBatchCandidate struct {
-	index            int
-	request          IngestRequest
-	started          time.Time
-	result           IngestResult
-	appliedIndices   []int
-	mutations        graph.Mutations
-	policyReport     graph.ApplyReport
-	relationSchema   RelationSchemaCatalog
-	schemaMeta       ObjectMeta
-	commit           graph.Commit
-	report           graph.ApplyReport
-	changed          bool
-	metadataOnly     bool
-	skipMetadata     bool
-	resultManifest   Manifest
-	prepared         bool
-	preparedPlan     *IngestPreparedRequest
-	reservation      *directCommitReservation
-	batchReservation *directCommitReservation
-	casMerged        bool
+	index             int
+	request           IngestRequest
+	started           time.Time
+	result            IngestResult
+	appliedIndices    []int
+	mutations         graph.Mutations
+	policyReport      graph.ApplyReport
+	relationSchema    RelationSchemaCatalog
+	schemaMeta        ObjectMeta
+	commit            graph.Commit
+	report            graph.ApplyReport
+	changed           bool
+	metadataOnly      bool
+	skipMetadata      bool
+	replicatedReceipt *ReplicatedIngestReceipt
+	receiptStored     bool
+	resultManifest    Manifest
+	prepared          bool
+	preparedPlan      *IngestPreparedRequest
+	reservation       *directCommitReservation
+	batchReservation  *directCommitReservation
+	casMerged         bool
 }
 
 func ingestBatchAcceptedGeneration(entries []IngestBatchEntry) (int64, error) {
@@ -163,13 +165,14 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		result.BatchID = request.BatchID
 		result.Cursor = request.Cursor
 		candidate := &ingestBatchCandidate{
-			index:          index,
-			request:        request,
-			started:        entry.AcceptedAt,
-			result:         result,
-			appliedIndices: appliedIndices,
-			mutations:      mutations,
-			metadataOnly:   result.Applied == 0,
+			index:             index,
+			request:           request,
+			started:           entry.AcceptedAt,
+			result:            result,
+			appliedIndices:    appliedIndices,
+			mutations:         mutations,
+			metadataOnly:      result.Applied == 0,
+			replicatedReceipt: entry.ReplicatedReceipt,
 		}
 		if ingest.IngestRequestAtomic(request) && candidate.result.Failed > 0 {
 			ingest.MarkIngestResultFailure(
@@ -298,7 +301,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 			}
 		} else if finalGraph != loaded.Graph {
 			loaded.Graph = finalGraph
-			s.setWriteCache(tenantID, loaded)
+			s.setWriteCacheContext(ctx, tenantID, loaded)
 		}
 	}
 	stats := ingestBatchStats(candidates, commitItems, fallback)
@@ -353,6 +356,13 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	endStorageSpan(metadataSpan, metadataErr)
 	if metadataErr != nil {
 		return results, metadataErr
+	}
+	if hooks.ReceiptStored != nil {
+		for _, candidate := range candidates {
+			if candidate.receiptStored {
+				hooks.ReceiptStored(candidate.index)
+			}
+		}
 	}
 
 	return results, nil

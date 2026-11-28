@@ -76,6 +76,9 @@ curl 'http://localhost:8080/v1/tenants/source/backups?limit=20'
 Listing reads published manifests from the repository, even after local tenant
 data and task history are lost. Pass `next_cursor` as the next request's `cursor`;
 limits are 1–100. Results use lexicographic key order, not capture-time order.
+The listing skips invalid manifests and returns their count in
+`invalid_manifests`. Object-store read failures still fail the request. Restore
+rejects invalid manifests, and automatic retention stops when it finds one.
 Inspect `created_at` when choosing a recovery point.
 
 ## Automatic backups

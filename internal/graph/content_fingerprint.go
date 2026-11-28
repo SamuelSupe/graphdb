@@ -106,10 +106,10 @@ func (t *mutationFingerprintTracker) touchEntity(id string) {
 
 func (t *mutationFingerprintTracker) touchEntityWithEdges(id string) {
 	t.touchEntity(id)
-	for edgeID := range t.graph.out.At(id) {
+	for edgeID := range t.graph.out.At(id).Keys() {
 		t.touchEdge(edgeID)
 	}
-	for edgeID := range t.graph.in.At(id) {
+	for edgeID := range t.graph.in.At(id).Keys() {
 		t.touchEdge(edgeID)
 	}
 }

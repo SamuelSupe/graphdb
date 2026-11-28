@@ -49,6 +49,9 @@ func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID str
 // acquireWriteSlot bounds request decoding and execution without imposing graph
 // publication pressure on durable WAL acceptance.
 func (s *Server) acquireWriteSlot(w http.ResponseWriter, r *http.Request, tenantID string) (func(), time.Duration, error) {
+	if s.WriteAdmission == nil {
+		return func() {}, 0, nil
+	}
 	tracer := otel.Tracer("graphdb/http")
 	prefix := apiTracePrefix(r.Context(), "graphdb.commit")
 	acquireCtx, acquireSpan := tracer.Start(r.Context(), prefix+".write_admission.acquire", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
@@ -134,29 +137,36 @@ func (s *Server) writeBackpressure(w http.ResponseWriter, tenantID string, press
 }
 
 func backpressureErrorContract(reasons []storage.BackpressureReason) (ErrorCode, bool) {
+	code := ErrorCodeWriteBackpressure
 	for _, reason := range reasons {
 		switch reason.Code {
 		case "tenant_entity_quota_exceeded", "tenant_edge_quota_exceeded":
-			return ErrorCodeQuotaExceeded, false
+			code = ErrorCodeQuotaExceeded
 		case "object_store_latency_high", "object_store_errors_high", "object_store_unavailable":
-			return ErrorCodeObjectStoreUnavailable, true
+			code = ErrorCodeObjectStoreUnavailable
 		case "manifest_cas_conflicts_high":
-			return ErrorCodeManifestCASConflict, true
+			code = ErrorCodeManifestCASConflict
 		case "index_rebuild_running":
-			return ErrorCodeIndexRebuildRunning, true
+			code = ErrorCodeIndexRebuildRunning
 		case "gc_running":
-			return ErrorCodeMaintenanceTaskRunning, true
+			code = ErrorCodeMaintenanceTaskRunning
 		case "commit_tail_too_long":
-			return ErrorCodeCommitTailTooLong, false
+			code = ErrorCodeCommitTailTooLong
 		case "tenant_object_count_high", "tenant_bytes_high":
-			return ErrorCodeWriteBackpressure, true
+			code = ErrorCodeWriteBackpressure
 		case "write_admission_queue_timeout":
-			return ErrorCodeWriteAdmissionTimeout, true
+			code = ErrorCodeWriteAdmissionTimeout
 		case "ingest_wal_queue_full":
-			return ErrorCodeIngestQueueFull, true
+			code = ErrorCodeIngestQueueFull
+		default:
+			continue
 		}
+		break
 	}
-	return ErrorCodeWriteBackpressure, true
+	if contract, ok := errorCodeContracts[code]; ok {
+		return code, contract.Retryable
+	}
+	return code, true
 }
 
 func retryAfterFromStore(store *storage.TenantStore) time.Duration {

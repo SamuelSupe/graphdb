@@ -20,7 +20,7 @@ import (
 // once enabled. Protocol-1 commands remain compatible with the format-1 bridge.
 // A new command or an incompatible application change requires a new protocol.
 const ProtocolVersion = 1
-const MaxProtocolVersion = 12
+const MaxProtocolVersion = 14
 const protocolHeader = "X-GraphDB-Raft-Protocol"
 
 type PeerStatus struct {
@@ -73,7 +73,7 @@ func (n *Node) beginProposal(ctx context.Context) error {
 			n.mu.Unlock()
 			return nil
 		}
-		changed := n.changed
+		changed := n.stateChanged
 		n.mu.Unlock()
 		select {
 		case <-changed:
@@ -88,8 +88,9 @@ func (n *Node) beginProposal(ctx context.Context) error {
 func (n *Node) endProposal() {
 	n.mu.Lock()
 	n.activeProposals--
-	close(n.changed)
-	n.changed = make(chan struct{})
+	if n.handoff && n.activeProposals == 0 {
+		n.signalStateChangedLocked()
+	}
 	n.mu.Unlock()
 }
 
@@ -201,7 +202,7 @@ func (n *Node) replicationProbe(ctx context.Context) error {
 	if leader == n.cfg.ID {
 		// Drain owns proposal admission here. A fresh no-op distinguishes live
 		// replication from matching checkpoints left by a broken transport.
-		_, err := n.propose(ctx, nil)
+		_, err := n.propose(ctx, nil, false, false)
 		return err
 	}
 	n.peerMu.RLock()
@@ -242,8 +243,7 @@ func (n *Node) Drain(ctx context.Context) (err error) {
 	defer func() {
 		n.mu.Lock()
 		n.handoff = false
-		close(n.changed)
-		n.changed = make(chan struct{})
+		n.signalStateChangedLocked()
 		n.mu.Unlock()
 		if err != nil {
 			n.draining.Store(wasDraining)
@@ -251,7 +251,7 @@ func (n *Node) Drain(ctx context.Context) (err error) {
 	}()
 	for {
 		n.mu.Lock()
-		active, changed := n.activeProposals, n.changed
+		active, changed := n.activeProposals, n.stateChanged
 		n.mu.Unlock()
 		if active == 0 {
 			break
@@ -344,7 +344,7 @@ func (n *Node) LeaderAddress(ctx context.Context) (string, error) {
 			return "", err
 		}
 		n.mu.Lock()
-		changed, handoff := n.changed, n.handoff
+		changed, handoff := n.stateChanged, n.handoff
 		n.mu.Unlock()
 		leader := n.LeaderID()
 		if !handoff {
@@ -419,15 +419,14 @@ func (n *Node) rollingHandlers(mux *http.ServeMux) {
 		defer func() {
 			n.mu.Lock()
 			n.handoff = false
-			close(n.changed)
-			n.changed = make(chan struct{})
+			n.signalStateChangedLocked()
 			n.mu.Unlock()
 		}()
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		for {
 			n.mu.Lock()
-			active, changed := n.activeProposals, n.changed
+			active, changed := n.activeProposals, n.stateChanged
 			n.mu.Unlock()
 			if active == 0 {
 				break

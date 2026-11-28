@@ -120,9 +120,9 @@ func (g *Graph) rebuildIdentityIndexesForKinds(
 	if len(kinds) == 0 {
 		return
 	}
-	next := make(map[string]map[string]string, len(kinds))
+	next := make(map[string]*ShardedMap[string], len(kinds))
 	for kind := range kinds {
-		next[kind] = map[string]string{}
+		next[kind] = NewShardedMap[string]()
 	}
 	for kind, identities := range next {
 		if kindIDs := g.kindEntityIDs.At(kind); kindIDs != nil {
@@ -132,7 +132,7 @@ func (g *Graph) rebuildIdentityIndexesForKinds(
 					continue
 				}
 				for _, signature := range g.identitySignatures(entity) {
-					identities[signature.Value] = id
+					identities.Set(signature.Value, id)
 				}
 			}
 		}

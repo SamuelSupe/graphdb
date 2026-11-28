@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +59,129 @@ func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, sourc
 		}
 	}
 	return IngestBatchRecord{}, ErrNotFound
+}
+
+func (s *TenantStore) GetReplicatedIngestReceipt(ctx context.Context, tenant string, generation int64, source, collector, batch string) (IngestBatchRecord, error) {
+	request := IngestRequest{Source: source, CollectorID: collector, BatchID: batch}
+	if ValidateTenantID(tenant) != nil || ValidateIngestStorageIdentifiers(request) != nil {
+		return IngestBatchRecord{}, ErrNotFound
+	}
+	record, _, err := s.loadIngestRecordWithMeta(ctx, s.ingestBatchKey(tenant, source, collector, batch))
+	if err != nil {
+		return IngestBatchRecord{}, err
+	}
+	if record.ReplicatedReceipt == nil || record.ReplicatedReceipt.Generation != generation ||
+		!ingestRecordMatchesBatchIdentity(record, tenant, request) {
+		return IngestBatchRecord{}, ErrNotFound
+	}
+	return record, nil
+}
+
+// ReclaimReplicatedIngestReceipts removes only tenant copies bound to the
+// supplied HA acceptances, as part of the caller's Raft apply.
+func (s *TenantStore) ReclaimReplicatedIngestReceipts(ctx context.Context, receipts []IngestBatchRecord) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+	if !IsReplicatedContext(ctx) {
+		return ErrInvalidArgument
+	}
+	var keys []string
+	collectors := make(map[string]struct{})
+	for _, record := range receipts {
+		tenant, request, receipt := record.TenantID, record.Request, record.ReplicatedReceipt
+		if receipt == nil || ValidateTenantID(tenant) != nil || ValidateIngestStorageIdentifiers(request) != nil {
+			return ErrInvalidArgument
+		}
+		candidates := []string{s.ingestBatchKey(tenant, request.Source, request.CollectorID, request.BatchID)}
+		if request.IdempotencyKey != "" && request.IdempotencyKey != request.BatchID {
+			candidates = append(candidates, s.ingestIdempotencyKey(tenant, request.Source, request.CollectorID, request.IdempotencyKey))
+		}
+		for _, key := range candidates {
+			stored, _, err := s.loadIngestRecordWithMeta(ctx, key)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			binding := stored.ReplicatedReceipt
+			if binding != nil && binding.Generation == receipt.Generation && binding.Index == receipt.Index && binding.Epoch == receipt.Epoch && binding.Digest == receipt.Digest &&
+				ingestRecordMatchesBatchIdentity(stored, tenant, request) && stored.Request.IdempotencyKey == request.IdempotencyKey {
+				keys = append(keys, key)
+				if !s.MaterializeCollectorStatus {
+					collectors[s.collectorStatusKey(tenant, request.Source, request.CollectorID)] = struct{}{}
+				}
+			}
+		}
+	}
+	if files := s.localFileStore(); files != nil {
+		if err := files.JournalReplicatedObjects(ctx, keys); err != nil {
+			return err
+		}
+	}
+	for _, key := range keys {
+		if err := s.Objects.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
+	for key := range collectors {
+		s.deleteCachedCollectorStatus(key)
+	}
+	return nil
+}
+
+// BindReplicatedIngestReceipt checks that a legacy Parquet record can replace
+// the original terminal control record without changing the receipt.
+func (s *TenantStore) BindReplicatedIngestReceipt(ctx context.Context, desired IngestBatchRecord, reclaimedBytes int64, publish bool) (bool, error) {
+	if desired.ReplicatedReceipt == nil || desired.Result.SkipReason == IngestSkipReasonIdempotentReplay {
+		return false, nil
+	}
+	key := s.ingestBatchKey(desired.TenantID, desired.Request.Source, desired.Request.CollectorID, desired.Request.BatchID)
+	raw, meta, err := s.Objects.GetWithMeta(ctx, key)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	stored, err := decodeParquetIngestRecord(ctx, raw)
+	if err != nil {
+		return false, err
+	}
+	if !ingestRecordMatchesBatchIdentity(stored, desired.TenantID, desired.Request) ||
+		!stored.StartedAt.Equal(desired.StartedAt) || !stored.FinishedAt.Equal(desired.FinishedAt) {
+		return false, nil
+	}
+	request, err := json.Marshal(stored.Request)
+	if err != nil {
+		return false, err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(request)) != desired.ReplicatedReceipt.Digest {
+		return false, nil
+	}
+	desired.Request = stored.Request
+	if !ingestRecordSameResult(stored, desired) {
+		return false, nil
+	}
+	if stored.ReplicatedReceipt != nil {
+		return *stored.ReplicatedReceipt == *desired.ReplicatedReceipt, nil
+	}
+	stored.ReplicatedReceipt = desired.ReplicatedReceipt
+	data, err := marshalParquetIngestRecord(ctx, stored)
+	if err != nil {
+		return false, err
+	}
+	if int64(len(data)-len(raw)) > reclaimedBytes {
+		return false, nil
+	}
+	if publish {
+		if _, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag}); err != nil {
+			return false, err
+		}
+		s.markObjectKeyCached(key)
+	}
+	return true, nil
 }
 
 // LookupIngestReplay finds a terminal receipt for a prepared request and checks
@@ -260,23 +384,29 @@ func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantI
 }
 
 func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, record IngestBatchRecord) error {
+	_, err := s.saveIngestBatchRecord(ctx, tenantID, record)
+	return err
+}
+
+func (s *TenantStore) saveIngestBatchRecord(ctx context.Context, tenantID string, record IngestBatchRecord) (bool, error) {
 	record.TenantID = tenantID
 	record.Result = canonicalStoredIngestResult(record.Result)
 	data, err := marshalParquetIngestRecord(ctx, record)
 	if err != nil {
 		if record.Request.IdempotencyKey != "" &&
 			record.Request.IdempotencyKey != record.Result.BatchID {
-			return fmt.Errorf("save idempotency record: %w", err)
+			return false, fmt.Errorf("save idempotency record: %w", err)
 		}
-		return fmt.Errorf("save batch record: %w", err)
+		return false, fmt.Errorf("save batch record: %w", err)
 	}
 
 	batchKey := s.ingestBatchKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Result.BatchID)
 	if record.Request.IdempotencyKey == "" || record.Request.IdempotencyKey == record.Result.BatchID {
-		if err := s.saveEncodedIngestRecord(ctx, tenantID, batchKey, data, record); err != nil {
-			return fmt.Errorf("save batch record: %w", err)
+		stored, err := s.saveEncodedIngestRecord(ctx, tenantID, batchKey, data, record)
+		if err != nil {
+			return false, fmt.Errorf("save batch record: %w", err)
 		}
-		return nil
+		return stored, nil
 	}
 
 	idempotencyKey := s.ingestIdempotencyKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Request.IdempotencyKey)
@@ -297,7 +427,7 @@ func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, reco
 		meta, stored, err := s.localFileStore().putNewIngestReceiptPair(packCtx, batchKey, idempotencyKey, data)
 		done(err)
 		if err != nil {
-			return fmt.Errorf("save packed ingest receipts: %w", err)
+			return false, fmt.Errorf("save packed ingest receipts: %w", err)
 		}
 		if stored {
 			for i, key := range keys {
@@ -307,22 +437,23 @@ func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, reco
 					cache.finishMutation(key, generations[i], data, meta, true, false)
 				}
 			}
-			return nil
+			return true, nil
 		}
 	}
 	var (
 		idempotencyErr error
 		batchErr       error
+		batchStored    bool
 		wait           sync.WaitGroup
 	)
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
-		idempotencyErr = s.saveEncodedIngestRecord(ctx, tenantID, idempotencyKey, data, record)
+		_, idempotencyErr = s.saveEncodedIngestRecord(ctx, tenantID, idempotencyKey, data, record)
 	}()
 	go func() {
 		defer wait.Done()
-		batchErr = s.saveEncodedIngestRecord(ctx, tenantID, batchKey, data, record)
+		batchStored, batchErr = s.saveEncodedIngestRecord(ctx, tenantID, batchKey, data, record)
 	}()
 	wait.Wait()
 
@@ -333,17 +464,19 @@ func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, reco
 	if batchErr != nil {
 		result = errors.Join(result, fmt.Errorf("save batch record: %w", batchErr))
 	}
-	return result
+	return batchStored, result
 }
 
-func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID string, key string, data []byte, record IngestBatchRecord) error {
+// The bool proves that this write, or an equivalent prior write, stores the
+// receipt of the same HA acceptance. A storage-only replay can still succeed.
+func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID string, key string, data []byte, record IngestBatchRecord) (bool, error) {
 	_, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
 	if err == nil {
 		s.markObjectKeyCached(key)
-		return nil
+		return true, nil
 	}
 	if !errors.Is(err, ErrConflict) {
-		return err
+		return false, err
 	}
 	existing, meta, err := s.loadIngestRecordWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
@@ -351,18 +484,21 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 		if retryErr == nil {
 			s.markObjectKeyCached(key)
 		}
-		return retryErr
+		return retryErr == nil, retryErr
 	}
 	if err != nil {
-		return fmt.Errorf("%w: existing ingest record is unreadable; repair blocked", err)
+		return false, fmt.Errorf("%w: existing ingest record is unreadable; repair blocked", err)
 	}
 	if ingestRecordSameResult(existing, record) {
-		return nil
+		exact := record.ReplicatedReceipt != nil && existing.ReplicatedReceipt != nil &&
+			*existing.ReplicatedReceipt == *record.ReplicatedReceipt &&
+			existing.StartedAt.Equal(record.StartedAt) && existing.FinishedAt.Equal(record.FinishedAt)
+		return exact, nil
 	}
 
 	if ingestRecordMatchesBatchIdentity(existing, tenantID, record.Request) {
 		if !ingestRecordRequestEqual(existing.Request, record.Request) {
-			return fmt.Errorf(
+			return false, fmt.Errorf(
 				"%w: ingest record for source %q collector %q batch %q changed payload",
 				ErrIngestIdentityConflict,
 				record.Request.Source,
@@ -370,11 +506,11 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 				record.Request.BatchID,
 			)
 		}
-		return fmt.Errorf("%w: ingest record for source %q collector %q batch %q idempotency %q changed while publishing", ErrConflict, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Request.IdempotencyKey)
+		return false, fmt.Errorf("%w: ingest record for source %q collector %q batch %q idempotency %q changed while publishing", ErrConflict, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Request.IdempotencyKey)
 	}
 	if ingestRecordMatchesIdempotencyIdentity(existing, tenantID, record.Request) {
 		if !ingestRecordRequestEqualIgnoringBatch(existing.Request, record.Request) {
-			return fmt.Errorf(
+			return false, fmt.Errorf(
 				"%w: ingest record for source %q collector %q idempotency %q changed payload",
 				ErrIngestIdentityConflict,
 				record.Request.Source,
@@ -382,16 +518,16 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 				record.Request.IdempotencyKey,
 			)
 		}
-		return fmt.Errorf("%w: ingest record for source %q collector %q batch %q idempotency %q changed while publishing", ErrConflict, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Request.IdempotencyKey)
+		return false, fmt.Errorf("%w: ingest record for source %q collector %q batch %q idempotency %q changed while publishing", ErrConflict, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Request.IdempotencyKey)
 	}
 	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
 	if err == nil {
 		s.markObjectKeyCached(key)
 	}
 	if errors.Is(err, ErrConflict) {
-		return fmt.Errorf("%w: ingest record changed while repairing mismatched metadata", ErrConflict)
+		return false, fmt.Errorf("%w: ingest record changed while repairing mismatched metadata", ErrConflict)
 	}
-	return err
+	return err == nil, err
 }
 
 func (s *TenantStore) loadIngestRecordWithMeta(ctx context.Context, key string) (IngestBatchRecord, ObjectMeta, error) {

@@ -458,21 +458,43 @@ func TestHAShardDelayedFlushAfterRetirement(t *testing.T) {
 	request("POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
 	request("POST", "/v1/ingest/batches", `{"source":"agent","collector_id":"collector","batch_id":"delayed","items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host"}}]}`, http.StatusAccepted)
 	cluster := group.nodes[leader].cluster
-	queue, err := cluster.App.pendingSnapshot(ctx)
-	if err != nil || len(queue) != 1 {
-		t.Fatalf("accepted queue: %d, %v", len(queue), err)
+	generation, err := cluster.App.Store.ReplicationTenantGeneration(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
 	}
-	delayed := command{Kind: "flush", Tenant: "tenant-a", RouteEpoch: 1}
-	for key := range queue {
-		delayed.IDs = append(delayed.IDs, key)
-	}
+	key := cluster.App.ingestKey("tenant-a", "agent", "collector", "delayed", generation)
+	delayed := command{Kind: "flush", Tenant: "tenant-a", RouteEpoch: 1, IDs: []string{key}}
 	if err := cluster.flushPending(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// A request may already have selected the old route when migration starts.
+	lateBody := `{"mutations":{"upsert_entities":[{"id":"old-route","kind":"host"}]}}`
+	late := httptest.NewRequest(http.MethodPost, "/v1/commits", strings.NewReader(lateBody)).WithContext(ctx)
+	late.Header.Set(sharding.EpochHeader, "1")
+	oldEpoch, _, safe := cluster.localShardWriteRoute(late, "tenant-a")
+	if !safe || oldEpoch != 1 {
+		t.Fatalf("owned tenant did not select the local write route: %d %v", oldEpoch, safe)
+	}
 	ownership("freeze", "tenant-a", "move-delayed", 1)
 	ownership("thaw", "tenant-a", "move-delayed", 2)
-	data := propose(delayed)
+	data := propose(command{Kind: "http", Method: late.Method, URI: late.URL.Path, Tenant: "tenant-a", RouteEpoch: oldEpoch, Body: []byte(lateBody)})
+	var conflict struct {
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
 	var outcome httpResult
+	if json.Unmarshal(data, &outcome) != nil || outcome.Status != http.StatusConflict || json.Unmarshal(outcome.Body, &conflict) != nil || conflict.Code != "shard_epoch_changed" || !conflict.Retryable {
+		t.Fatalf("committed command bypassed the new ownership epoch: %s", data)
+	}
+	late.Header.Set("X-Tenant-ID", "tenant-a")
+	late.Header.Set("Content-Type", "application/json")
+	stale := httptest.NewRecorder()
+	group.nodes[leader].handler.ServeHTTP(stale, late)
+	conflict.Code, conflict.Retryable = "", false
+	if stale.Code != http.StatusConflict || json.Unmarshal(stale.Body.Bytes(), &conflict) != nil || conflict.Code != "shard_epoch_changed" || !conflict.Retryable {
+		t.Fatalf("stale local route did not use the authoritative check: %d %s", stale.Code, stale.Body.String())
+	}
+	data = propose(delayed)
 	if json.Unmarshal(data, &outcome) != nil || outcome.Status != http.StatusConflict {
 		t.Fatalf("previous ownership epoch flush was not rejected: %s", data)
 	}
@@ -894,5 +916,11 @@ func TestHAShardPagedTenantListing(t *testing.T) {
 	}
 	if json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Tenants) != 1 || page.Total != 1 || page.Tenants["tenant-b"].Shard != "data" {
 		t.Fatalf("catalog=%s", w.Body.String())
+	}
+	request(http.MethodPost, "/v1/tenants/tenant-a/purge?force=true", nil)
+	w = request(http.MethodGet, "/v1/tenants?limit=1&q=tenant", nil)
+	var afterPurge storage.TenantInfoPage
+	if json.Unmarshal(w.Body.Bytes(), &afterPurge) != nil || len(afterPurge.Tenants) != 1 || afterPurge.Total != 1 || afterPurge.Tenants[0].TenantID != "tenant-b" || afterPurge.NextCursor != "" {
+		t.Fatalf("page after purge=%s", w.Body.String())
 	}
 }

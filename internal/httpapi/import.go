@@ -37,9 +37,6 @@ func (s *Server) startImport(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxWriteRequestBytes)
 	var buf bytes.Buffer
-	if r.ContentLength > 0 && r.ContentLength <= maxWriteRequestBytes {
-		buf.Grow(int(r.ContentLength))
-	}
 	_, err = io.Copy(&buf, r.Body)
 	if err != nil {
 		writeDecodeError(w, r, err)

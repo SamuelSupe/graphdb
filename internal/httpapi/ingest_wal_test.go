@@ -215,22 +215,31 @@ func TestHTTPWALCommittedWaitReturnsServiceFailure(t *testing.T) {
 	}
 }
 
-func TestWriteIngestResultMapsAsynchronousIdentityConflict(t *testing.T) {
-	response := httptest.NewRecorder()
-	WriteIngestResult(response, storage.IngestResult{
-		BatchID:   "batch-conflict",
-		Failed:    1,
-		ErrorCode: storage.IngestErrorIdempotencyConflict,
-		Failures: []storage.IngestFailure{{
-			Error: "ingest identity conflict",
-		}},
-	})
-	var body ErrorResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode conflict: %v body=%s", err, response.Body.String())
-	}
-	if response.Code != http.StatusConflict || body.Code != ErrorCodeIdempotencyConflict || body.Retryable {
-		t.Fatalf("conflict status = %d body=%#v", response.Code, body)
+func TestWriteIngestResultMapsAsynchronousFailures(t *testing.T) {
+	for _, test := range []struct {
+		code   ErrorCode
+		status int
+	}{
+		{ErrorCodeIdempotencyConflict, http.StatusConflict},
+		{ErrorCodeMutationBudget, http.StatusUnprocessableEntity},
+	} {
+		t.Run(string(test.code), func(t *testing.T) {
+			result := storage.IngestResult{BatchID: "batch", Failed: 1, ErrorCode: string(test.code)}
+			response := httptest.NewRecorder()
+			WriteIngestResult(response, result)
+			var body struct {
+				Code      ErrorCode
+				Retryable bool
+				Detail    storage.IngestResult
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode receipt response: %v body=%s", err, response.Body.String())
+			}
+			if response.Code != test.status || body.Code != test.code || body.Retryable ||
+				body.Detail.BatchID != result.BatchID || body.Detail.ErrorCode != result.ErrorCode || body.Detail.Failed != result.Failed {
+				t.Fatalf("status=%d body=%+v", response.Code, body)
+			}
+		})
 	}
 }
 

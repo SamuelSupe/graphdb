@@ -15,6 +15,10 @@ import (
 )
 
 func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALSegment, uint64, int64, error) {
+	return scanIngestWALWithDurability(dir, IngestWALDurabilitySync, replay)
+}
+
+func scanIngestWALWithDurability(dir string, durability string, replay func(IngestWALRecord) error) ([]ingestWALSegment, uint64, int64, error) {
 	durable, err := loadIngestWALDurableTail(dir)
 	if err != nil {
 		return nil, 0, 0, err
@@ -23,8 +27,16 @@ func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALS
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	if checkpoint.Version != 0 && (durable == nil || checkpoint.Through > durable.lastLSN) {
-		return nil, 0, 0, fmt.Errorf("%w: checkpoint exceeds durable WAL boundary", ErrIngestWALCorrupt)
+	if durability == IngestWALDurabilitySync {
+		if checkpoint.Version != 0 && (durable == nil || checkpoint.Through > durable.lastLSN) {
+			return nil, 0, 0, fmt.Errorf("%w: checkpoint exceeds durable WAL boundary", ErrIngestWALCorrupt)
+		}
+	} else {
+		if durable != nil && durable.checkpoint && checkpoint.Version == 0 {
+			return nil, 0, 0, fmt.Errorf("%w: required ingest checkpoint is missing", ErrIngestWALCorrupt)
+		}
+		// OS durability mode does not maintain .durable across writes or rotations.
+		durable = nil
 	}
 	if durable != nil && durable.checkpoint && checkpoint.Version == 0 {
 		return nil, 0, 0, fmt.Errorf("%w: required ingest checkpoint is missing", ErrIngestWALCorrupt)
@@ -66,6 +78,9 @@ func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALS
 		if !found {
 			return nil, 0, 0, fmt.Errorf("%w: durable WAL segment is missing", ErrIngestWALCorrupt)
 		}
+	}
+	if checkpoint.Version != 0 && len(paths) == 0 {
+		return nil, 0, 0, fmt.Errorf("%w: WAL segments after checkpoint are missing", ErrIngestWALCorrupt)
 	}
 	segments := make([]ingestWALSegment, 0, len(paths))
 	var lastLSN uint64

@@ -205,6 +205,10 @@ Persisted forward and reverse adjacency shards let lazy reads execute `out`,
 `in`, and `both` traversal directions without loading the whole graph when the
 index catalog matches the visible graph version.
 
+On a materialized graph, shortest paths with a regular traversal direction and
+no per-step constraints can search from both endpoints. Equal-length paths
+retain the original traversal order.
+
 ## Filters, Projection, Sort, Aggregate
 
 Filtering supports:

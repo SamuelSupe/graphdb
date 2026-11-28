@@ -123,8 +123,14 @@ func TestIndexCleanupReleasesMaintenanceExecution(t *testing.T) {
 	}, CommitOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	objects.prefix = store.reverseIndexPrefix("tenant-a")
-	if err := files.Put(ctx, objects.prefix+"orphan.parquet", []byte("orphan")); err != nil {
+	orphan := store.reverseEdgeShardVersionKey("tenant-a", 1, "relation", "orphan")
+	if err := files.Put(ctx, orphan, []byte("orphan")); err != nil {
 		t.Fatal(err)
 	}
 	entered, resume := objects.blockNextDelete()

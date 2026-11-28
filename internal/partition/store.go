@@ -22,7 +22,7 @@ func (s Store) dataKey(tenant string, generation int64, bucket uint8) string {
 	return path.Join(s.namespace(tenant, generation), fmt.Sprintf("partitions/%02x/state.json", bucket))
 }
 func (s Store) Tree(tenant string, generation int64, bucket uint8) Tree {
-	return Tree{Objects: s.Objects, Prefix: path.Join(s.namespace(tenant, generation), fmt.Sprintf("partitions/%02x/pages", bucket))}
+	return Tree{Objects: s.Objects, Prefix: path.Join(s.namespace(tenant, generation), fmt.Sprintf("partitions/%02x/pages", bucket)), logicalDigests: s.LogicalDigests}
 }
 func (s Store) inputKey(tenant string, generation int64, stage, digest string) string {
 	return path.Join(s.namespace(tenant, generation), "inputs", stage, digest)
@@ -42,6 +42,13 @@ func (s Store) GetGraph(ctx context.Context, tenant string) (Graph, error) {
 func (s Store) Data(ctx context.Context, tenant string, generation int64, bucket uint8) (DataState, error) {
 	var state DataState
 	err := s.load(ctx, s.dataKey(tenant, generation, bucket), &state)
+	if errors.Is(err, storage.ErrNotFound) {
+		if abandoned, markerErr := s.isAbandoned(ctx, tenant, generation); markerErr != nil {
+			return state, markerErr
+		} else if abandoned {
+			return state, conflict("graph conversion was cancelled")
+		}
+	}
 	if err == nil && (state.Tenant != tenant || state.Generation != generation || state.Partition != bucket || state.Epoch == 0) {
 		err = fmt.Errorf("partition metadata scope mismatch")
 	}
@@ -68,7 +75,7 @@ func (s Store) Input(ctx context.Context, tenant string, generation int64, input
 		data, err = s.ReadIngestInput(ctx, tenant, generation, input.Acceptance)
 	} else {
 		if input.Bytes > MaxValueBytes {
-			return nil, fmt.Errorf("invalid transaction input reference")
+			return nil, invalid("invalid transaction input reference")
 		}
 		data, err = s.Objects.Get(ctx, s.inputKey(tenant, generation, input.Stage, input.Digest))
 	}
@@ -104,6 +111,10 @@ func (s Store) Apply(ctx context.Context, a Action) (any, error) {
 		return s.applyDataMove(ctx, a)
 	}
 	switch a.Operation {
+	case "cancel_conversion":
+		return s.cancelConversion(ctx, a)
+	case "reclaim_conversion":
+		return s.reclaimConversion(ctx, a)
 	case "reserve_partitions":
 		if len(a.Participants) == 0 || len(a.Participants) > 256 {
 			return nil, invalid("invalid partition reservation set")
@@ -127,6 +138,11 @@ func (s Store) Apply(ctx context.Context, a Action) (any, error) {
 		}
 		return map[string]any{"reserved": len(a.Participants)}, nil
 	case "stage_input":
+		if abandoned, err := s.isAbandoned(ctx, a.Tenant, a.Generation); err != nil {
+			return nil, err
+		} else if abandoned {
+			return nil, conflict("graph conversion was cancelled")
+		}
 		if !validTokenID(a.Txn) || len(a.Data) == 0 || len(a.Data) > MaxValueBytes || !validDigest(a.Digest) || fmt.Sprintf("%x", sha256.Sum256(a.Data)) != a.Digest {
 			return nil, invalid("invalid graph input chunk")
 		}
@@ -138,7 +154,7 @@ func (s Store) Apply(ctx context.Context, a Action) (any, error) {
 				return nil, readErr
 			}
 			if string(existing) != string(a.Data) {
-				return nil, fmt.Errorf("durable graph input changed")
+				return nil, conflict("durable graph input changed")
 			}
 			err = nil
 		}

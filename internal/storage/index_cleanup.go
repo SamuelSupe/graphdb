@@ -308,11 +308,14 @@ func (s *TenantStore) listedParquetReaderSafeToDelete(ctx context.Context, tenan
 }
 
 func (s *TenantStore) parquetVersionFromKey(tenantID string, key string) (int64, bool) {
-	prefix := s.parquetVersionRootPrefix(tenantID) + "v"
-	if !strings.HasPrefix(key, prefix) {
+	return versionFromObjectKey(s.parquetVersionRootPrefix(tenantID), key)
+}
+
+func versionFromObjectKey(prefix, key string) (int64, bool) {
+	rest, ok := strings.CutPrefix(key, prefix+"v")
+	if !ok {
 		return 0, false
 	}
-	rest := strings.TrimPrefix(key, prefix)
 	slash := strings.IndexByte(rest, '/')
 	if slash <= 0 {
 		return 0, false

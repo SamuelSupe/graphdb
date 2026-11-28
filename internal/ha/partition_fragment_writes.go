@@ -3,6 +3,7 @@ package ha
 import (
 	"context"
 	"errors"
+	"os"
 	"sort"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -22,6 +23,10 @@ type bufferedFragment struct {
 	bytes   int
 }
 
+func (b *bufferedFragment) UnwrapObjectStore() storage.ObjectStore {
+	return b.FileStore
+}
+
 func (b *bufferedFragment) Get(ctx context.Context, key string) ([]byte, error) {
 	if data, ok := b.writes[key]; ok {
 		if data == nil {
@@ -30,6 +35,16 @@ func (b *bufferedFragment) Get(ctx context.Context, key string) ([]byte, error) 
 		return data, ctx.Err()
 	}
 	return b.FileStore.Get(ctx, key)
+}
+
+func (b *bufferedFragment) GetIfFileUnchanged(ctx context.Context, key string, previous os.FileInfo) ([]byte, os.FileInfo, error) {
+	if data, ok := b.writes[key]; ok {
+		if data == nil {
+			return nil, nil, storage.ErrNotFound
+		}
+		return data, nil, ctx.Err()
+	}
+	return b.FileStore.GetIfFileUnchanged(ctx, key, previous)
 }
 
 func (b *bufferedFragment) Put(ctx context.Context, key string, data []byte) error {

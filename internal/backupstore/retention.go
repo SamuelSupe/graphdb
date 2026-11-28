@@ -80,7 +80,7 @@ func (r *Repository) DeleteAutomatic(ctx context.Context, entry Entry) error {
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	if err == nil && current != entry.Manifest {
+	if err == nil && !manifestsEqual(current, entry.Manifest) {
 		return fmt.Errorf("backup changed before retention")
 	}
 	if _, err := r.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(r.bucket), Key: aws.String(r.manifestKey(tenant, id))}); err != nil {

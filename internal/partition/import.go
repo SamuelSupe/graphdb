@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -47,6 +48,20 @@ func BuildImportPlan(ctx context.Context, view View, chunk ImportChunk) (Plan, e
 	if view.Graph.State != "initializing" {
 		return Plan{}, invalid("raw records can only populate an unpublished graph generation")
 	}
+	entityIDs := make(map[string]struct{}, len(chunk.Entities))
+	for _, entity := range chunk.Entities {
+		if _, exists := entityIDs[entity.ID]; exists {
+			return Plan{}, invalid("duplicate entity ID in import chunk")
+		}
+		entityIDs[entity.ID] = struct{}{}
+	}
+	edgeIDs := make(map[string]struct{}, len(chunk.Edges))
+	for _, edge := range chunk.Edges {
+		if _, exists := edgeIDs[edge.ID]; exists {
+			return Plan{}, invalid("duplicate edge ID in import chunk")
+		}
+		edgeIDs[edge.ID] = struct{}{}
+	}
 	schema, err := graph.FromSnapshot(graph.Snapshot{Version: view.Graph.Version, CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes})
 	if err != nil {
 		return Plan{}, err
@@ -64,63 +79,37 @@ func BuildImportPlan(ctx context.Context, view View, chunk ImportChunk) (Plan, e
 			}
 		}
 	}
-	for _, entity := range chunk.Entities {
-		if entity.ID == "" || entity.Version > view.Graph.Version {
-			return Plan{}, invalid("import entity identity or version is invalid")
+	lookup := &Lookup{View: view}
+	for entities := range slices.Chunk(chunk.Entities, 16) {
+		ids := make([]string, 0, len(entities))
+		for _, entity := range entities {
+			if entity.ID == "" || entity.Version > view.Graph.Version {
+				return Plan{}, invalid("import entity identity or version is invalid")
+			}
+			fields, err := schema.EffectiveFields(entity.Kind)
+			if err != nil {
+				return Plan{}, invalid(err.Error())
+			}
+			if err := graph.ValidatePropertyFields("entity "+entity.ID, entity.Fields, fields, false); err != nil {
+				return Plan{}, invalid(err.Error())
+			}
+			ids = append(ids, entity.ID)
 		}
-		fields, err := schema.EffectiveFields(entity.Kind)
-		if err != nil {
-			return Plan{}, invalid(err.Error())
-		}
-		if err := graph.ValidatePropertyFields("entity "+entity.ID, entity.Fields, fields, false); err != nil {
-			return Plan{}, invalid(err.Error())
-		}
-		var existing graph.Entity
-		found, err := view.Get(ctx, Bucket(entity.ID), EntityKey(entity.ID), &existing)
+		existing, _, err := lookup.GetEntities(ctx, ids, nil)
 		if err != nil {
 			return Plan{}, err
 		}
-		if found && !equalJSON(entity, existing) {
-			return Plan{}, conflict("import entity already exists with different content")
-		}
-		if err := b.entity(schema, entity, true); err != nil {
-			return Plan{}, err
+		for _, entity := range entities {
+			if prior, found := existing[entity.ID]; found && !equalJSON(entity, prior) {
+				return Plan{}, conflict("import entity already exists with different content")
+			}
+			if err := b.entity(schema, entity, true); err != nil {
+				return Plan{}, err
+			}
 		}
 	}
-	for _, edge := range chunk.Edges {
-		if edge.ID != graph.CanonicalEdgeID(edge) || edge.Version > view.Graph.Version {
-			return Plan{}, invalid("import edge identity or version is invalid")
-		}
-		var from, to graph.Entity
-		found, err := view.Get(ctx, Bucket(edge.From), EntityKey(edge.From), &from)
-		if err != nil {
-			return Plan{}, err
-		}
-		if !found {
-			return Plan{}, invalid("import edge has no source entity")
-		}
-		found, err = view.Get(ctx, Bucket(edge.To), EntityKey(edge.To), &to)
-		if err != nil {
-			return Plan{}, err
-		}
-		if !found {
-			return Plan{}, invalid("import edge has no target entity")
-		}
-		if _, err := graph.FromSnapshot(graph.Snapshot{Version: view.Graph.Version, CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes, Entities: []graph.Entity{from, to}, Edges: []graph.Edge{edge}}); err != nil {
-			return Plan{}, invalid(err.Error())
-		}
-		var existing graph.Edge
-		found, err = view.Get(ctx, Bucket(edge.From), EdgeKey(edge.ID), &existing)
-		if err != nil {
-			return Plan{}, err
-		}
-		if found && !equalJSON(existing, edge) {
-			return Plan{}, conflict("import edge already exists with different content")
-		}
-		if err := storage.ValidateRelationSchemaEdge(edge, view.Graph.RelationSchemas); err != nil {
-			return Plan{}, invalid(err.Error())
-		}
-		if err := b.edge(schema, edge, true); err != nil {
+	for edges := range slices.Chunk(chunk.Edges, 16) {
+		if err := addImportEdges(ctx, lookup, b, schema, edges); err != nil {
 			return Plan{}, err
 		}
 	}
@@ -131,12 +120,64 @@ func BuildImportPlan(ctx context.Context, view View, chunk ImportChunk) (Plan, e
 	return Plan{Changes: b.changes, CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes, Report: graph.ApplyReport{Changed: len(b.changes) > 0}}, nil
 }
 
+// Bound each dependency round because an endpoint may contain up to one MiB.
+func addImportEdges(ctx context.Context, lookup *Lookup, b *changeBuilder, schema *graph.Graph, edges []graph.Edge) error {
+	view := lookup.View
+	ids := make([]string, 0, len(edges)*2)
+	seen := make(map[string]bool, len(edges)*2)
+	keys := make(map[uint8][]string)
+	for _, edge := range edges {
+		if edge.ID != graph.CanonicalEdgeID(edge) || edge.Version > view.Graph.Version {
+			return invalid("import edge identity or version is invalid")
+		}
+		for _, id := range []string{edge.From, edge.To} {
+			if !seen[id] {
+				ids = append(ids, id)
+				seen[id] = true
+			}
+		}
+		bucket := Bucket(edge.From)
+		keys[bucket] = append(keys[bucket], EdgeKey(edge.ID))
+	}
+	endpoints, _, err := lookup.GetEntities(ctx, ids, nil)
+	if err != nil {
+		return err
+	}
+	existing, err := view.fetchEdges(ctx, keys)
+	if err != nil {
+		return err
+	}
+	for _, edge := range edges {
+		from, found := endpoints[edge.From]
+		if !found {
+			return invalid("import edge has no source entity")
+		}
+		to, found := endpoints[edge.To]
+		if !found {
+			return invalid("import edge has no target entity")
+		}
+		if _, err := graph.FromSnapshot(graph.Snapshot{Version: view.Graph.Version, CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes, Entities: []graph.Entity{from, to}, Edges: []graph.Edge{edge}}); err != nil {
+			return invalid(err.Error())
+		}
+		if prior, found := existing[edge.ID]; found && !equalJSON(prior, edge) {
+			return conflict("import edge already exists with different content")
+		}
+		if err := storage.ValidateRelationSchemaEdge(edge, view.Graph.RelationSchemas); err != nil {
+			return invalid(err.Error())
+		}
+		if err := b.edge(schema, edge, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e Engine) Import(ctx context.Context, chunk ImportChunk, key string) (storage.CommitResult, error) {
 	data, err := json.Marshal(transactionInput{Import: &chunk})
 	if err != nil {
 		return storage.CommitResult{}, err
 	}
-	return e.submitInput(ctx, data, "build:"+key, nil, "build", "", nil)
+	return e.submitInput(ctx, data, "build:"+key, nil, "build", "", nil, nil)
 }
 
 func ImportIdentity(phase, cursor string) string {

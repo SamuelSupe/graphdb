@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 )
 
@@ -14,31 +13,6 @@ import (
 var rangeCompactionSlot = make(chan struct{}, 1)
 
 const rangeCompactionBytesPerSecond = int64(16 << 20)
-
-type rangeCompactionIO struct {
-	ObjectStore
-	bytes atomic.Int64
-}
-
-func (s *rangeCompactionIO) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
-func (s *rangeCompactionIO) Get(ctx context.Context, key string) ([]byte, error) {
-	d, e := s.ObjectStore.Get(ctx, key)
-	s.bytes.Add(int64(len(d)))
-	return d, e
-}
-func (s *rangeCompactionIO) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
-	d, m, e := s.ObjectStore.GetWithMeta(ctx, key)
-	s.bytes.Add(int64(len(d)))
-	return d, m, e
-}
-func (s *rangeCompactionIO) Put(ctx context.Context, key string, data []byte) error {
-	s.bytes.Add(int64(len(data)))
-	return s.ObjectStore.Put(ctx, key, data)
-}
-func (s *rangeCompactionIO) PutConditional(ctx context.Context, key string, data []byte, c PutCondition) (ObjectMeta, error) {
-	s.bytes.Add(int64(len(data)))
-	return s.ObjectStore.PutConditional(ctx, key, data, c)
-}
 
 func (s *TenantStore) scheduleRangeCompaction(tenant string) {
 	// Raft maintenance is invoked by the replicated maintenance command. Never
@@ -110,29 +84,28 @@ func (s *TenantStore) compactRangePages(ctx context.Context, tenant string) erro
 }
 
 func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skipped map[string]bool) (changed, done bool, bytes int64, resultErr error) {
-	io := &rangeCompactionIO{ObjectStore: s.Objects}
-	worker := NewTenantStore(io, s.Prefix)
-	worker.InstanceID = s.InstanceID
-	worker.maintenance = s.maintenance
-	worker.WriteIndexRangePages = true
-	worker.WriteEntityRecords = false
-	defer worker.ShutdownTasks(context.Background())
-	defer func() { bytes = io.bytes.Load() }()
-	ctx, releaseMemory, err := s.admitMaintenance(ctx, 64<<20)
-	if err != nil {
-		return false, false, 0, err
-	}
-	defer releaseMemory()
+	// Execute range compaction directly on the main TenantStore `s` with a
+	// lightweight ExecutionEnv I/O byte meter rather than spawning a throwaway
+	// pseudo-TenantStore worker whose empty caches could thrash leases/caches.
+	ctx, meter := s.withIOMeter(ctx)
+	defer func() { bytes = meter.Load() }()
+	// Follow the global lock hierarchy (localViewGate -> admitMaintenance -> tenantLock)
+	// so concurrent exclusive lifecycle operations cannot AB-BA deadlock with builds.
 	ctx, releaseView, err := s.ReadViewContext(ctx, tenant)
 	if err != nil {
 		return false, false, 0, err
 	}
 	defer releaseView()
-	catalog, meta, err := worker.getIndexCatalogWithMeta(ctx, tenant)
+	ctx, releaseMemory, err := s.admitMaintenance(ctx, 64<<20)
 	if err != nil {
 		return false, false, 0, err
 	}
-	manifest, err := worker.CurrentManifest(ctx, tenant)
+	defer releaseMemory()
+	catalog, meta, err := s.getIndexCatalogWithMeta(ctx, tenant)
+	if err != nil {
+		return false, false, 0, err
+	}
+	manifest, err := s.CurrentManifest(ctx, tenant)
 	if err != nil {
 		return false, false, 0, err
 	}
@@ -144,6 +117,10 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 	var reverse ReverseIndexCatalog
 	var reverseMeta ObjectMeta
 	reverseChanged := false
+	mutatedEntityIdx := -1
+	mutatedEdgeIdx := -1
+	mutatedReverseIdx := -1
+	adjacencyOnly := false
 	tryPair := func(objects []IndexObject) (int, string) {
 		for i := 0; i+1 < len(objects); i++ {
 			a, b := objects[i], objects[i+1]
@@ -161,7 +138,7 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 			continue
 		}
 		pair := spec.Objects[n : n+2]
-		next, pages, err := worker.mergeEntityRanges(ctx, tenant, catalog.Version, *spec, pair, nil, map[string]bool{pair[0].ContentHash: true, pair[1].ContentHash: true})
+		next, pages, err := s.mergeEntityRanges(ctx, tenant, catalog.Version, *spec, pair, nil, map[string]bool{pair[0].ContentHash: true, pair[1].ContentHash: true})
 		if err != nil {
 			return false, false, 0, err
 		}
@@ -169,17 +146,28 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 			skipped[key] = true
 			return false, false, 0, nil
 		}
+		for _, p := range pages {
+			s.recordMeteredIO(ctx, int64(len(p.encodedParquet))*2+int64(len(p.Entities))*256)
+		}
 		spec.Objects = append(append(append([]IndexObject(nil), spec.Objects[:n]...), next...), spec.Objects[n+2:]...)
 		entities = pages
+		mutatedEntityIdx = i
 		changed = true
 		break
 	}
+	reverseReady := false
 	if !changed {
-		reverse, reverseMeta, err = worker.getReverseIndexCatalogWithMeta(ctx, tenant)
+		reverse, reverseMeta, err = s.getReverseIndexCatalogWithMeta(ctx, tenant)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return false, false, 0, err
 		}
-		for _, specs := range [][]EdgeShard{catalog.EdgeShards, reverse.EdgeShards} {
+		reverseReady = err == nil && reverse.Version == catalog.Version
+		edgeGroups := [][]EdgeShard{catalog.EdgeShards}
+		if reverseReady {
+			edgeGroups = append(edgeGroups, reverse.EdgeShards)
+		}
+		for direction, specs := range edgeGroups {
+			isReverse := direction == 1
 			for i := range specs {
 				spec := &specs[i]
 				n, key := tryPair(spec.Objects)
@@ -187,7 +175,7 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 					continue
 				}
 				pair := spec.Objects[n : n+2]
-				next, parts, err := worker.mergeEdgeRanges(ctx, tenant, catalog.Version, *spec, pair, nil, map[string]bool{pair[0].ContentHash: true, pair[1].ContentHash: true}, reverseChanged)
+				next, parts, err := s.mergeEdgeRanges(ctx, tenant, catalog.Version, *spec, pair, nil, map[string]bool{pair[0].ContentHash: true, pair[1].ContentHash: true}, isReverse)
 				if err != nil {
 					return false, false, 0, err
 				}
@@ -195,23 +183,36 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 					skipped[key] = true
 					return false, false, 0, nil
 				}
+				for _, p := range parts {
+					s.recordMeteredIO(ctx, int64(len(p.encodedParquet))*2+int64(len(p.Edges))*192)
+				}
 				spec.Objects = append(append(append([]IndexObject(nil), spec.Objects[:n]...), next...), spec.Objects[n+2:]...)
 				edges = parts
 				changed = true
+				reverseChanged = isReverse
+				if isReverse {
+					mutatedReverseIdx = i
+				} else {
+					mutatedEdgeIdx = i
+				}
 				break
 			}
 			if changed {
 				break
 			}
-			reverseChanged = true
 		}
 	}
 	if !changed {
-		for direction, specs := range [][]EdgeShard{catalog.EdgeShards, reverse.EdgeShards} {
+		edgeGroups := [][]EdgeShard{catalog.EdgeShards}
+		if reverseReady {
+			edgeGroups = append(edgeGroups, reverse.EdgeShards)
+		}
+		for direction, specs := range edgeGroups {
+			isReverse := direction == 1
 			for i := range specs {
 				spec := &specs[i]
-				scope := fmt.Sprintf("%t/%s/%s", direction == 1, spec.RelationType, spec.Shard)
-				root, merged, done, err := worker.compactAdjacencyRoot(ctx, tenant, worker.adjacencyPrefix(tenant, catalog.Version, scope), spec.AdjacencyRoot, skipped)
+				scope := fmt.Sprintf("%t/%s/%s", isReverse, spec.RelationType, spec.Shard)
+				root, merged, done, err := s.compactAdjacencyRoot(ctx, tenant, s.adjacencyPrefix(tenant, catalog.Version, scope), spec.AdjacencyRoot, skipped)
 				if err != nil {
 					return false, false, 0, err
 				}
@@ -219,9 +220,18 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 					return false, false, 0, nil
 				}
 				if merged {
+					if root != nil {
+						s.recordMeteredIO(ctx, int64(root.Bytes)*2)
+					}
 					spec.AdjacencyRoot = root
 					changed = true
-					reverseChanged = direction == 1
+					reverseChanged = isReverse
+					adjacencyOnly = true
+					if isReverse {
+						mutatedReverseIdx = i
+					} else {
+						mutatedEdgeIdx = i
+					}
 					break
 				}
 			}
@@ -233,19 +243,33 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 			return false, true, 0, nil
 		}
 	}
-	// Upload immutable pages before acquiring publication admission. Compare
-	// the captured catalog ETag AND manifest/fence before exposing new roots.
-	if len(entities) > 0 {
-		s.decorateIndexCatalog(&catalog, tenant)
-		err = worker.writeParquetEntityPages(ctx, tenant, entities, catalog.Version)
-	} else if reverseChanged {
-		mini := IndexCatalog{Version: reverse.Version, EdgeShards: reverse.EdgeShards}
+	// Upload immutable pages before acquiring publication admission. Only
+	// decorate the single mutated spec so existing secondary indexes and
+	// reused older-version specs are never double-prefixed or rewritten.
+	mutator := s.catalogMutator()
+	var entityRecordJobs []entityRecordWriteJob
+	if mutatedEntityIdx >= 0 {
+		mini := IndexCatalog{Version: catalog.Version, EntityPages: []EntityPageSpec{catalog.EntityPages[mutatedEntityIdx]}}
+		s.decorateIndexCatalog(&mini, tenant)
+		catalog.EntityPages[mutatedEntityIdx] = mini.EntityPages[0]
+		groups := entityPageDataPackGroups(entities, !s.WriteEntityRecords, s.EntityPagePackMaxBytes)
+		var metas []ObjectMeta
+		metas, err = s.writeParquetEntityPageGroups(ctx, tenant, groups, true)
+		if err == nil {
+			entityRecordJobs = mutator.BuildEntityRecordJobs(tenant, groups, metas)
+		}
+	} else if reverseChanged && !adjacencyOnly && mutatedReverseIdx >= 0 {
+		mini := IndexCatalog{Version: reverse.Version, EdgeShards: []EdgeShard{reverse.EdgeShards[mutatedReverseIdx]}}
 		s.decorateReverseEdgeCatalog(&mini, tenant)
-		reverse.EdgeShards = mini.EdgeShards
-		err = worker.writeChangedReverseEdgeShards(ctx, tenant, edges, reverse.EdgeShards, reverse.Version)
+		reverse.EdgeShards[mutatedReverseIdx] = mini.EdgeShards[0]
+		err = s.writeChangedReverseEdgeShards(ctx, tenant, edges, []EdgeShard{reverse.EdgeShards[mutatedReverseIdx]}, reverse.Version)
+	} else if !reverseChanged && !adjacencyOnly && mutatedEdgeIdx >= 0 {
+		mini := IndexCatalog{Version: catalog.Version, EdgeShards: []EdgeShard{catalog.EdgeShards[mutatedEdgeIdx]}}
+		s.decorateIndexCatalog(&mini, tenant)
+		catalog.EdgeShards[mutatedEdgeIdx] = mini.EdgeShards[0]
+		err = s.writeParquetEdgeShards(ctx, tenant, edges)
 	} else {
-		s.decorateIndexCatalog(&catalog, tenant)
-		err = worker.writeParquetEdgeShards(ctx, tenant, edges)
+		err = nil
 	}
 	if err != nil {
 		return false, false, 0, err
@@ -255,27 +279,39 @@ func (s *TenantStore) compactRangeSlice(ctx context.Context, tenant string, skip
 		return false, false, 0, err
 	}
 	defer unlock()
-	ctx, err = worker.acquireAndBindWriterFence(ctx, tenant)
+	ctx, err = s.acquireAndBindWriterFence(ctx, tenant)
 	if err != nil {
 		return false, false, 0, err
 	}
-	if err = worker.EnsureTenantWritable(ctx, tenant); err != nil {
+	if err = s.EnsureTenantWritable(ctx, tenant); err != nil {
 		return false, false, 0, err
 	}
-	if err = worker.ensureIndexRebuildCurrent(ctx, tenant, manifest); err != nil {
+	if err = s.ensureIndexRebuildCurrent(ctx, tenant, manifest); err != nil {
+		return false, false, 0, err
+	}
+	currentCatalog, currentMeta, err := s.getIndexCatalogWithMeta(ctx, tenant)
+	if err != nil {
+		return false, false, 0, err
+	}
+	if currentCatalog.Version != catalog.Version || currentMeta.ETag != meta.ETag {
+		return false, false, 0, ErrConflict
+	}
+	if reverseChanged {
+		currentReverse, currentReverseMeta, revErr := s.getReverseIndexCatalogWithMeta(ctx, tenant)
+		if revErr != nil {
+			return false, false, 0, revErr
+		}
+		if currentReverse.Version != reverse.Version || currentReverseMeta.ETag != reverseMeta.ETag {
+			return false, false, 0, ErrConflict
+		}
+	}
+	if err = mutator.PublishEntityRecords(ctx, entityRecordJobs); err != nil {
 		return false, false, 0, err
 	}
 	if reverseChanged {
-		if reverse.Version != catalog.Version {
-			return false, false, 0, fmt.Errorf("reverse compaction version mismatch")
-		}
-		err = worker.putReverseIndexCatalogWithMeta(ctx, tenant, reverse, reverseMeta)
-		s.lockMu.Lock()
-		delete(s.reverseIndexCatalogCache, tenant)
-		s.lockMu.Unlock()
+		err = mutator.PublishReverseCatalog(ctx, tenant, reverse, catalog.Version, reverseMeta)
 	} else {
-		_, err = worker.putIndexCatalogWithMetaFast(ctx, tenant, catalog, meta)
-		s.deleteCachedIndexCatalog(tenant)
+		_, err = mutator.PublishForwardCatalog(ctx, tenant, catalog, meta, true)
 	}
 	return err == nil, false, 0, err
 }

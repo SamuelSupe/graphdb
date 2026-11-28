@@ -13,7 +13,7 @@ func materializeEntity(g *graph.Graph, id string, request Request, budget *budge
 	if budget == nil || budget.entities == nil {
 		return graph.Entity{}, false, nil
 	}
-	return budget.entities.GetEntity(budget.ctx, id, materializeFields(request))
+	return budget.entities.GetEntity(budget.ctx, id, materializeFieldsForBudget(request, budget))
 }
 
 func materializeEntities(g *graph.Graph, ids []string, request Request, budget *budget) ([]graph.Entity, error) {
@@ -24,7 +24,7 @@ func materializeEntities(g *graph.Graph, ids []string, request Request, budget *
 	}
 	if lazyExecution(g, budget) {
 		if batch, ok := budget.entities.(EntityBatchLookup); ok {
-			entities, ok, err := batch.GetEntities(budget.ctx, ids, materializeFields(request))
+			entities, ok, err := batch.GetEntities(budget.ctx, ids, materializeFieldsForBudget(request, budget))
 			if err != nil {
 				return nil, err
 			}
@@ -53,7 +53,7 @@ func materializeEntities(g *graph.Graph, ids []string, request Request, budget *
 		}
 		if ok {
 			entities = append(entities, entity)
-		} else if lazyExecution(g, budget) {
+		} else if lazyExecution(g, budget) && !budget.authoritativeEntities {
 			return nil, ErrIndexUnavailable
 		}
 	}
@@ -62,6 +62,16 @@ func materializeEntities(g *graph.Graph, ids []string, request Request, budget *
 
 func lazyExecution(g *graph.Graph, budget *budget) bool {
 	return g != nil && g.Entities.Len() == 0 && budget != nil && budget.entities != nil
+}
+
+func materializeFieldsForBudget(request Request, budget *budget) []string {
+	if budget != nil && budget.entityPredicate != nil {
+		// An entity predicate may inspect arbitrary fields (e.g., RBAC/ABAC
+		// labels, owner, or tags) not listed in request.Project. Disable
+		// projection pushdown so visibility checks cannot be bypassed.
+		return nil
+	}
+	return materializeFields(request)
 }
 
 func materializeFields(request Request) []string {

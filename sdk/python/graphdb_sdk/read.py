@@ -28,6 +28,12 @@ class ReadMixin:
     def list_entity_types(self, **options) -> dict:
         return self._json("GET", "/v1/entity-types", query=options)
 
+    def list_ci_types(self, **options) -> dict:
+        return self._json("GET", "/v1/ci-types", query=options)
+
+    def list_relation_types(self, **options) -> dict:
+        return self._json("GET", "/v1/relation-types", query=options)
+
     def list_relation_schemas(self) -> dict:
         return self._json("GET", "/v1/relation-schemas")
 

@@ -11,11 +11,22 @@ func mergeEdgeForUpsert(existing Edge, incoming Edge, canonicalID string, incomi
 	backfillEdgeSources(&merged, merged.Version, merged.UpdatedAt)
 	incomingOwner := writeOwnerFromEdge(incoming, version, updatedAt)
 	report := ApplyReport{}
-	for field, value := range incoming.Fields {
+	for _, field := range sortedFieldKeys(incoming.Fields) {
+		value := incoming.Fields[field]
 		current, exists := merged.Fields[field]
-		if !exists || isEmptyFieldValue(current) {
+		if !exists {
 			merged.Fields[field] = copyAny(value)
 			setEdgeFieldSource(&merged, field, incomingOwner)
+			continue
+		}
+		if isEmptyFieldValue(current) {
+			if !isEmptyFieldValue(value) {
+				merged.Fields[field] = copyAny(value)
+				setEdgeFieldSource(&merged, field, incomingOwner)
+			} else if incomingCanOverwrite(edgeFieldSourceOrOwner(merged, field), incomingOwner) {
+				merged.Fields[field] = copyAny(value)
+				setEdgeFieldSource(&merged, field, incomingOwner)
+			}
 			continue
 		}
 		existingOwner := edgeFieldSourceOrOwner(merged, field)
@@ -117,6 +128,60 @@ func sortEdgesForMerge(edges []Edge) {
 	})
 }
 
+func mergeStoredEdge(existing Edge, incoming Edge, canonicalID string, incomingID string, version int64, updatedAt time.Time) (Edge, ApplyReport) {
+	merged := copyEdge(existing)
+	backfillEdgeSources(&merged, merged.Version, merged.UpdatedAt)
+	incomingCopy := copyEdge(incoming)
+	incomingVersion := firstNonZero(incomingCopy.Version, version)
+	incomingUpdatedAt := firstNonZeroTime(incomingCopy.UpdatedAt, updatedAt)
+	backfillEdgeSources(&incomingCopy, incomingVersion, incomingUpdatedAt)
+	report := ApplyReport{}
+	for _, field := range sortedFieldKeys(incomingCopy.Fields) {
+		value := incomingCopy.Fields[field]
+		incomingOwner := edgeFieldSourceOrOwner(incomingCopy, field)
+		current, exists := merged.Fields[field]
+		if !exists || isEmptyFieldValue(current) {
+			if !exists || !isEmptyFieldValue(value) {
+				merged.Fields[field] = copyAny(value)
+				setEdgeFieldSource(&merged, field, incomingOwner)
+			}
+			continue
+		}
+		existingOwner := edgeFieldSourceOrOwner(merged, field)
+		if isEmptyFieldValue(value) {
+			report.Suppressed = append(report.Suppressed, edgeConflict(canonicalID, incomingID, field, existingOwner, incomingOwner, current, value, "incoming empty edge field value was ignored because upsert does not clear existing values"))
+			continue
+		}
+		if incomingCanOverwrite(existingOwner, incomingOwner) {
+			merged.Fields[field] = copyAny(value)
+			setEdgeFieldSource(&merged, field, incomingOwner)
+			continue
+		}
+		if reflect.DeepEqual(current, value) {
+			continue
+		}
+		report.Suppressed = append(report.Suppressed, edgeConflict(canonicalID, incomingID, field, existingOwner, incomingOwner, current, value, "incoming edge field value was ignored because source priority is lower"))
+	}
+	merged.Sources = mergeEdgeSources(merged.Sources, incomingCopy.Sources)
+	merged.Confidence = maxFloat(existing.Confidence, incomingCopy.Confidence)
+	merged.SourceRank = maxInt(existing.SourceRank, incomingCopy.SourceRank)
+	merged.Source = firstNonEmpty(existing.Source, incomingCopy.Source)
+	merged.ExternalID = firstNonEmpty(existing.ExternalID, incomingCopy.ExternalID)
+	incomingExistence := writeOwnerFromEdge(incomingCopy, incomingVersion, incomingUpdatedAt)
+	if incomingCopy.ExistenceSource != nil {
+		incomingExistence = *incomingCopy.ExistenceSource
+	}
+	if merged.ExistenceSource == nil || incomingCanOverwrite(*merged.ExistenceSource, incomingExistence) {
+		ownerCopy := incomingExistence
+		merged.ExistenceSource = &ownerCopy
+	}
+	merged.ID = canonicalID
+	merged.Type = incomingCopy.Type
+	merged.From = incomingCopy.From
+	merged.To = incomingCopy.To
+	return merged, report
+}
+
 func mergeEdgeList(edges []Edge, version int64, updatedAt time.Time) (*ShardedMap[Edge],
 	ApplyReport) {
 	next := NewShardedMap[Edge]()
@@ -127,7 +192,7 @@ func mergeEdgeList(edges []Edge, version int64, updatedAt time.Time) (*ShardedMa
 		edge = canonicalizeEdge(edge, firstNonZero(edge.Version, version), firstNonZeroTime(edge.UpdatedAt, updatedAt))
 		if existing, ok := next.Get(edge.ID); ok {
 			var mergeReport ApplyReport
-			edge, mergeReport = mergeEdgeForUpsert(existing, edge, edge.ID, incomingID, firstNonZero(edge.Version, version), firstNonZeroTime(edge.UpdatedAt, updatedAt))
+			edge, mergeReport = mergeStoredEdge(existing, edge, edge.ID, incomingID, firstNonZero(edge.Version, version), firstNonZeroTime(edge.UpdatedAt, updatedAt))
 			report.Suppressed = append(report.Suppressed, mergeReport.Suppressed...)
 			if !existing.CreatedAt.IsZero() {
 				edge.CreatedAt = existing.CreatedAt

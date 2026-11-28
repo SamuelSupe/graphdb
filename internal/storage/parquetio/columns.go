@@ -9,6 +9,9 @@ import (
 )
 
 func StringColumn(record arrow.RecordBatch, index int, name string) (*array.String, error) {
+	if index < 0 || int64(index) >= record.NumCols() {
+		return nil, fmt.Errorf("parquet column %q index %d out of range (%d columns)", name, index, record.NumCols())
+	}
 	column, ok := record.Column(index).(*array.String)
 	if !ok {
 		return nil, fmt.Errorf("parquet entity page column %q has unexpected type", name)
@@ -17,6 +20,9 @@ func StringColumn(record arrow.RecordBatch, index int, name string) (*array.Stri
 }
 
 func Int64Column(record arrow.RecordBatch, index int, name string) (*array.Int64, error) {
+	if index < 0 || int64(index) >= record.NumCols() {
+		return nil, fmt.Errorf("parquet column %q index %d out of range (%d columns)", name, index, record.NumCols())
+	}
 	column, ok := record.Column(index).(*array.Int64)
 	if !ok {
 		return nil, fmt.Errorf("parquet entity page column %q has unexpected type", name)
@@ -40,6 +46,9 @@ func ParseTime(value string) time.Time {
 }
 
 func BoolColumn(record arrow.RecordBatch, index int, name string) (*array.Boolean, error) {
+	if index < 0 || int64(index) >= record.NumCols() {
+		return nil, fmt.Errorf("parquet column %q index %d out of range (%d columns)", name, index, record.NumCols())
+	}
 	column, ok := record.Column(index).(*array.Boolean)
 	if !ok {
 		return nil, fmt.Errorf("parquet column %q has unexpected type", name)
@@ -48,6 +57,9 @@ func BoolColumn(record arrow.RecordBatch, index int, name string) (*array.Boolea
 }
 
 func Float64Column(record arrow.RecordBatch, index int, name string) (*array.Float64, error) {
+	if index < 0 || int64(index) >= record.NumCols() {
+		return nil, fmt.Errorf("parquet column %q index %d out of range (%d columns)", name, index, record.NumCols())
+	}
 	column, ok := record.Column(index).(*array.Float64)
 	if !ok {
 		return nil, fmt.Errorf("parquet column %q has unexpected type", name)

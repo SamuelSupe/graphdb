@@ -97,7 +97,7 @@ func parseReadFreshness(r *http.Request, body readFreshness) (readFreshness, err
 	if raw := strings.TrimSpace(firstQuery(r.Header.Get(headerReadMinVersion), r.URL.Query().Get("min_version"))); raw != "" {
 		value, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || value < 0 {
-			return readFreshness{}, fmt.Errorf("min_version must be a non-negative integer")
+			return readFreshness{}, fmt.Errorf("%w: min_version must be a non-negative integer", storage.ErrInvalidArgument)
 		}
 		freshness.MinVersion = value
 	}
@@ -122,7 +122,7 @@ func parseReadBool(raw string) (bool, error) {
 	case "0", "false", "no", "n", "off":
 		return false, nil
 	default:
-		return false, fmt.Errorf("allow_stale must be a boolean")
+		return false, fmt.Errorf("%w: allow_stale must be a boolean", storage.ErrInvalidArgument)
 	}
 }
 
@@ -288,7 +288,7 @@ func writeReadError(w http.ResponseWriter, err error) {
 		writeErrorDetail(w, http.StatusTooManyRequests, ErrorCodeTooManyRequests, err.Error(), true, nil)
 		return
 	}
-	writeErrorErr(w, http.StatusBadRequest, err)
+	writeStorageError(w, err)
 }
 
 func writeReaderNotFresh(w http.ResponseWriter, err error) bool {

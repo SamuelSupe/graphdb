@@ -4,6 +4,23 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
+## 2.7.0 qualification
+
+The [release notes](../release/local-disk.md) cover upgrades from 2.6.5, including
+storage/WAL/backup/query-IR convergence, Raft ReadIndex, inline snapshot
+transfer, retained Raft log-tail indexing, Raft protocol 1–14 support, sharded
+copy-on-write adjacency/partition maps, and multi-round stability and
+performance hardening across all packages.
+
+Pre-tag local verification passed workspace hygiene, release-freeze contract
+checks, `go vet -mod=readonly ./...`, full `-race -count=1` unit and regression
+suites across all 18 Go packages, management console boundary tests, Python SDK
+tests, and automation script unit tests. The
+[tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.7.0)
+runs the static and integration gates, object backup gate, gateway gate,
+30-minute local-disk soak, Raft gate, native Linux AMD64/ARM64 archive
+verification, and automated GitHub Release publication.
+
 ## 2.6.5 qualification
 
 The [release notes](../release/local-disk.md) cover upgrades from 2.6.2, including

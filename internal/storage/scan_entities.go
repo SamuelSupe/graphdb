@@ -255,8 +255,8 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		if exclusiveFileStore(s.Objects) != nil {
 			return s.loadLocalEntityPage(ctx, tenantID, version, spec, options, cursor)
 		}
-		reusePhysicalObject := objectRefCounts[key] > 1
-		if object, ok := objectBytes[key]; reusePhysicalObject && ok {
+		keepPhysicalObject := objectRefCounts[key] > 1
+		if object, ok := objectBytes[key]; ok {
 			loaded.data = object.data
 			loaded.meta = object.meta
 			loaded.cached = object.cached
@@ -267,7 +267,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 			if loadErr != nil || !loaded.available {
 				return loaded, loadErr
 			}
-			if reusePhysicalObject {
+			if keepPhysicalObject {
 				objectBytes[key] = entityScanObjectBytes{data: loaded.data, meta: loaded.meta, cached: loaded.cached}
 			}
 			if loaded.cached {
@@ -276,12 +276,9 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				stats.objectLoads++
 			}
 		}
-		if shouldScanParquetEntityCandidates(options, cursor) {
+		if shouldScanParquetEntityCandidates(options) {
 			stats.candidateFilterRequests++
 			scan, ok := candidateScans[key]
-			if !reusePhysicalObject {
-				ok = false
-			}
 			if !ok {
 				candidateCtx, candidateSpan := startStorageSpan(ctx, "graphdb.storage.scan.entities.candidate_filter",
 					attribute.Int("graphdb.scan.object_bytes", len(loaded.data)),
@@ -298,7 +295,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				if loadErr != nil {
 					return loaded, loadErr
 				}
-				if reusePhysicalObject {
+				if keepPhysicalObject {
 					candidateScans[key] = scan
 				}
 				stats.candidateObjectScans++
@@ -388,7 +385,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		if !entityPageReadable(loaded.page, tenantID, version, spec) {
 			return false, false, nil
 		}
-		done, available, err = consume(loaded.page, loaded.candidates, shouldScanParquetEntityCandidates(options, cursor))
+		done, available, err = consume(loaded.page, loaded.candidates, shouldScanParquetEntityCandidates(options))
 		if err != nil {
 			return false, false, err
 		}
@@ -440,6 +437,13 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				}
 			}
 			done, ok, err := consumeSpec(spec, key, nil)
+			if count := objectRefCounts[key] - 1; count <= 0 {
+				delete(objectRefCounts, key)
+				delete(objectBytes, key)
+				delete(candidateScans, key)
+			} else {
+				objectRefCounts[key] = count
+			}
 			if err != nil || !ok {
 				return EntityScanResult{}, ok, err
 			}
@@ -495,6 +499,10 @@ func entityMatchesScan(entity graph.Entity, options EntityScanOptions) bool {
 		return false
 	}
 	return entityMatchesSource(entity, options.Source)
+}
+
+func EntityMatchesSource(entity graph.Entity, source string) bool {
+	return entityMatchesSource(entity, source)
 }
 
 func entityMatchesSource(entity graph.Entity, source string) bool {

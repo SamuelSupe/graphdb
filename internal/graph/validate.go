@@ -103,6 +103,8 @@ func normalizeSources(entity Entity) []EntitySource {
 }
 
 func sanitizeIncomingEntitySources(entity *Entity) {
+	entity.MergedFrom = nil
+	entity.SplitFrom = ""
 	if entity.Source == "" || entity.ExternalID == "" {
 		if entity.Source == "" && entity.ExternalID == "" && len(entity.Sources) == 1 {
 			entity.Source = entity.Sources[0].Source

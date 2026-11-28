@@ -3,6 +3,8 @@ package replication
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,51 @@ import (
 type upgradeStatusRaft struct {
 	raft.Node
 	commit *atomic.Uint64
+}
+
+type transportStepRaft struct {
+	raft.Node
+	last raftpb.Message
+}
+
+func (r *transportStepRaft) Step(_ context.Context, m raftpb.Message) error {
+	r.last = m
+	return nil
+}
+
+func TestLargeRaftMessageAdmissionPreservesHeartbeats(t *testing.T) {
+	receiver := &transportStepRaft{}
+	node := &Node{
+		cfg: Config{ID: 2, ClusterID: "test", Token: "test-token", MaxSnapshotBytes: 16 << 20},
+		ctx: t.Context(), raft: receiver, peers: map[uint64]string{1: "http://one"},
+		receiveLargeMessage: make(chan struct{}, 1),
+	}
+	node.receiveLargeMessage <- struct{}{}
+	handler := node.Handler()
+	request := func(body []byte, claimedSize int64) int {
+		r := httptest.NewRequest(http.MethodPost, "/raft/message", bytes.NewReader(body))
+		r.ContentLength = claimedSize
+		r.Header.Set("Authorization", "Bearer "+node.cfg.Token)
+		r.Header.Set("X-Raft-Cluster", node.cfg.ClusterID)
+		r.Header.Set(protocolHeader, fmt.Sprint(ProtocolVersion))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	if status := request(nil, 4<<20); status != http.StatusServiceUnavailable {
+		t.Fatalf("concurrent large receive status = %d", status)
+	}
+	if status := request(nil, 1<<30); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("outside receive limit status = %d", status)
+	}
+	heartbeat := raftpb.Message{Type: raftpb.MsgHeartbeat, From: 1, To: 2}
+	data, err := heartbeat.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := request(data, int64(len(data))); status != http.StatusNoContent || receiver.last.Type != raftpb.MsgHeartbeat {
+		t.Fatalf("heartbeat while a large receive is active: HTTP %d, message %s", status, receiver.last.Type)
+	}
 }
 
 func (r upgradeStatusRaft) Status() raft.Status {
@@ -79,6 +126,7 @@ func TestQuorumReadsContinueWhileAppendTransportIsBlocked(t *testing.T) {
 	var nodes [3]*Node
 	var machines [3]membershipMachine
 	var blocked atomic.Bool
+	var readHeartbeats atomic.Int64
 	var entered [3]chan struct{}
 	var once [3]sync.Once
 	release := make(chan struct{})
@@ -96,12 +144,17 @@ func TestQuorumReadsContinueWhileAppendTransportIsBlocked(t *testing.T) {
 				}
 				r.Body = io.NopCloser(bytes.NewReader(data))
 				var message raftpb.Message
-				if message.Unmarshal(data) == nil && message.Type == raftpb.MsgApp && len(message.Entries) > 0 && blocked.Load() {
-					once[i].Do(func() { close(entered[i]) })
-					select {
-					case <-release:
-					case <-r.Context().Done():
-						return
+				if message.Unmarshal(data) == nil {
+					if message.Type == raftpb.MsgHeartbeat && len(message.Context) > 0 {
+						readHeartbeats.Add(1)
+					}
+					if message.Type == raftpb.MsgApp && len(message.Entries) > 0 && blocked.Load() {
+						once[i].Do(func() { close(entered[i]) })
+						select {
+						case <-release:
+						case <-r.Context().Done():
+							return
+						}
 					}
 				}
 			}
@@ -160,6 +213,29 @@ func TestQuorumReadsContinueWhileAppendTransportIsBlocked(t *testing.T) {
 			t.Fatal("append did not block")
 		}
 	}
+	const burst = 256
+	beforeBurst := readHeartbeats.Load()
+	start := make(chan struct{})
+	replies := make(chan error, burst)
+	for range burst {
+		go func() {
+			<-start
+			read, stop := context.WithTimeout(ctx, 3*time.Second)
+			defer stop()
+			replies <- leader.ReadBarrier(read)
+		}()
+	}
+	close(start)
+	for range burst {
+		if err := <-replies; err != nil {
+			t.Fatalf("concurrent quorum read while append transport is blocked: %v", err)
+		}
+	}
+	if sent := readHeartbeats.Load() - beforeBurst; sent >= burst {
+		t.Fatalf("quorum read burst sent %d heartbeats for %d reads", sent, burst)
+	} else {
+		t.Logf("quorum read burst sent %d heartbeats for %d reads", sent, burst)
+	}
 	// Hold both replication requests beyond the randomized election timeout.
 	// The previously committed state must remain readable through ReadIndex.
 	until := time.Now().Add(2 * time.Second)
@@ -186,29 +262,30 @@ func TestQuorumReadsContinueWhileAppendTransportIsBlocked(t *testing.T) {
 	}
 	// A stalled durable log blocks Raft's status channel as well as proposals.
 	// Diagnostic HTTP traffic must still be served without bypassing ReadIndex.
-	leader.disk.mu.Lock()
-	unlock := sync.OnceFunc(leader.disk.mu.Unlock)
+	leader.disk.writeMu.Lock()
+	unlock := sync.OnceFunc(leader.disk.writeMu.Unlock)
 	defer unlock()
 	data, err := json.Marshal(proposal{ID: "disk-stall", Data: []byte("blocked")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	go leader.raft.Propose(ctx, data)
+	// Wait until readyLoop is blocked inside disk.save() on writeMu (ReadBarrier
+	// cannot advance while persistence is stalled, even though MVCC storage reads
+	// and diagnostics remain non-blocking).
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		status := make(chan raft.Status, 1)
-		go func() { status <- leader.raft.Status() }()
-		select {
-		case <-status:
-			if time.Now().After(deadline) {
-				t.Fatal("durable storage did not block the Raft control loop")
-			}
-			time.Sleep(time.Millisecond)
-		case <-time.After(50 * time.Millisecond):
-			goto blockedStorage
+		probe, cancelProbe := context.WithTimeout(ctx, 50*time.Millisecond)
+		probeErr := leader.ReadBarrier(probe)
+		cancelProbe()
+		if probeErr != nil {
+			break
 		}
+		if time.Now().After(deadline) {
+			t.Fatal("durable storage did not block the Raft persistence loop")
+		}
+		time.Sleep(time.Millisecond)
 	}
-blockedStorage:
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		leader.WriteMetrics(w)
 	}))
@@ -361,7 +438,7 @@ func TestSnapshotCleanupFailurePreservesQuorumAndRestart(t *testing.T) {
 
 func TestSnapshotCleanupPreservesRestoreFilesAndReusedOrphanNames(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	node := &Node{ctx: ctx, cfg: Config{Dir: t.TempDir()}, snapshotCleanupRequests: make(chan uint64, 1)}
+	node := &Node{ctx: ctx, cfg: Config{Dir: t.TempDir()}, snapshotCleanupWake: make(chan struct{}, 1)}
 	t.Cleanup(func() { cancel(); node.workers.Wait() })
 	dir := filepath.Join(node.cfg.Dir, "snapshots")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -771,7 +848,7 @@ func TestMissingOutgoingSnapshotReportsFailureWithoutStoppingNode(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reports := make(chan uint64, 1)
-	n := &Node{cfg: Config{ID: 1, Dir: t.TempDir()}, ctx: ctx, cancel: cancel, changed: make(chan struct{}), raft: snapshotFailureReporter{reports: reports}, metrics: observability.NewOperationMetrics()}
+	n := &Node{cfg: Config{ID: 1, Dir: t.TempDir()}, ctx: ctx, cancel: cancel, stateChanged: make(chan struct{}), raft: snapshotFailureReporter{reports: reports}, metrics: observability.NewOperationMetrics()}
 	file, err := persistSnapshotFile(n.cfg.Dir, 10, strings.NewReader(strings.Repeat("state", 16)), nil, 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -828,6 +905,78 @@ func TestDefaultSnapshotBudgetLeavesNoPublishedOrphan(t *testing.T) {
 		if strings.HasSuffix(entry.Name(), ".snap") {
 			t.Fatalf("over-budget snapshot published orphan %s", entry.Name())
 		}
+	}
+}
+
+type checksummedSnapshotSource struct {
+	testSnapshotSource
+	archive []byte
+	digest  [sha256.Size]byte
+}
+
+func (s checksummedSnapshotSource) WriteTo(_ context.Context, w io.WriteSeeker) error {
+	_, err := w.Write(s.archive)
+	return err
+}
+
+func (s checksummedSnapshotSource) WriteToWithPayloadDigest(ctx context.Context, w io.WriteSeeker) ([sha256.Size]byte, error) {
+	return s.digest, s.WriteTo(ctx, w)
+}
+
+func TestSnapshotSealReusesArchiveDigestAtProtocol13(t *testing.T) {
+	payload := bytes.Repeat([]byte("compressed archive contents"), 8192)
+	digest := sha256.Sum256(payload)
+	archive := append(bytes.Clone(digest[:]), payload...)
+	for _, protocol := range []int{12, 13} {
+		t.Run(fmt.Sprint(protocol), func(t *testing.T) {
+			dir := t.TempDir()
+			ctx := t.Context()
+			n := &Node{cfg: Config{Dir: dir, MaxSnapshotBytes: 1 << 20}, ctx: ctx, metrics: observability.NewOperationMetrics()}
+			built := make(chan snapshotBuild, 1)
+			n.workers.Add(1)
+			n.buildStreamSnapshot(checksummedSnapshotSource{archive: archive, digest: digest}, 1, raftpb.ConfState{},
+				snapshotEnvelope{Protocol: protocol, Peers: map[uint64]string{1: "http://one"}}, built)
+			result := <-built
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			envelope, err := decodeSnapshot(result.request.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := digest
+			if protocol == 12 {
+				want = sha256.Sum256(archive)
+			}
+			descriptor := *envelope.File
+			if descriptor.Bytes != int64(len(archive)) || descriptor.SHA256 != hex.EncodeToString(want[:]) || descriptor.PayloadDigest != (protocol == 13) {
+				t.Fatalf("unexpected descriptor: %+v", descriptor)
+			}
+			file, err := os.ReadFile(snapshotPath(dir, 1, descriptor))
+			if err != nil || !bytes.Equal(file, archive) {
+				t.Fatalf("published archive changed: %v", err)
+			}
+			receiverDir := t.TempDir()
+			if _, err := persistSnapshotFile(receiverDir, 1, bytes.NewReader(file), &descriptor, 1<<20); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateSnapshotFile(receiverDir, 1, descriptor); err != nil {
+				t.Fatal(err)
+			}
+			for _, offset := range []int{0, sha256.Size} {
+				broken := bytes.Clone(file)
+				broken[offset] ^= 1
+				if _, err := persistSnapshotFile(receiverDir, 2, bytes.NewReader(broken), &descriptor, 1<<20); err == nil {
+					t.Fatalf("received archive with changed byte %d", offset)
+				}
+				if err := os.WriteFile(snapshotPath(receiverDir, 1, descriptor), broken, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := validateSnapshotFile(receiverDir, 1, descriptor); err == nil {
+					t.Fatalf("accepted corrupt persisted archive with changed byte %d", offset)
+				}
+			}
+		})
 	}
 }
 
@@ -937,7 +1086,14 @@ func (m *budgetSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
 	return []byte(strings.Repeat("state", 512)), nil
 }
 
-func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
+func (m *budgetSnapshotMachine) Apply(ctx context.Context, index uint64, data []byte) ([]byte, error) {
+	if string(data) == `{"cleanup":true}` {
+		m.small.Store(true)
+	}
+	return m.membershipMachine.Apply(ctx, index, data)
+}
+
+func TestNonStreamingSnapshotRecoversFromPreparationFailures(t *testing.T) {
 	for _, scenario := range []struct {
 		name         string
 		preparation  bool
@@ -1029,15 +1185,25 @@ func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
 			if err := leader.ReadBarrier(ctx); err != nil {
 				t.Fatal(err)
 			}
-			for i := range machines {
-				machines[i].small.Store(true)
-				fileMachines[i].failCapture.Store(false)
-				fileMachines[i].failWrite.Store(false)
+			if scenario.name == "budget" {
+				cleanup := []byte(`{"cleanup":true}`)
+				if _, err := leader.Propose(ctx, cleanup); !errors.Is(err, ErrUnavailable) {
+					t.Fatalf("regular proposal bypassed snapshot budget: %v", err)
+				}
+				if response, err := leader.ProposeSnapshotCleanup(ctx, cleanup); err != nil || !bytes.Equal(response, cleanup) {
+					t.Fatalf("cleanup could not commit under snapshot pressure: %s (%v)", response, err)
+				}
+			} else {
+				for i := range machines {
+					machines[i].small.Store(true)
+					fileMachines[i].failCapture.Store(false)
+					fileMachines[i].failWrite.Store(false)
+				}
 			}
 			for leader.Status()["snapshot_error"] != nil {
 				select {
 				case <-ctx.Done():
-					t.Fatal("snapshot did not recover without proposals: ", ctx.Err())
+					t.Fatal("snapshot did not recover: ", ctx.Err())
 				case <-time.After(20 * time.Millisecond):
 				}
 			}
@@ -1138,7 +1304,7 @@ func TestInstalledSnapshotClearsPreviousBuildFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	machine := &membershipMachine{}
-	n := &Node{cfg: Config{SnapshotEntries: 10}, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), application: make(chan applicationBatch), snapshotFailure: ErrSnapshotTooLarge, metrics: observability.NewOperationMetrics()}
+	n := &Node{cfg: Config{SnapshotEntries: 10}, disk: disk, machine: machine, ctx: ctx, cancel: cancel, stateChanged: make(chan struct{}), application: make(chan applicationBatch), snapshotFailure: ErrSnapshotTooLarge, metrics: observability.NewOperationMetrics()}
 	n.workers.Add(1)
 	go n.applyLoop()
 	defer func() { cancel(); n.workers.Wait() }()
@@ -1171,7 +1337,7 @@ func TestInstalledSnapshotCompletesPendingProbeDuringBuild(t *testing.T) {
 	defer disk.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	machine := &pausedSnapshotMachine{started: make(chan struct{}), release: make(chan struct{})}
-	n := &Node{cfg: Config{ID: 1, Dir: dir, SnapshotEntries: 1000, MaxSnapshotBytes: 1 << 20}, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), application: make(chan applicationBatch), snapshotProbes: make(chan snapshotProbe), snapshotRequests: make(chan snapshotRequest), peers: map[uint64]string{1: "http://one", 2: "http://two", 3: "http://three"}, metrics: observability.NewOperationMetrics()}
+	n := &Node{cfg: Config{ID: 1, Dir: dir, SnapshotEntries: 1000, MaxSnapshotBytes: 1 << 20}, disk: disk, machine: machine, ctx: ctx, cancel: cancel, stateChanged: make(chan struct{}), application: make(chan applicationBatch), snapshotProbes: make(chan snapshotProbe), snapshotRequests: make(chan snapshotRequest), peers: map[uint64]string{1: "http://one", 2: "http://two", 3: "http://three"}, metrics: observability.NewOperationMetrics()}
 	n.raft = snapshotHandoffRaft{node: n}
 	n.leader.Store(2)
 	n.applied.Store(8)
@@ -1227,7 +1393,7 @@ func TestSnapshotIncludesMembershipChangedDuringBuild(t *testing.T) {
 			})
 			return ctx.Err()
 		}}, disk: disk, machine: &retrySnapshotMachine{}, ctx: ctx, cancel: cancel,
-		changed: make(chan struct{}), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest),
+		stateChanged: make(chan struct{}), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest),
 		peers: map[uint64]string{1: "http://one", 2: "http://two", 3: "http://three", 4: "http://four"}, metrics: observability.NewOperationMetrics()}
 	n.workers.Add(1)
 	go n.applyLoop()

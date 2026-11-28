@@ -24,7 +24,7 @@ func executeMaterializedKindPage(
 	cursor cursorState,
 	budget *budget,
 ) (Response, error) {
-	afterID, err := validateMaterializedMatchCursor(g, request, cursor)
+	afterID, err := validateMaterializedMatchCursor(g, request, cursor, budget)
 	if err != nil {
 		return Response{}, err
 	}
@@ -54,7 +54,7 @@ func executeMaterializedKindPage(
 							return false, err
 						}
 						budget.scanned++
-						if !requestEntityMatches(&request, &entity) || (afterID != "" && compareEntityPageOrder(entity.ID, afterID, order) <= 0) {
+						if !requestEntityMatches(&request, &entity) || !budget.allowsEntity(entity) || (afterID != "" && compareEntityPageOrder(entity.ID, afterID, order) <= 0) {
 							return true, nil
 						}
 						addBoundedEntityID(&ids, entity.ID, keep)
@@ -124,7 +124,7 @@ func executeMaterializedIdentityPage(
 							return false, err
 						}
 						budget.scanned++
-						if !requestEntityMatches(&request, &entity) {
+						if !requestEntityMatches(&request, &entity) || !budget.allowsEntity(entity) {
 							return true, nil
 						}
 						matched = append(matched, graph.CopyEntity(entity))
@@ -158,6 +158,7 @@ func validateMaterializedMatchCursor(
 	g *graph.Graph,
 	request Request,
 	cursor cursorState,
+	budget *budget,
 ) (string, error) {
 	if cursor.Legacy || cursor.After == "" {
 		return "", nil
@@ -169,7 +170,8 @@ func validateMaterializedMatchCursor(
 	entity, ok := g.Entities.Get(id)
 	if !ok ||
 		(request.Kind != "" && entity.Kind != request.Kind) ||
-		!requestEntityMatches(&request, &entity) {
+		!requestEntityMatches(&request, &entity) ||
+		!budget.allowsEntity(entity) {
 		return "", invalidCursorAfter(cursor)
 	}
 	return id, nil

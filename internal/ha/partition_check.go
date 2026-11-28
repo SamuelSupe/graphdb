@@ -2,10 +2,12 @@ package ha
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -42,6 +44,60 @@ func (c *Cluster) checkPartitionSource(ctx context.Context, tenant string) error
 		return fmt.Errorf("%w: source indexes and digest must match the current version", storage.ErrConflict)
 	}
 	return nil
+}
+
+func (c *Cluster) checkPartitionSourceValues(ctx context.Context, tenant string, version int64) error {
+	if version == 0 {
+		return nil
+	}
+	check := func(kind string, record any) error {
+		data, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		if len(data) > partition.MaxValueBytes {
+			return fmt.Errorf("%w: %s exceeds the partition value budget before copy", errPartitionSourceValueBudget, kind)
+		}
+		return nil
+	}
+	entities := storage.EntityScanOptions{Limit: 128, MinVersion: version, SkipGraphFallback: true}
+	for {
+		page, err := c.App.Store.ListEntities(ctx, tenant, entities)
+		if err != nil {
+			return err
+		}
+		if !page.IndexedRead || page.Version != version {
+			return fmt.Errorf("%w: source entity pages changed before copy", storage.ErrConflict)
+		}
+		for _, entity := range page.Entities {
+			if err := check("entity", entity); err != nil {
+				return err
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		entities.Cursor = page.NextCursor
+	}
+	edges := storage.EdgeScanOptions{Limit: 128, MinVersion: version, SkipGraphFallback: true}
+	for {
+		page, err := c.App.Store.ListEdges(ctx, tenant, edges)
+		if err != nil {
+			return err
+		}
+		if !page.IndexedRead || page.Version != version {
+			return fmt.Errorf("%w: source edge pages changed before copy", storage.ErrConflict)
+		}
+		for _, edge := range page.Edges {
+			if err := check("edge", edge); err != nil {
+				return err
+			}
+		}
+		if page.NextCursor == "" {
+			return nil
+		}
+		edges.Cursor = page.NextCursor
+	}
 }
 
 func (c *Cluster) partitionSourceCheck(w http.ResponseWriter, r *http.Request) {

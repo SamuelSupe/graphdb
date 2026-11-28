@@ -48,13 +48,18 @@ func decodeSnapshot(data []byte) (snapshotEnvelope, error) {
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return snapshot, err
 	}
+	return snapshot, snapshot.validate()
+}
+
+func (snapshot snapshotEnvelope) validate() error {
 	if snapshot.Protocol < 0 || snapshot.Protocol > MaxProtocolVersion || len(snapshot.Peers) == 0 ||
 		(snapshot.Version != 1 && snapshot.Version != 2) ||
 		(snapshot.Version == 1 && (len(snapshot.State) == 0 || snapshot.File != nil)) ||
-		(snapshot.Version == 2 && (len(snapshot.State) != 0 || snapshot.File == nil || !snapshot.File.valid())) {
-		return snapshot, fmt.Errorf("invalid Raft snapshot envelope")
+		(snapshot.Version == 2 && (len(snapshot.State) != 0 || snapshot.File == nil || !snapshot.File.valid())) ||
+		(snapshot.File != nil && snapshot.File.PayloadDigest && snapshot.Protocol < snapshotPayloadDigestProtocol) {
+		return fmt.Errorf("invalid Raft snapshot envelope")
 	}
-	return snapshot, nil
+	return nil
 }
 
 func (n *Node) snapshotMetadata(index uint64) (snapshotEnvelope, error) {
@@ -83,8 +88,12 @@ func (n *Node) snapshotData(state []byte, index uint64) ([]byte, error) {
 		return nil, err
 	}
 	n.peerMu.RLock()
-	defer n.peerMu.RUnlock()
-	return json.Marshal(snapshotEnvelope{Version: 1, Protocol: max(ProtocolVersion, minimum), State: state, Peers: n.peers, Retired: retired})
+	peers := make(map[uint64]string, len(n.peers))
+	for id, addr := range n.peers {
+		peers[id] = addr
+	}
+	n.peerMu.RUnlock()
+	return json.Marshal(snapshotEnvelope{Version: 1, Protocol: max(ProtocolVersion, minimum), State: state, Peers: peers, Retired: retired})
 }
 
 func (n *Node) installRetired(ids []uint64, index uint64) error {

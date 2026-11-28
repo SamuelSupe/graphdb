@@ -180,10 +180,11 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		s.mu.Unlock()
 
 		checkpointGeneration := s.wal.checkpointGeneration.Load()
-		appendResult, appendErr := s.wal.Append(ctx, IngestWALAccepted, payload)
+		recordIDs := []string{envelope.RecordID}
+		appendResult, appendErr := s.wal.append(ctx, IngestWALAccepted, payload, recordIDs)
 		if errors.Is(appendErr, ErrIngestWALFull) {
 			if pruneErr := s.prune(ctx, checkpointGeneration); pruneErr == nil {
-				appendResult, appendErr = s.wal.Append(ctx, IngestWALAccepted, payload)
+				appendResult, appendErr = s.wal.append(ctx, IngestWALAccepted, payload, recordIDs)
 			}
 		}
 		s.mu.Lock()

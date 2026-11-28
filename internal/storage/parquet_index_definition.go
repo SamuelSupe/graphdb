@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -105,9 +106,9 @@ func decodeParquetIndexDefinitions(ctx context.Context, data []byte) (IndexDefin
 		for i := 0; i < int(batch.NumRows()); i++ {
 			if rows == 0 {
 				record.LayoutVersion = int(columns.layoutVersion.Value(i))
-				record.TenantID = columns.tenantID.Value(i)
+				record.TenantID = strings.Clone(columns.tenantID.Value(i))
 				count = columns.count.Value(i)
-				expectedHash = columns.contentHash.Value(i)
+				expectedHash = strings.Clone(columns.contentHash.Value(i))
 			}
 			if record.LayoutVersion != int(columns.layoutVersion.Value(i)) ||
 				record.TenantID != columns.tenantID.Value(i) ||
@@ -115,15 +116,15 @@ func decodeParquetIndexDefinitions(ctx context.Context, data []byte) (IndexDefin
 				expectedHash != columns.contentHash.Value(i) {
 				return IndexDefinitionRecord{}, fmt.Errorf("index definitions identity mismatch")
 			}
-			name := columns.name.Value(i)
+			name := strings.Clone(columns.name.Value(i))
 			if name != "" {
 				if int64(len(record.Indexes)) != columns.ordinal.Value(i) {
 					return IndexDefinitionRecord{}, fmt.Errorf("index definitions ordinal mismatch")
 				}
 				record.Indexes = append(record.Indexes, IndexDefinition{
 					Name:      name,
-					Kind:      columns.kind.Value(i),
-					Field:     columns.field.Value(i),
+					Kind:      strings.Clone(columns.kind.Value(i)),
+					Field:     strings.Clone(columns.field.Value(i)),
 					Unique:    columns.unique.Value(i),
 					CreatedAt: parquetio.ParseTime(columns.createdAt.Value(i)),
 					UpdatedAt: parquetio.ParseTime(columns.updatedAt.Value(i)),

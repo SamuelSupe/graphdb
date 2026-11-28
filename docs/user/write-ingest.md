@@ -57,6 +57,11 @@ tenant manifest is currently at that version.
 same key with the same payload returns the stored result; reusing it with a
 different payload returns `idempotency_conflict`.
 
+For partitioned graphs, `422 mutation_budget_exceeded` means the commit
+published no changes. Home Raft protocol 13 lets the same key and payload run
+again after the graph version advances. An explicit `expected_version` must
+still match.
+
 The 32 MiB commit request limit counts the entire received body, including JSON
 whitespace. Raft removes outer JSON ASCII whitespace before journal replication;
 field values and JSON validation retain their existing semantics.
@@ -419,6 +424,30 @@ client disconnect. The fsynced PREPARED commit plan in the WAL prevents another
 graph version when recovering a manifest published before ingest metadata was
 finalized. The first flush that encounters a historical loose-commit tail folds
 it into the segment; later flushes do not pay that migration cost again.
+
+The WAL reserves space for terminal records. If an older volume has exhausted
+that reserve, recovery can append one bounded terminal record per recovered
+pending request and reclaim old segments. A batch reaches `failed` if its
+accepted request and prepared plan together exceed what the WAL can hold even
+in isolation. Temporary pressure from other pending batches remains retryable.
+
+In ordinary Raft HA and tenant-sharded HA, a permanent purge invalidates WAL
+receipts from the earlier tenant generation. A recreated tenant can reuse batch
+IDs. To check for a specific acceptance, pass its original `accepted_lsn` as
+the query parameter of the same name.
+
+Raft HA on protocol 13 can set
+`GRAPHDB_HA_INGEST_RECEIPT_RETENTION` on every replica. The default is `0s`.
+The setting applies to newly accepted WAL batches in non-sharded HA and
+tenant-sharded HA. Retention starts when a batch
+becomes `committed` or `failed`. Keep the full `status_url` from acceptance.
+Before reclaim, a matching managed alias returns the original acceptance and
+a different payload using that alias returns 409. After reclaim, the original
+URL returns 404 and the batch ID or alias can be reused. Pending batches and
+earlier receipts without a deadline keep their original policy. If collector
+status is derived from batch history, it reflects the retained history.
+In tenant-sharded HA, keep both `accepted_epoch` and `accepted_lsn` when
+present in the returned URL. A tenant move keeps the original URL and expiry time.
 
 `/metrics` exposes `graphdb_ingest_wal_*`, `graphdb_ingest_queue_*`, and
 `graphdb_ingest_flush_*` metrics for append/fsync activity, WAL memory and disk

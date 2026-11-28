@@ -2,11 +2,61 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
+
+func TestReverseIndexGCUsesCurrentCatalogAndRetainsUnpublishedVersions(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := NewWriterObjectCache(base, WriterObjectCacheConfig{MaxKeys: 128, NegativeTTL: time.Minute})
+	store := NewTenantStore(objects, "test")
+	const tenant = "tenant-a"
+	if _, err := store.InitTenant(ctx, tenant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetReverseIndexCatalog(ctx, tenant, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reverse catalog before publication: %v", err)
+	}
+	orphan := store.reverseEdgeShardVersionKey(tenant, 1, "rel", "orphan")
+	online := store.reverseEdgeShardVersionKey(tenant, 1, "rel", "live")
+	current := store.reverseEdgeShardVersionKey(tenant, 2, "rel", "new")
+	future := store.reverseEdgeShardVersionKey(tenant, 3, "rel", "future")
+	for _, key := range []string{orphan, online, current, future} {
+		if err := base.Put(ctx, key, []byte("page")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := json.Marshal(ReverseIndexCatalog{
+		LayoutVersion: reverseIndexLayoutVersion, TenantID: tenant, Version: 2,
+		EdgeShards: []EdgeShard{{
+			RelationType: "rel", Shard: "live", EdgeCount: 1, ContentHash: "hash",
+			Objects: []IndexObject{{Key: online, ContentHash: "hash"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Put(ctx, store.reverseIndexCatalogKey(tenant), data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RunGC(ctx, tenant, GCOptions{CleanupIndexOrphans: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{online, current, future} {
+		if _, err := base.Get(ctx, key); err != nil {
+			t.Fatalf("retained object %s: %v", key, err)
+		}
+	}
+	if _, err := base.Get(ctx, orphan); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("retired orphan: %v", err)
+	}
+}
 
 func TestPersistedReverseIndexSupportsLazyBidirectionalTraversal(t *testing.T) {
 	ctx := context.Background()

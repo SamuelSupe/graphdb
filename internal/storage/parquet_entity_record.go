@@ -150,6 +150,7 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 
 	var record EntityRecord
 	var entity *graph.Entity
+	entityOrdinals := table.NumRows()
 	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
 	for reader.Next() {
@@ -174,7 +175,15 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 			}
 			if record.ID == "" {
 				record = rowRecord
-			} else if record.TenantID != rowRecord.TenantID || record.ID != rowRecord.ID || record.Page != rowRecord.Page || record.Version != rowRecord.Version {
+			} else if record.TenantID != rowRecord.TenantID ||
+				record.ID != rowRecord.ID ||
+				record.Page != rowRecord.Page ||
+				record.Ordinal != rowRecord.Ordinal ||
+				record.PageHash != rowRecord.PageHash ||
+				record.PageETag != rowRecord.PageETag ||
+				record.ContentHash != rowRecord.ContentHash ||
+				record.Deleted != rowRecord.Deleted ||
+				record.Version != rowRecord.Version {
 				return EntityRecord{}, fmt.Errorf("parquet entity record metadata mismatch")
 			}
 			if entity == nil && shouldDecodeEntityRecordEntity(rowRecord, columns, i) {
@@ -193,7 +202,7 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 				entity = &created
 			}
 			if entity != nil {
-				if err := codec.ApplyEntityRow(entity, entityRecordRowFromColumns(columns, i)); err != nil {
+				if err := codec.ApplyEntityRow(entity, entityRecordRowFromColumns(columns, i), &entityOrdinals); err != nil {
 					return EntityRecord{}, err
 				}
 			}

@@ -20,6 +20,7 @@ import (
 
 const replicationDirectory = ".graphdb-replication"
 const maxReusableJournalBytes = 1 << 20
+const replicationCheckpointPath = replicationDirectory + "/checkpoint.json"
 
 // ReplicationIngestQueue identifies pending receipts at this applied position.
 // A nil hint means the writer did not index the queue. Spilled queues use
@@ -54,8 +55,10 @@ func (*ReplicationRejectedError) Error() string {
 
 type replicationJournal struct {
 	ingestQueue *ReplicationIngestQueue
+	retainsBase bool
 	db          *bolt.DB
 	files       *FileStore
+	onCommit    []func()
 	mu          sync.Mutex
 	failure     error
 	writers     atomic.Int32
@@ -73,6 +76,14 @@ type replicationJournalKey struct{}
 
 type replicationMetricsKey struct{}
 
+type checkpointInReplicationJournalKey struct{}
+
+// WithCheckpointInReplicationJournal lets a reusable journal hold the durable
+// checkpoint. The caller must have activated a protocol that supports recovery.
+func WithCheckpointInReplicationJournal(ctx context.Context) context.Context {
+	return context.WithValue(ctx, checkpointInReplicationJournalKey{}, true)
+}
+
 func WithReplicationMetrics(ctx context.Context, metrics *observability.OperationMetrics) context.Context {
 	if metrics == nil {
 		return ctx
@@ -86,16 +97,69 @@ func replicationOperation(ctx context.Context, name string) func(error) {
 }
 
 func (s *FileStore) ReplicationCheckpoint() (ReplicationCheckpoint, error) {
-	data, err := os.ReadFile(filepath.Join(s.root, replicationDirectory, "checkpoint.json"))
-	if os.IsNotExist(err) {
-		return ReplicationCheckpoint{}, nil
+	var data []byte
+	if s.runtime != nil {
+		if cached := s.runtime.retainedCheckpoint.Load(); cached != nil {
+			data = *cached
+		}
 	}
-	if err != nil {
-		return ReplicationCheckpoint{}, err
+	if data == nil {
+		var err error
+		data, err = os.ReadFile(filepath.Join(s.root, replicationCheckpointPath))
+		if os.IsNotExist(err) {
+			return ReplicationCheckpoint{}, nil
+		}
+		if err != nil {
+			return ReplicationCheckpoint{}, err
+		}
 	}
 	var checkpoint ReplicationCheckpoint
-	err = json.Unmarshal(data, &checkpoint)
+	err := json.Unmarshal(data, &checkpoint)
 	return checkpoint, err
+}
+
+func (s *FileStore) closeReplicationJournalLocked() error {
+	if s.runtime == nil {
+		return nil
+	}
+	var closeErr error
+	if s.runtime.replicationDB != nil {
+		closeErr = s.runtime.replicationDB.Close()
+		s.runtime.replicationDB = nil
+	}
+	s.runtime.mu.Lock()
+	fenced := s.runtime.restoreErr != nil
+	s.runtime.mu.Unlock()
+	if closeErr != nil || fenced {
+		return closeErr
+	}
+	cached := s.runtime.retainedCheckpoint.Load()
+	if cached == nil {
+		return nil
+	}
+	if err := writeFileAtomic(filepath.Join(s.root, replicationCheckpointPath), *cached); err != nil {
+		return err
+	}
+	s.runtime.retainedCheckpoint.Store(nil)
+	dir := filepath.Join(s.root, replicationDirectory)
+	if err := os.Remove(filepath.Join(dir, "pending.db")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return syncDir(dir)
+}
+
+func deferReplicationCommit(ctx context.Context, fn func()) bool {
+	if ctx == nil || fn == nil {
+		return false
+	}
+	journal, ok := ctx.Value(replicationJournalKey{}).(*replicationJournal)
+	if !ok || journal == nil {
+		return false
+	}
+	journal.mu.Lock()
+	journal.onCommit = append(journal.onCommit, fn)
+	journal.mu.Unlock()
+	return true
 }
 
 // ApplyReplicated journals before-images before touching live objects. The
@@ -106,6 +170,11 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		s.runtime.replicationMu.Lock()
 		defer s.runtime.replicationMu.Unlock()
 	}
+	end, err := s.beginLifecycleOperation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	checkpoint, err := s.ReplicationCheckpoint()
 	if err != nil {
 		return nil, err
@@ -120,46 +189,14 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	}
 	finishOpen := replicationOperation(ctx, "replication_journal_open")
 	pending := filepath.Join(dir, "pending.db")
-	_, statErr := os.Stat(pending)
-	if statErr != nil && !os.IsNotExist(statErr) {
-		finishOpen(statErr)
-		return nil, statErr
-	}
-	db, err := bolt.Open(pending, 0600, &bolt.Options{Timeout: time.Second})
-	if err != nil {
-		finishOpen(err)
-		return nil, err
-	}
-	// Coalesce concurrent before-images without delaying serial applications.
-	db.MaxBatchSize = 8
-	db.MaxBatchDelay = 100 * time.Microsecond
-	journal := &replicationJournal{db: db, files: s, ingestQueue: checkpoint.IngestQueue}
-	// bbolt initializes new databases durably. Create the objects bucket with
-	// the first before-image instead of syncing a separate empty transaction.
-	if statErr == nil {
-		err = db.View(func(tx *bolt.Tx) error {
-			meta := tx.Bucket([]byte("meta"))
-			if meta == nil || meta.Get([]byte("committed")) == nil {
-				return fmt.Errorf("replication journal requires recovery before reuse")
-			}
-			var committed ReplicationCheckpoint
-			if err := json.Unmarshal(meta.Get([]byte("committed")), &committed); err != nil {
-				return err
-			}
-			if committed.Index != checkpoint.Index || !bytes.Equal(committed.Response, checkpoint.Response) {
-				return fmt.Errorf("replication journal differs from the published checkpoint")
-			}
-			return nil
-		})
-	} else {
-		err = syncDir(dir)
-	}
+	reused := s.runtime != nil && s.runtime.replicationDB != nil
+	db, err := s.openReplicationJournal(pending, checkpoint)
 	finishOpen(err)
 	if err != nil {
-		closeErr := db.Close()
-		s.fenceReplicationFailure(err)
-		return nil, errors.Join(err, closeErr)
+		return nil, err
 	}
+	journal := &replicationJournal{db: db, files: s, ingestQueue: checkpoint.IngestQueue,
+		retainsBase: s.runtime != nil && s.runtime.retainedCheckpoint.Load() != nil}
 	applyCtx := context.WithValue(ReplicatedContext(ctx, id, at), replicationJournalKey{}, journal)
 	response, applyErr := apply(applyCtx)
 	journal.mu.Lock()
@@ -168,9 +205,24 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	failure := errors.Join(journal.failure, ctx.Err())
 	journal.mu.Unlock()
 	if applyErr != nil || failure != nil {
+		rejected, isRejection := applyErr.(*ReplicationRejectedError)
+		if reused && isRejection && failure == nil && len(journal.directories) == 0 && len(journal.deleted) == 0 &&
+			len(journal.fileSyncs) == 0 && len(journal.reclaim) == 0 {
+			// The first before-image clears the previous commit marker.
+			// With that marker intact this application wrote no live objects.
+			untouched := false
+			if err := db.View(func(tx *bolt.Tx) error {
+				meta := tx.Bucket([]byte("meta"))
+				untouched = meta != nil && meta.Get([]byte("committed")) != nil
+				return nil
+			}); err == nil && untouched {
+				s.runtime.replicationDB = db
+				return nil, rejected
+			}
+		}
 		closeErr := db.Close()
 		rollbackErr := errors.Join(closeErr, s.recoverReplicationOrFence())
-		if rejected, ok := applyErr.(*ReplicationRejectedError); ok && failure == nil && rollbackErr == nil {
+		if isRejection && failure == nil && rollbackErr == nil {
 			return nil, rejected
 		}
 		return nil, errors.Join(applyErr, failure, rollbackErr)
@@ -201,7 +253,10 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 			})
 		}
 	}
-	err = errors.Join(err, db.Close())
+	if err != nil || !keep || s.runtime == nil {
+		err = errors.Join(err, db.Close())
+		db = nil
+	}
 	if err != nil {
 		finishCheckpoint(err)
 		s.fenceReplicationFailure(err)
@@ -211,11 +266,22 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	// On interruption recovery finishes this list before any later prepare
 	// can reuse one of its content-addressed pages.
 	if err := s.reclaimReplicatedPages(applyCtx, journal); err != nil {
+		if db != nil {
+			err = errors.Join(err, db.Close())
+		}
 		finishCheckpoint(err)
 		s.fenceReplicationFailure(err)
 		return nil, err
 	}
-	err = writeFileAtomic(filepath.Join(dir, "checkpoint.json"), data)
+	retain := db != nil && ctx.Value(checkpointInReplicationJournalKey{}) == true
+	if retain {
+		s.runtime.retainedCheckpoint.Store(&data)
+	} else {
+		err = writeFileAtomic(filepath.Join(s.root, replicationCheckpointPath), data)
+		if err == nil && s.runtime != nil {
+			s.runtime.retainedCheckpoint.Store(nil)
+		}
+	}
 	if err == nil && !keep {
 		// The next application syncs a newly created name before any write.
 		// Until then, a surviving journal can only recover this checkpoint.
@@ -223,7 +289,21 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	}
 	finishCheckpoint(err)
 	if err != nil {
+		if db != nil {
+			err = errors.Join(err, db.Close())
+		}
+		s.fenceReplicationFailure(err)
 		return nil, err
+	}
+	if db != nil {
+		s.runtime.replicationDB = db
+	}
+	journal.mu.Lock()
+	onCommit := journal.onCommit
+	journal.onCommit = nil
+	journal.mu.Unlock()
+	for _, fn := range onCommit {
+		fn()
 	}
 	// Keep rollback's parent directories intact until the checkpoint is durable.
 	// Empty-directory cleanup is local housekeeping and cannot reject that entry.
@@ -235,6 +315,48 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		s.pruneReplicatedObjectParents(ctx, keys)
 	}
 	return response, nil
+}
+
+func (s *FileStore) openReplicationJournal(pending string, checkpoint ReplicationCheckpoint) (*bolt.DB, error) {
+	if s.runtime != nil && s.runtime.replicationDB != nil {
+		db := s.runtime.replicationDB
+		s.runtime.replicationDB = nil
+		return db, nil
+	}
+	_, statErr := os.Stat(pending)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	db, err := bolt.Open(pending, 0600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		return nil, err
+	}
+	// Coalesce concurrent before-images without delaying serial applications.
+	db.MaxBatchSize = 8
+	db.MaxBatchDelay = 100 * time.Microsecond
+	if statErr == nil {
+		err = db.View(func(tx *bolt.Tx) error {
+			meta := tx.Bucket([]byte("meta"))
+			if meta == nil || meta.Get([]byte("committed")) == nil {
+				return fmt.Errorf("replication journal requires recovery before reuse")
+			}
+			var committed ReplicationCheckpoint
+			if err := json.Unmarshal(meta.Get([]byte("committed")), &committed); err != nil {
+				return err
+			}
+			if committed.Index != checkpoint.Index || !bytes.Equal(committed.Response, checkpoint.Response) {
+				return fmt.Errorf("replication journal differs from the published checkpoint")
+			}
+			return nil
+		})
+	} else {
+		err = syncDir(filepath.Dir(pending))
+	}
+	if err != nil {
+		s.fenceReplicationFailure(err)
+		return nil, errors.Join(err, db.Close())
+	}
+	return db, nil
 }
 
 func (s *FileStore) syncReplicationObjects(ctx context.Context, journal *replicationJournal) (err error) {
@@ -350,7 +472,7 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	// Callers hold the object lock or the directory replacement gate until
 	// Batch returns. Its callback may be retried; file reads stay outside it.
 	persist := func(tx *bolt.Tx) error {
-		bucket, err := beforeImages(tx)
+		bucket, err := beforeImages(tx, journal.retainsBase)
 		if err != nil {
 			return err
 		}
@@ -367,10 +489,14 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	return journal.db.Batch(persist)
 }
 
-func beforeImages(tx *bolt.Tx) (*bolt.Bucket, error) {
+func beforeImages(tx *bolt.Tx, retainBase bool) (*bolt.Bucket, error) {
+	var base []byte
 	if meta := tx.Bucket([]byte("meta")); meta != nil && meta.Get([]byte("committed")) != nil {
 		// The previous command left a durable marker. Reset it in the same
 		// transaction as the first new before-images, before any object changes.
+		if retainBase {
+			base = bytes.Clone(meta.Get([]byte("committed")))
+		}
 		if err := meta.Delete([]byte("committed")); err != nil {
 			return nil, err
 		}
@@ -380,7 +506,18 @@ func beforeImages(tx *bolt.Tx) (*bolt.Bucket, error) {
 			}
 		}
 	}
-	return tx.CreateBucketIfNotExists([]byte("objects"))
+	bucket, err := tx.CreateBucketIfNotExists([]byte("objects"))
+	if err != nil {
+		return nil, err
+	}
+	if base != nil {
+		// The internal path also prevents an older reader from rolling back
+		// a retained checkpoint using the out-of-date JSON file.
+		if err := bucket.Put([]byte(replicationCheckpointPath), base); err != nil {
+			return nil, err
+		}
+	}
+	return bucket, nil
 }
 
 func hasBeforeImage(tx *bolt.Tx, key string) bool {
@@ -443,7 +580,7 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 			continue
 		}
 		if err := journal.db.Update(func(tx *bolt.Tx) error {
-			bucket, err := beforeImages(tx)
+			bucket, err := beforeImages(tx, journal.retainsBase)
 			if err != nil {
 				return err
 			}
@@ -546,15 +683,30 @@ func (s *FileStore) recoverReplication() error {
 						return err
 					}
 				}
-				return writeFileAtomic(filepath.Join(dir, "checkpoint.json"), data)
+				return writeFileAtomic(filepath.Join(s.root, replicationCheckpointPath), data)
 			}
 		}
 		bucket := tx.Bucket([]byte("objects"))
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(key, value []byte) error {
+		var base []byte
+		if data := bucket.Get([]byte(replicationCheckpointPath)); data != nil {
+			var checkpoint ReplicationCheckpoint
+			if err := json.Unmarshal(data, &checkpoint); err != nil || checkpoint.Index == 0 {
+				return fmt.Errorf("invalid replication rollback checkpoint")
+			}
+			var err error
+			base, err = json.Marshal(checkpoint)
+			if err != nil {
+				return err
+			}
+		}
+		if err := bucket.ForEach(func(key, value []byte) error {
 			name := string(key)
+			if name == replicationCheckpointPath {
+				return nil
+			}
 			if err := validateObjectKey(name); err != nil {
 				return err
 			}
@@ -568,6 +720,8 @@ func (s *FileStore) recoverReplication() error {
 			if len(value) == 0 {
 				return fmt.Errorf("empty replication before-image")
 			}
+			unlock := s.lockObject(name)
+			defer unlock()
 			if value[0] == 0 {
 				if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
 					return err
@@ -582,9 +736,15 @@ func (s *FileStore) recoverReplication() error {
 			} else {
 				return fmt.Errorf("invalid replication before-image")
 			}
-			s.changed(name, "", false)
+			s.changed(name, "", value[0] == 0)
 			return nil
-		})
+		}); err != nil {
+			return err
+		}
+		if base != nil {
+			return writeFileAtomic(filepath.Join(s.root, replicationCheckpointPath), base)
+		}
+		return nil
 	})
 	err = errors.Join(err, db.Close())
 	if err != nil {

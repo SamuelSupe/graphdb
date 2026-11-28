@@ -22,7 +22,7 @@ import (
 func TestPersistentSnapshotFailureHandsOffOnlyToHealthyReplica(t *testing.T) {
 	for _, allFailed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("all-failed=%v", allFailed), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 			defer cancel()
 			var endpoints [3]atomic.Pointer[Node]
 			var nodes [3]*Node

@@ -23,12 +23,12 @@ func (s *TenantStore) writeParquetEntityPages(ctx context.Context, tenantID stri
 	return s.writeParquetEntityPagesWithOptions(ctx, tenantID, pages, version, true)
 }
 
-func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, tenantID string, pages []EntityPageData, version int64, checkExisting bool) error {
+func (s *TenantStore) writeParquetEntityPagesDeferredRecords(ctx context.Context, tenantID string, pages []EntityPageData, version int64, checkExisting bool) ([]entityRecordWriteJob, map[string]struct{}, error) {
 	writeRecords := s.WriteEntityRecords
 	groups := entityPageDataPackGroups(pages, !writeRecords, s.EntityPagePackMaxBytes)
 	metas, err := s.writeParquetEntityPageGroups(ctx, tenantID, groups, checkExisting)
 	if err != nil || !writeRecords {
-		return err
+		return nil, nil, err
 	}
 	recordJobs := []entityRecordWriteJob{}
 	currentIDs := map[string]struct{}{}
@@ -42,6 +42,14 @@ func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, te
 				recordJobs = append(recordJobs, entityRecordWriteJob{Key: key, Record: record})
 			}
 		}
+	}
+	return recordJobs, currentIDs, nil
+}
+
+func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, tenantID string, pages []EntityPageData, version int64, checkExisting bool) error {
+	recordJobs, currentIDs, err := s.writeParquetEntityPagesDeferredRecords(ctx, tenantID, pages, version, checkExisting)
+	if err != nil || !s.WriteEntityRecords {
+		return err
 	}
 	if err := s.putEntityRecordBatch(ctx, recordJobs); err != nil {
 		return err
@@ -71,7 +79,7 @@ func (s *TenantStore) writeParquetEntityPageGroups(ctx context.Context, tenantID
 				}
 			}
 		}
-		pageMeta, err := s.putParquetEntityPageObject(workCtx, key, tenantID, pack, checkExisting)
+		pageMeta, err := s.putParquetEntityPageObject(workCtx, key, tenantID, pack, checkExisting && len(group.Pages) <= 1)
 		metas[index] = pageMeta
 		return err
 	})
@@ -361,8 +369,9 @@ func decodeParquetEntityPageReader(ctx context.Context, source parquet.ReaderAtS
 	}
 	defer release()
 	defer recordReader.Release()
+	entityOrdinals := reader.NumRows()
 	for recordReader.Next() {
-		err = appendParquetEntityPageRecord(recordReader.RecordBatch(), tenantID, shard, version, &page, byID)
+		err = appendParquetEntityPageRecord(recordReader.RecordBatch(), tenantID, shard, version, &page, byID, &entityOrdinals)
 		if err != nil {
 			return EntityPageData{}, err
 		}
@@ -377,7 +386,7 @@ func decodeParquetEntityPageReader(ctx context.Context, source parquet.ReaderAtS
 	return page, nil
 }
 
-func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, shard string, version int64, page *EntityPageData, byID map[string]*graph.Entity) error {
+func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, shard string, version int64, page *EntityPageData, byID map[string]*graph.Entity, entityOrdinals *int64) error {
 	if record.NumCols() < int64(parquetEntityColumnEntitySourceStaleAt+1) {
 		return fmt.Errorf("parquet entity record has %d columns, want at least %d", record.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
 	}
@@ -442,7 +451,7 @@ func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, sh
 			byID[created.ID] = &created
 			entity = &created
 		}
-		if err := codec.ApplyEntityRow(entity, entityPageRowFromColumns(columns, i)); err != nil {
+		if err := codec.ApplyEntityRow(entity, entityPageRowFromColumns(columns, i), entityOrdinals); err != nil {
 			return err
 		}
 	}

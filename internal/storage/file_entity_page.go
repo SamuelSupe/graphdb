@@ -27,7 +27,7 @@ func (s *TenantStore) loadLocalEntityPage(ctx context.Context, tenantID string, 
 	defer reader.Close()
 	loaded.available = true
 	loaded.meta = ObjectMeta{Key: key, Exists: true}
-	if shouldScanParquetEntityCandidates(options, cursor) {
+	if shouldScanParquetEntityCandidates(options) {
 		// Parquet readers own their source. Use a borrowed handle so the
 		// candidate projection cannot close the file before the page decode.
 		scan, err := scanParquetEntityObjectCandidatesReader(ctx, borrowedParquetSource{reader}, options)

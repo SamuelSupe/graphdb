@@ -16,25 +16,28 @@ type Graph struct {
 	RelationTypes map[string]RelationType
 	Edges         *ShardedMap[Edge]
 
-	out                *ShardedMap[map[string]struct{}]
-	in                 *ShardedMap[map[string]struct{}]
-	edgeAliasIndex     map[string]map[string]struct{}
-	edgeTypeIndex      map[string]map[string]struct{}
-	entityAliasIndex   map[string]map[string]struct{}
+	out                *ShardedMap[*ShardedMap[struct{}]]
+	in                 *ShardedMap[*ShardedMap[struct{}]]
+	edgeAliasIndex     *ShardedMap[*ShardedMap[struct{}]]
+	edgeTypeIndex      *ShardedMap[*ShardedMap[struct{}]]
+	entityAliasIndex   *ShardedMap[*ShardedMap[struct{}]]
 	kindCounts         map[string]int
 	kindEntityIDs      *ShardedMap[*ShardedMap[struct{}]]
 	nonScalarFields    *ShardedMap[int]
 	fieldIndex         map[string]map[string]*fieldValueIndex
-	identityIndex      map[string]map[string]string
+	identityIndex      map[string]*ShardedMap[string]
 	legacyIdentity     bool
 	entityPartitions   *entityPartitions
 	entityPartitionsMu sync.Mutex
 	cow                *copyOnWriteState
-	entityOrder        map[string][]string
-	entityOrderMu      sync.Mutex
-	fieldIndexOrder    map[fieldIndexOrderKey][]string
-	fieldValueOrder    map[fieldValueOrderKey]fieldValueOrder
-	fieldIndexOrderMu  sync.Mutex
+	entityOrder          map[string][]string
+	entityOrderMu        sync.Mutex
+	entityOrderBytes     int64
+	fieldIndexOrder      map[fieldIndexOrderKey][]string
+	fieldIndexOrderBytes int64
+	fieldValueOrder      map[fieldValueOrderKey]fieldValueOrder
+	fieldValueOrderBytes int64
+	fieldIndexOrderMu    sync.Mutex
 	neighborOrder      map[string][]neighborRef
 	neighborOrderMu    sync.Mutex
 	neighborOrderBytes int64
@@ -118,13 +121,13 @@ func (g *Graph) Clone() *Graph {
 		Entities:                NewShardedMap[Entity](),
 		RelationTypes:           map[string]RelationType{},
 		Edges:                   NewShardedMap[Edge](),
-		out:                     copyAdjacency(g.out),
-		in:                      copyAdjacency(g.in),
-		edgeAliasIndex:          copySetMap(g.edgeAliasIndex),
-		edgeTypeIndex:           copySetMap(g.edgeTypeIndex),
-		entityAliasIndex:        copySetMap(g.entityAliasIndex),
+		out:                     cloneNestedIndex(g.out),
+		in:                      cloneNestedIndex(g.in),
+		edgeAliasIndex:          cloneNestedIndex(g.edgeAliasIndex),
+		edgeTypeIndex:           cloneNestedIndex(g.edgeTypeIndex),
+		entityAliasIndex:        cloneNestedIndex(g.entityAliasIndex),
 		kindCounts:              shallowCopyMap(g.kindCounts),
-		kindEntityIDs:           cloneKindEntityIDs(g.kindEntityIDs),
+		kindEntityIDs:           cloneNestedIndex(g.kindEntityIDs),
 		nonScalarFields:         g.nonScalarFields.Clone(),
 		fieldIndex:              copyFieldIndex(g.fieldIndex),
 		identityIndex:           copyStringMap(g.identityIndex),
@@ -222,6 +225,11 @@ func (g *Graph) GetEntity(id string) (Entity, bool) {
 	return copyEntity(entity), ok
 }
 
+func (g *Graph) GetEdge(id string) (Edge, bool) {
+	edge, ok := g.Edges.Get(id)
+	return copyEdge(edge), ok
+}
+
 func (g *Graph) GetEntityByReference(id string) (Entity, bool) {
 	entityID := g.ResolveEntityReference(id)
 	if entityID == "" {
@@ -237,11 +245,11 @@ func (g *Graph) ResolveEntityReference(id string) string {
 	if _, ok := g.Entities.Get(id); ok {
 		return id
 	}
-	matches := g.entityAliasIndex[id]
-	if len(matches) != 1 {
+	matches := g.entityAliasIndex.At(id)
+	if matches.Len() != 1 {
 		return ""
 	}
-	for entityID := range matches {
+	for entityID := range matches.Keys() {
 		if _, ok := g.Entities.Get(entityID); ok {
 			return entityID
 		}

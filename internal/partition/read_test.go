@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -295,16 +296,16 @@ func BenchmarkDistributedBothEdges(b *testing.B) {
 type scanRPCRemote struct {
 	Remote
 	stores map[string]Store
-	calls  int
+	calls  atomic.Int64
 }
 
 func (r *scanRPCRemote) Read(ctx context.Context, group Group, req ReadRequest) (ReadResult, error) {
-	r.calls++
+	r.calls.Add(1)
 	return r.Remote.Read(ctx, group, req)
 }
 
 func (r *scanRPCRemote) ReadBatch(ctx context.Context, group Group, req []ReadRequest) ([]ReadResult, error) {
-	r.calls++
+	r.calls.Add(1)
 	return r.stores[group.ID].ReadBatch(ctx, req)
 }
 
@@ -358,12 +359,13 @@ func TestDistributedScanBatchesHeadsAndPrimaryRecords(t *testing.T) {
 		{"rare_sorted", query.Request{Op: "match", Kind: "rare", Limit: 100, Sort: []query.SortSpec{{Field: "id"}}}, 40, 24},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reader.calls = 0
+			reader.calls.Store(0)
 			response, err := ExecuteQuery(ctx, view, tc.request)
-			if err != nil || len(response.Results) != tc.results || reader.calls > tc.maxRPC {
-				t.Fatalf("rows=%d calls=%d error=%v", len(response.Results), reader.calls, err)
+			calls := reader.calls.Load()
+			if err != nil || len(response.Results) != tc.results || calls > int64(tc.maxRPC) {
+				t.Fatalf("rows=%d calls=%d error=%v", len(response.Results), calls, err)
 			}
-			t.Logf("rows=%d read RPCs=%d", len(response.Results), reader.calls)
+			t.Logf("rows=%d read RPCs=%d", len(response.Results), calls)
 		})
 	}
 }

@@ -237,21 +237,27 @@ func apiTraceRouteForRequest(r *http.Request) apiTraceRoute {
 }
 
 func tenantAPITraceRoute(method string, path string) apiTraceRoute {
-	switch {
-	case strings.HasSuffix(path, "/disable"):
-		return apiTraceRoute{"tenant.disable", "POST /v1/tenants/{tenant_id}/disable"}
-	case strings.HasSuffix(path, "/enable"):
-		return apiTraceRoute{"tenant.enable", "POST /v1/tenants/{tenant_id}/enable"}
-	case strings.HasSuffix(path, "/purge"):
-		return apiTraceRoute{"tenant.purge", "POST /v1/tenants/{tenant_id}/purge"}
-	case strings.HasSuffix(path, "/clone"):
-		return apiTraceRoute{"tenant.clone", "POST /v1/tenants/{tenant_id}/clone"}
-	case strings.HasSuffix(path, "/backup"):
-		return apiTraceRoute{"tenant.backup", "POST /v1/tenants/{tenant_id}/backup"}
-	case strings.HasSuffix(path, "/restore"):
-		return apiTraceRoute{"tenant.restore", "POST /v1/tenants/{tenant_id}/restore"}
-	case strings.HasSuffix(path, "/restore-drill"):
-		return apiTraceRoute{"tenant.restore_drill", "POST /v1/tenants/{tenant_id}/restore-drill"}
+	rest := strings.TrimPrefix(path, "/v1/tenants/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 2 && parts[0] != "" {
+		switch parts[1] {
+		case "disable":
+			return apiTraceRoute{"tenant.disable", "POST /v1/tenants/{tenant_id}/disable"}
+		case "enable":
+			return apiTraceRoute{"tenant.enable", "POST /v1/tenants/{tenant_id}/enable"}
+		case "purge":
+			return apiTraceRoute{"tenant.purge", "POST /v1/tenants/{tenant_id}/purge"}
+		case "clone":
+			return apiTraceRoute{"tenant.clone", "POST /v1/tenants/{tenant_id}/clone"}
+		case "backup":
+			return apiTraceRoute{"tenant.backup", "POST /v1/tenants/{tenant_id}/backup"}
+		case "backups":
+			return apiTraceRoute{"tenant.backups", "GET /v1/tenants/{tenant_id}/backups"}
+		case "restore":
+			return apiTraceRoute{"tenant.restore", "POST /v1/tenants/{tenant_id}/restore"}
+		case "restore-drill":
+			return apiTraceRoute{"tenant.restore_drill", "POST /v1/tenants/{tenant_id}/restore-drill"}
+		}
 	}
 	switch method {
 	case http.MethodGet:

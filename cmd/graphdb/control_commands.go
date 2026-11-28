@@ -9,40 +9,40 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func indexCatalog(args []string, store *storage.TenantStore) error {
+func indexCatalog(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb index-catalog <tenant-id>")
 	}
-	catalog, err := store.GetIndexCatalog(context.Background(), args[0])
+	catalog, err := store.GetIndexCatalog(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(catalog)
 }
 
-func indexInspect(args []string, store *storage.TenantStore) error {
+func indexInspect(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb index-inspect <tenant-id>")
 	}
-	inspection, err := store.InspectIndex(context.Background(), args[0])
+	inspection, err := store.InspectIndex(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(inspection)
 }
 
-func indexDefinitions(args []string, store *storage.TenantStore) error {
+func indexDefinitions(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb index-definitions <tenant-id>")
 	}
-	definitions, err := store.ListIndexDefinitions(context.Background(), args[0])
+	definitions, err := store.ListIndexDefinitions(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(map[string]any{"indexes": definitions})
 }
 
-func createIndex(args []string, store *storage.TenantStore) error {
+func createIndex(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 3 || len(args) > 4 {
 		return fmt.Errorf("usage: graphdb create-index <tenant-id> <kind> <field> [name]")
 	}
@@ -50,7 +50,6 @@ func createIndex(args []string, store *storage.TenantStore) error {
 	if len(args) == 4 {
 		definition.Name = args[3]
 	}
-	ctx := context.Background()
 	result, err := store.CreateIndex(ctx, args[0], definition)
 	if err != nil {
 		return err
@@ -62,11 +61,10 @@ func createIndex(args []string, store *storage.TenantStore) error {
 	return printFinishedIndexDefinitionResult(result)
 }
 
-func dropIndex(args []string, store *storage.TenantStore) error {
+func dropIndex(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb drop-index <tenant-id> <name>")
 	}
-	ctx := context.Background()
 	result, err := store.DropIndex(ctx, args[0], args[1])
 	if err != nil {
 		return err
@@ -119,18 +117,18 @@ func printFinishedIndexDefinitionResult(result storage.IndexDefinitionResult) er
 	return nil
 }
 
-func indexHealth(args []string, store *storage.TenantStore) error {
+func indexHealth(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb index-health <tenant-id>")
 	}
-	health, err := store.IndexHealth(context.Background(), args[0])
+	health, err := store.IndexHealth(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(health)
 }
 
-func integrityAudit(args []string, store *storage.TenantStore) error {
+func integrityAudit(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 1 || len(args) > 2 {
 		return fmt.Errorf("usage: graphdb integrity-audit <tenant-id> [--shallow]")
 	}
@@ -141,47 +139,47 @@ func integrityAudit(args []string, store *storage.TenantStore) error {
 		}
 		options.Deep = false
 	}
-	report, err := store.AuditIntegrity(context.Background(), args[0], options)
+	report, err := store.AuditIntegrity(ctx, args[0], options)
 	if err != nil {
 		return err
 	}
 	return printJSON(report)
 }
 
-func rebuildIndexes(args []string, store *storage.TenantStore) error {
+func rebuildIndexes(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb rebuild-indexes <tenant-id>")
 	}
-	catalog, err := store.RebuildIndexes(context.Background(), args[0])
+	catalog, err := store.RebuildIndexes(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(catalog)
 }
 
-func writerLease(args []string, store *storage.TenantStore) error {
+func writerLease(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb writer-lease <tenant-id>")
 	}
-	lease, err := store.GetWriterLease(context.Background(), args[0])
+	lease, err := store.GetWriterLease(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(lease)
 }
 
-func recoverTenant(args []string, store *storage.TenantStore) error {
+func recoverTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb recover <tenant-id>")
 	}
-	report, err := store.RecoverTenant(context.Background(), args[0])
+	report, err := store.RecoverTenant(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(report)
 }
 
-func repairTenant(args []string, store *storage.TenantStore) error {
+func repairTenant(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 1 || len(args) > 2 {
 		return fmt.Errorf("usage: graphdb repair <tenant-id> [--apply]")
 	}
@@ -192,44 +190,44 @@ func repairTenant(args []string, store *storage.TenantStore) error {
 		}
 		options.Apply = true
 	}
-	report, err := store.RepairTenant(context.Background(), args[0], options)
+	report, err := store.RepairTenant(ctx, args[0], options)
 	if err != nil {
 		return err
 	}
 	return printJSON(report)
 }
 
-func cleanupCommits(args []string, store *storage.TenantStore) error {
+func cleanupCommits(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb cleanup-commits <tenant-id>")
 	}
-	report, err := store.CleanupCommits(context.Background(), args[0])
+	report, err := store.CleanupCommits(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printJSON(report)
 }
 
-func runGC(args []string, store *storage.TenantStore) error {
+func runGC(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 1 || len(args) > 3 {
 		return fmt.Errorf("usage: graphdb gc <tenant-id> [deadletter-max-age-seconds] [task-max-age-seconds]")
 	}
 	options := storage.GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true}
 	if len(args) >= 2 {
 		seconds, err := strconv.ParseInt(args[1], 10, 64)
-		if err != nil || seconds < 0 {
-			return fmt.Errorf("deadletter-max-age-seconds must be a non-negative integer")
+		if err != nil || seconds < 0 || seconds > storage.MaxDurationSeconds {
+			return fmt.Errorf("deadletter-max-age-seconds must be an integer between 0 and %d", storage.MaxDurationSeconds)
 		}
 		options.DeadLetterMaxAge = time.Duration(seconds) * time.Second
 	}
 	if len(args) == 3 {
 		seconds, err := strconv.ParseInt(args[2], 10, 64)
-		if err != nil || seconds < 0 {
-			return fmt.Errorf("task-max-age-seconds must be a non-negative integer")
+		if err != nil || seconds < 0 || seconds > storage.MaxDurationSeconds {
+			return fmt.Errorf("task-max-age-seconds must be an integer between 0 and %d", storage.MaxDurationSeconds)
 		}
 		options.TaskMaxAge = time.Duration(seconds) * time.Second
 	}
-	report, err := store.RunGC(context.Background(), args[0], options)
+	report, err := store.RunGC(ctx, args[0], options)
 	if err != nil {
 		return err
 	}

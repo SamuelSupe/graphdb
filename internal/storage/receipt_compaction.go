@@ -27,6 +27,9 @@ func (s *TenantStore) QueueExistingLocalReceiptPacks(ctx context.Context) error 
 		return err
 	}
 	files := s.localFileStore()
+	if files == nil {
+		return nil
+	}
 	for _, tenant := range tenants {
 		files.queueReceiptDirectory(s.tenantObjectPrefix(tenant))
 	}
@@ -50,6 +53,9 @@ func (s *FileStore) queueReceiptDirectory(prefix string) {
 
 func (s *TenantStore) PendingLocalReceiptPacks() map[string]uint64 {
 	files := s.localFileStore()
+	if files == nil {
+		return nil
+	}
 	files.receiptMu.Lock()
 	defer files.receiptMu.Unlock()
 	return maps.Clone(files.receiptWork)
@@ -57,6 +63,9 @@ func (s *TenantStore) PendingLocalReceiptPacks() map[string]uint64 {
 
 func (s *TenantStore) CompleteLocalReceiptPack(tenant string, revision uint64) {
 	files := s.localFileStore()
+	if files == nil {
+		return
+	}
 	files.receiptMu.Lock()
 	defer files.receiptMu.Unlock()
 	if files.receiptWork[tenant] == revision {

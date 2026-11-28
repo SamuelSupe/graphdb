@@ -8,7 +8,14 @@ import (
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
+	"github.com/vektah/gqlparser/v2/parser"
 	"github.com/vektah/gqlparser/v2/validator"
+)
+
+const (
+	maxGraphQLTokens     = 4096
+	maxGraphQLOperations = 16
+	maxGraphQLFragments  = 64
 )
 
 const graphQLSchema = `
@@ -64,8 +71,14 @@ func ParseGraphQL(request GraphQLRequest) (GraphQLPlan, gqlerror.List) {
 	if err := validateGraphQLDocumentShape(request.Query); err != nil {
 		return GraphQLPlan{}, graphQLError(nil, "%v", err)
 	}
-	document, errs := gqlparser.LoadQuery(parsedGraphQLSchema, request.Query)
-	if len(errs) > 0 {
+	document, parseErr := parser.ParseQueryWithTokenLimit(&ast.Source{Input: request.Query}, maxGraphQLTokens)
+	if parseErr != nil {
+		return GraphQLPlan{}, graphQLErrorFrom(parseErr)
+	}
+	if err := validateGraphQLDocumentLimits(document); err != nil {
+		return GraphQLPlan{}, graphQLError(nil, "%v", err)
+	}
+	if errs := validator.Validate(parsedGraphQLSchema, document); len(errs) > 0 {
 		return GraphQLPlan{}, errs
 	}
 	operation := document.Operations.ForName(request.OperationName)
@@ -137,10 +150,22 @@ func validateGraphQLDocumentShape(document string) error {
 		case '"':
 			if i+2 < len(document) && document[i:i+3] == `"""` {
 				i += 3
-				for i+2 < len(document) && document[i:i+3] != `"""` {
+				closed := false
+				for i+2 < len(document) {
+					if document[i] == '\\' && i+3 < len(document) && document[i+1:i+4] == `"""` {
+						i += 4
+						continue
+					}
+					if document[i:i+3] == `"""` {
+						i += 2
+						closed = true
+						break
+					}
 					i++
 				}
-				i += 2
+				if !closed {
+					return fmt.Errorf("unterminated GraphQL block string")
+				}
 				continue
 			}
 			for i++; i < len(document); i++ {
@@ -161,6 +186,50 @@ func validateGraphQLDocumentShape(document string) error {
 			if depth > 0 {
 				depth--
 			}
+		}
+	}
+	return nil
+}
+
+func validateGraphQLDocumentLimits(document *ast.QueryDocument) error {
+	if document == nil {
+		return fmt.Errorf("GraphQL document is empty")
+	}
+	if len(document.Operations) > maxGraphQLOperations {
+		return fmt.Errorf("GraphQL document exceeds %d operations", maxGraphQLOperations)
+	}
+	if len(document.Fragments) > maxGraphQLFragments {
+		return fmt.Errorf("GraphQL document exceeds %d fragments", maxGraphQLFragments)
+	}
+	totalSelections := 0
+	var countSelections func(set ast.SelectionSet) error
+	countSelections = func(set ast.SelectionSet) error {
+		totalSelections += len(set)
+		if totalSelections > maxGraphQLSelections {
+			return fmt.Errorf("GraphQL query exceeds %d selections", maxGraphQLSelections)
+		}
+		for _, sel := range set {
+			switch typed := sel.(type) {
+			case *ast.Field:
+				if err := countSelections(typed.SelectionSet); err != nil {
+					return err
+				}
+			case *ast.InlineFragment:
+				if err := countSelections(typed.SelectionSet); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, op := range document.Operations {
+		if err := countSelections(op.SelectionSet); err != nil {
+			return err
+		}
+	}
+	for _, frag := range document.Fragments {
+		if err := countSelections(frag.SelectionSet); err != nil {
+			return err
 		}
 	}
 	return nil

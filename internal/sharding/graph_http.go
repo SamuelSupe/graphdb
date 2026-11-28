@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
@@ -33,7 +34,10 @@ func writeGraphError(w http.ResponseWriter, err error, conflictCode string) {
 		return
 	}
 	status, code := http.StatusInternalServerError, "internal_error"
+	var budget *partition.MutationBudgetError
 	switch {
+	case errors.As(err, &budget):
+		status, code = http.StatusUnprocessableEntity, string(httpapi.ErrorCodeMutationBudget)
 	case errors.Is(err, partition.ErrPartitionCorrupt):
 		status, code = http.StatusInternalServerError, "partition_corrupt"
 	case errors.Is(err, partition.ErrShardUnavailable):
@@ -74,32 +78,6 @@ func graphDecode(w http.ResponseWriter, r *http.Request, value any) bool {
 	return true
 }
 
-func (c *Client) admitGraph(key string, write bool) func() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	slots, total, tenantLimit, limit := &c.graphReadSlots, &c.graphReads, 8, 32
-	if write {
-		slots, total, tenantLimit, limit = &c.graphWriteSlots, &c.graphWrites, 1, 8
-	}
-	if *total >= limit || (*slots)[key] >= tenantLimit {
-		return nil
-	}
-	if *slots == nil {
-		*slots = make(map[string]int)
-	}
-	(*slots)[key]++
-	*total++
-	return func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		*total--
-		(*slots)[key]--
-		if (*slots)[key] == 0 {
-			delete(*slots, key)
-		}
-	}
-}
-
 func graphDataSupported(r *http.Request) bool {
 	path := r.URL.Path
 	return r.Method == http.MethodPost && (path == "/v1/commits" || path == "/v1/query" || path == "/v1/query/stream") ||
@@ -108,7 +86,7 @@ func graphDataSupported(r *http.Request) bool {
 }
 
 func (c *Client) admitGraphRequest(w http.ResponseWriter, r *http.Request, home partition.Group, tenant string) func() {
-	release := c.admitGraph(home.ClusterID+"/"+tenant, r.URL.Path == "/v1/commits")
+	release := c.graphAdmission.acquire(r.Context(), graphScope{home.ClusterID, tenant}, r.URL.Path == "/v1/commits")
 	if release == nil {
 		w.Header().Set("Retry-After", "1")
 		graphJSON(w, http.StatusTooManyRequests, map[string]any{"code": "graph_busy", "error": "graph request concurrency budget is exhausted", "retryable": true})
@@ -163,7 +141,7 @@ func serveGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 			}
 			request.IdempotencyKey = header
 		}
-		result, err := (partition.Engine{Remote: remote, Home: home, Tenant: g.Tenant, Generation: g.Generation}).Submit(r.Context(), request)
+		result, err := (partition.Engine{Remote: remote, Home: home, Tenant: g.Tenant, Generation: g.Generation, BatchFragments: true}).SubmitWithGraph(r.Context(), request, &g)
 		if err != nil {
 			writeGraphError(w, err, "write_conflict")
 		} else {
@@ -226,14 +204,34 @@ func serveGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 			}
 			limit = parsed
 		}
+		shard := strings.TrimSpace(r.URL.Query().Get("shard"))
+		if shard != "" && shard != "default" {
+			if len(shard) != 2 {
+				graphError(w, fmt.Errorf("%w: invalid entity shard %q", storage.ErrInvalidArgument, shard))
+				return true
+			}
+			if _, err := strconv.ParseUint(shard, 16, 8); err != nil || shard != strings.ToLower(shard) {
+				graphError(w, fmt.Errorf("%w: invalid entity shard %q", storage.ErrInvalidArgument, shard))
+				return true
+			}
+		}
+		source := strings.TrimSpace(r.URL.Query().Get("source"))
 		request := query.Request{Op: "match", Kind: r.URL.Query().Get("kind"), Limit: limit, Cursor: r.URL.Query().Get("cursor")}
 		freshness, _ := httpapi.ParseReadFreshness(r, httpapi.ReadFreshness{})
 		request.MinVersion = freshness.MinVersion
 		request.AllowStale = freshness.AllowStale
-		if source := r.URL.Query().Get("source"); source != "" {
-			request.Where = []query.Filter{{Field: "source", Value: source}}
+		var predicate func(graph.Entity) bool
+		filterTag := ""
+		if shard != "" || source != "" {
+			filterTag = "shard=" + shard + "\x00source=" + source
+			predicate = func(entity graph.Entity) bool {
+				if shard != "" && !storage.IndexShardIDMatches(entity.ID, shard) {
+					return false
+				}
+				return storage.EntityMatchesSource(entity, source)
+			}
 		}
-		response, err := partition.ExecutePinnedQuery(r.Context(), remote, home, g, request)
+		response, err := partition.ExecutePinnedQueryWithFilter(r.Context(), remote, home, g, request, filterTag, predicate)
 		if err != nil {
 			graphError(w, err)
 			return true

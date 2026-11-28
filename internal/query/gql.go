@@ -30,6 +30,15 @@ type gqlParser struct {
 	tokens      []gqlToken
 	pos         int
 	filterDepth int
+	filterNodes int
+}
+
+func (p *gqlParser) addFilterNode() error {
+	p.filterNodes++
+	if p.filterNodes > maxFilterExpressionNodes {
+		return fmt.Errorf("%w: filter expression exceeds %d nodes", ErrInvalid, maxFilterExpressionNodes)
+	}
+	return nil
 }
 
 func (p *gqlParser) parse() (Request, error) {
@@ -334,37 +343,78 @@ func (p *gqlParser) parseFilterExpr() (*FilterExpr, error) {
 }
 
 func (p *gqlParser) parseOrExpr() (*FilterExpr, error) {
-	left, err := p.parseAndExpr()
+	first, err := p.parseAndExpr()
 	if err != nil {
 		return nil, err
 	}
-	for p.matchKeyword("OR") {
+	if !p.matchKeyword("OR") {
+		return first, nil
+	}
+	if err := p.addFilterNode(); err != nil {
+		return nil, err
+	}
+	children := make([]FilterExpr, 0, 4)
+	if first.Op == "or" && first.Field == "" {
+		children = append(children, first.Children...)
+	} else {
+		children = append(children, *first)
+	}
+	for {
 		right, err := p.parseAndExpr()
 		if err != nil {
 			return nil, err
 		}
-		left = combineFilterExpr("or", left, right)
+		if right.Op == "or" && right.Field == "" {
+			children = append(children, right.Children...)
+		} else {
+			children = append(children, *right)
+		}
+		if !p.matchKeyword("OR") {
+			break
+		}
 	}
-	return left, nil
+	return &FilterExpr{Op: "or", Children: children}, nil
 }
 
 func (p *gqlParser) parseAndExpr() (*FilterExpr, error) {
-	left, err := p.parseNotExpr()
+	first, err := p.parseNotExpr()
 	if err != nil {
 		return nil, err
 	}
-	for p.matchKeyword("AND") {
+	if !p.matchKeyword("AND") {
+		return first, nil
+	}
+	if err := p.addFilterNode(); err != nil {
+		return nil, err
+	}
+	children := make([]FilterExpr, 0, 4)
+	if first.Op == "and" && first.Field == "" {
+		children = append(children, first.Children...)
+	} else {
+		children = append(children, *first)
+	}
+	for {
 		right, err := p.parseNotExpr()
 		if err != nil {
 			return nil, err
 		}
-		left = combineFilterExpr("and", left, right)
+		if right.Op == "and" && right.Field == "" {
+			children = append(children, right.Children...)
+		} else {
+			children = append(children, *right)
+		}
+		if !p.matchKeyword("AND") {
+			break
+		}
 	}
-	return left, nil
+	return &FilterExpr{Op: "and", Children: children}, nil
 }
 
 func (p *gqlParser) parseNotExpr() (*FilterExpr, error) {
 	if p.matchKeyword("NOT") {
+		if err := p.addFilterNode(); err != nil {
+			return nil, err
+		}
 		if err := p.enterFilterNesting(); err != nil {
 			return nil, err
 		}
@@ -409,6 +459,9 @@ func (p *gqlParser) leaveFilterNesting() {
 }
 
 func (p *gqlParser) parseConditionExpr() (*FilterExpr, error) {
+	if err := p.addFilterNode(); err != nil {
+		return nil, err
+	}
 	if p.matchKeyword("EXISTS") {
 		field, err := p.expectValueToken("field")
 		return &FilterExpr{Field: field, Op: "exists", Value: true}, err
@@ -611,11 +664,19 @@ func (p *gqlParser) parseValue() (any, error) {
 		return token.value, nil
 	case gqlNumber:
 		if strings.ContainsAny(token.value, ".eE") {
-			return strconv.ParseFloat(token.value, 64)
+			value, err := strconv.ParseFloat(token.value, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%w: invalid number %q", ErrInvalid, token.value)
+			}
+			return value, nil
 		}
 		value, err := strconv.ParseInt(token.value, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid number %q", ErrInvalid, token.value)
+		}
+		const maxExactFloat64Int = int64(1) << 53
+		if value > maxExactFloat64Int || value < -maxExactFloat64Int {
+			return nil, fmt.Errorf("%w: integer literal %q exceeds IEEE-754 exact precision (2^53)", ErrInvalid, token.value)
 		}
 		return value, nil
 	case gqlIdent:
@@ -681,7 +742,8 @@ func (p *gqlParser) expectValueToken(name string) (string, error) {
 }
 
 func (p *gqlParser) matchKeyword(value string) bool {
-	if !strings.EqualFold(p.peek().value, value) {
+	tok := p.peek()
+	if tok.kind != gqlIdent || !strings.EqualFold(tok.value, value) {
 		return false
 	}
 	p.pos++
@@ -689,11 +751,16 @@ func (p *gqlParser) matchKeyword(value string) bool {
 }
 
 func (p *gqlParser) peekKeyword(value string) bool {
-	return strings.EqualFold(p.peek().value, value)
+	tok := p.peek()
+	return tok.kind == gqlIdent && strings.EqualFold(tok.value, value)
 }
 
 func (p *gqlParser) peekPathStepBoundary() bool {
-	switch strings.ToUpper(p.peek().value) {
+	tok := p.peek()
+	if tok.kind != gqlIdent {
+		return false
+	}
+	switch strings.ToUpper(tok.value) {
 	case "PROJECT", "ORDER", "SORT", "AGG", "AGGREGATE", "GROUP", "HAVING", "LIMIT", "DEPTH", "PATH", "END", "OUT", "IN", "BOTH":
 		return true
 	default:

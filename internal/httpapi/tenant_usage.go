@@ -25,7 +25,7 @@ func (s *Server) tenantUsage(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, report)
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageErrorDefault(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)

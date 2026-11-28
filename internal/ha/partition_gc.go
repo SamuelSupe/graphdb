@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -42,9 +43,79 @@ func (c *Cluster) planGCSteps(ctx context.Context, actions []partition.Action) e
 
 func (c *Cluster) planGCStep(ctx context.Context, a *partition.Action, state partition.DataState) error {
 	finish := c.metrics.Start("partition_gc_scan")
+	c.App.mu.RLock()
 	err := c.App.partitionStore().PlanGCSweep(ctx, a, state)
+	c.App.mu.RUnlock()
 	finish(err)
 	return err
+}
+
+func (c *Cluster) recoverPartitionSnapshotBudget(ctx context.Context, g partition.Graph, blocked error) error {
+	if g.GC != nil && g.GC.Phase != "collect" {
+		_, err := c.drivePartitionGC(ctx, g)
+		return err
+	}
+	if c.config.Protocol < partition.RecoveryGCProtocol || g.Active == nil || g.Active.State != "preparing" ||
+		(g.State != "active" && g.State != "initializing") || g.Move != nil || g.LastRecoveryGCSequence == g.Active.Sequence {
+		return blocked
+	}
+	workers, workCtx := errgroup.WithContext(ctx)
+	workers.SetLimit(4)
+	seen := map[string]bool{c.App.ShardID: true}
+	for _, placement := range g.Partitions {
+		if seen[placement.Group] {
+			continue
+		}
+		seen[placement.Group] = true
+		group := g.Groups[placement.Group]
+		workers.Go(func() error {
+			shard := sharding.Shard{ID: group.ID, ClusterID: group.ClusterID, Peers: group.Peers}
+			var identity struct {
+				Shard    string `json:"shard_id"`
+				Cluster  string `json:"cluster_id"`
+				Protocol int    `json:"protocol_version"`
+			}
+			if err := c.shards.JSON(workCtx, shard, http.MethodGet, "/cluster/identity", nil, &identity); err != nil {
+				return err
+			}
+			if identity.Shard != group.ID || identity.Cluster != group.ClusterID || identity.Protocol < partition.RecoveryGCProtocol {
+				return fmt.Errorf("snapshot recovery GC requires protocol %d on graph group %s", partition.RecoveryGCProtocol, group.ID)
+			}
+			return nil
+		})
+	}
+	if err := workers.Wait(); err != nil {
+		return errors.Join(blocked, err)
+	}
+	id := ""
+	if g.GC != nil {
+		id = g.GC.ID
+	} else {
+		cmd, err := newCommand("graph_gc")
+		if err != nil {
+			return err
+		}
+		id = cmd.ID
+	}
+	remote := sharding.GraphRemote{Client: c.shards}
+	return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "graph_gc_begin", Tenant: g.Tenant,
+		Generation: g.Generation, Txn: id, Sequence: g.Active.Sequence}, nil)
+}
+
+func (c *Cluster) drivePartitionGC(ctx context.Context, g partition.Graph) (partition.Graph, error) {
+	maintenance, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		if err := c.advancePartitionGC(maintenance, g); err != nil {
+			return g, err
+		}
+		next, err := c.App.graphDescriptor(maintenance, g.Tenant)
+		if err != nil || c.config.Protocol < partition.BufferedGCProtocol || next.GC == nil || next.GC.Phase != "starting" {
+			return next, err
+		}
+		// Keep installing bounded waves while the startup fence blocks writes.
+		g = next
+	}
 }
 
 func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (err error) {
@@ -72,7 +143,9 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 		}()
 	}
 	if g.GC.Phase == "inputs" {
+		c.App.mu.RLock()
 		plan, err := c.App.partitionStore().InputGCPlan(ctx, g)
+		c.App.mu.RUnlock()
 		if err != nil {
 			return err
 		}
@@ -103,10 +176,12 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 		if g.GC.Phase == "starting" {
 			action.Roots = roots[id]
 			action.Operation = "data_gc_begin"
+			action.Sequence = g.GC.RecoverySequence
 		} else {
 			action.Operation = "data_gc_step"
 			if g.GC.Phase == "cancel" {
 				action.Purpose = "cancel"
+				action.Sequence = g.GC.RecoverySequence
 			}
 		}
 		actions = append(actions, action)

@@ -258,7 +258,7 @@ func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantR
 	}, map[string]any{"phase": "restore_load_backup", "backup_key": backupKey}); err != nil {
 		return TenantRestoreReport{}, err
 	}
-	input, err := s.loadTenantBackupInput(ctx, backupKey)
+	input, err := s.loadTenantBackupInputForTenant(ctx, backupKey, requiredTenantRestoreSource(task))
 	if err != nil {
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_load_backup", 1, total, taskActionUpdate{ID: "load_backup", Err: err}, nil)
 		return TenantRestoreReport{}, err
@@ -586,16 +586,29 @@ type tenantBackupInput struct {
 }
 
 func (s *TenantStore) loadTenantBackupInput(ctx context.Context, backupKey string) (tenantBackupInput, error) {
+	return s.loadTenantBackupInputForTenant(ctx, backupKey, "")
+}
+
+func (s *TenantStore) loadTenantBackupInputForTenant(ctx context.Context, backupKey string, requiredSourceTenant string) (tenantBackupInput, error) {
 	if input, ok := ctx.Value(replicatedRestoreKey{}).(tenantBackupInput); ok {
+		if requiredSourceTenant != "" && input.Record.TenantID != requiredSourceTenant {
+			return tenantBackupInput{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
+		}
 		return input, nil
 	}
 	if strings.HasPrefix(backupKey, "s3://") {
-		return s.loadObjectBackupInput(ctx, backupKey)
+		return s.loadObjectBackupInputForTenant(ctx, backupKey, requiredSourceTenant)
 	}
-	if _, _, ok := s.backupManifestIdentityFromKey(backupKey); ok {
+	if manifestTenant, _, ok := s.backupManifestIdentityFromKey(backupKey); ok {
+		if requiredSourceTenant != "" && manifestTenant != requiredSourceTenant {
+			return tenantBackupInput{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
+		}
 		manifest, err := s.loadBackupManifest(ctx, backupKey)
 		if err != nil {
 			return tenantBackupInput{}, err
+		}
+		if requiredSourceTenant != "" && manifest.TenantID != requiredSourceTenant {
+			return tenantBackupInput{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
 		}
 		integrity := s.validateBackupManifest(ctx, manifest)
 		record, err := s.loadTenantBackupRecord(ctx, manifest.BackupRecordKey)
@@ -607,9 +620,17 @@ func (s *TenantStore) loadTenantBackupInput(ctx context.Context, backupKey strin
 		}
 		return tenantBackupInput{Record: record, ManifestKey: backupKey, Integrity: integrity}, nil
 	}
+	if keyTenant, _, ok := s.taskResultIdentityFromKey(backupKey); ok {
+		if requiredSourceTenant != "" && keyTenant != requiredSourceTenant {
+			return tenantBackupInput{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
+		}
+	}
 	record, err := s.loadTenantBackupRecord(ctx, backupKey)
 	if err != nil {
 		return tenantBackupInput{}, err
+	}
+	if requiredSourceTenant != "" && record.TenantID != requiredSourceTenant {
+		return tenantBackupInput{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
 	}
 	return tenantBackupInput{
 		Record: record,
@@ -642,11 +663,20 @@ func (s *TenantStore) loadTenantBackupRecord(ctx context.Context, backupKey stri
 	return record, err
 }
 
-func validateTenantRestoreSource(task Task, record TenantBackupRecord) error {
-	source := stringTaskParam(task.Params, "required_source_tenant")
+func requiredTenantRestoreSource(task Task) string {
+	return requiredTenantRestoreSourceFromParams(task.TenantID, task.Params)
+}
+
+func requiredTenantRestoreSourceFromParams(tenantID string, params map[string]any) string {
+	source := stringTaskParam(params, "required_source_tenant")
 	if source == "" {
-		source = task.TenantID
+		return tenantID
 	}
+	return source
+}
+
+func validateTenantRestoreSource(task Task, record TenantBackupRecord) error {
+	source := requiredTenantRestoreSource(task)
 	if record.TenantID != source {
 		return fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
 	}

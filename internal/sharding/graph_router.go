@@ -51,6 +51,43 @@ func (r *Router) graphAdmin(w http.ResponseWriter, request *http.Request) bool {
 	if r.graphMove(w, request, state) {
 		return true
 	}
+	if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/cancel") {
+		tenant := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/v1/cluster/graphs/"), "/cancel")
+		if storage.ValidateTenantID(tenant) != nil {
+			http.NotFound(w, request)
+			return true
+		}
+		p, exists := state.Tenants[tenant]
+		if !exists {
+			http.NotFound(w, request)
+			return true
+		}
+		if p.State != "partitioning" && p.State != "partition_cancelling" {
+			r.writeJSON(w, http.StatusConflict, map[string]any{"error": "tenant is not awaiting graph conversion"})
+			return true
+		}
+		var identity struct {
+			Protocol int `json:"protocol_version"`
+		}
+		if err := r.Client.JSON(request.Context(), state.Shards[p.Shard], http.MethodGet, "/cluster/identity", nil, &identity); err != nil {
+			r.writeError(w, err)
+			return true
+		}
+		if identity.Protocol < partition.ConversionCancellationProtocol {
+			r.writeJSON(w, http.StatusConflict, map[string]any{"error": "conversion cancellation requires home Raft protocol 13"})
+			return true
+		}
+		var result Placement
+		if err := r.Client.JSON(request.Context(), r.Catalog, http.MethodPost, "/cluster/action", Action{
+			Operation: "cancel_partition", Tenant: tenant, Epoch: p.Epoch, PartitionAttempt: p.PartitionAttempt, Error: "conversion cancelled by operator",
+		}, &result); err != nil {
+			r.writeError(w, err)
+			return true
+		}
+		r.forgetPlacement(tenant)
+		r.writeJSON(w, http.StatusAccepted, result)
+		return true
+	}
 	if request.Method == http.MethodGet {
 		tenant := strings.TrimPrefix(request.URL.Path, "/v1/cluster/graphs/")
 		p, ok := state.Tenants[tenant]

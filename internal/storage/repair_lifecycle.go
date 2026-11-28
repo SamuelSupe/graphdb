@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 func (s *TenantStore) tenantLifecycleIssues(ctx context.Context, tenantID string) []RepairIssue {
@@ -79,8 +80,20 @@ func (s *TenantStore) repairTenantMetadata(ctx context.Context, tenantID string)
 		return err
 	}
 	ctx = boundCtx
-	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+	purged, err := s.tenantPurgeTombstoneExists(ctx, tenantID)
+	if err != nil {
 		return err
+	}
+	if purged {
+		return fmt.Errorf("%w: tenant %q is deleted", ErrTenantDeleted, tenantID)
+	}
+	if existing, exists, _, metaErr := s.getTenantMetadataWithMeta(ctx, tenantID); metaErr == nil && exists {
+		switch existing.Status {
+		case TenantStatusDisabled:
+			return fmt.Errorf("%w: tenant %q is disabled", ErrTenantDisabled, tenantID)
+		case TenantStatusDeleted:
+			return fmt.Errorf("%w: tenant %q is deleted", ErrTenantDeleted, tenantID)
+		}
 	}
 	manifest, _, _ := s.getManifest(ctx, tenantID)
 	now := mutationTime(ctx)

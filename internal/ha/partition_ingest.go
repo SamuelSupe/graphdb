@@ -15,14 +15,16 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-type partitionIngestAlias struct {
+type ingestAlias struct {
 	Key    string `json:"key"`
 	Digest string `json:"digest"`
 	Index  uint64 `json:"accepted_lsn,omitempty"`
+	Epoch  uint64 `json:"accepted_epoch,omitempty"`
 }
 
 func partitionIngestIdentity(key string) string {
@@ -56,31 +58,35 @@ func (a *Application) readPartitionIngestInput(ctx context.Context, objects stor
 
 // An idempotency key may be retried with a new batch ID. Bind it to the first
 // acceptance, keeping aliases outside the pending-record scan.
-func partitionIngestDigest(request storage.IngestRequest) string {
+func ingestAliasDigest(request storage.IngestRequest) string {
 	request.BatchID = ""
 	data, _ := json.Marshal(request)
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
-func (a *Application) partitionIngestAliasKey(tenant string, generation int64, request storage.IngestRequest) string {
+func (a *Application) ingestAliasKey(tenant string, generation int64, request storage.IngestRequest) string {
 	key := a.ingestKey(tenant, request.Source, request.CollectorID, request.IdempotencyKey, generation)
 	return path.Join(a.Store.Prefix, "control", "partition-ingest-identities", path.Base(key))
 }
 
-func (a *Application) partitionIngestAlias(ctx context.Context, tenant string, generation int64, request storage.IngestRequest) (partitionIngestAlias, bool, error) {
-	data, err := a.Store.Objects.Get(ctx, a.partitionIngestAliasKey(tenant, generation, request))
+func (a *Application) ingestAlias(ctx context.Context, tenant string, generation int64, request storage.IngestRequest) (ingestAlias, bool, error) {
+	data, err := a.Store.Objects.Get(ctx, a.ingestAliasKey(tenant, generation, request))
 	if errors.Is(err, storage.ErrNotFound) {
-		return partitionIngestAlias{}, false, nil
+		return ingestAlias{}, false, nil
 	}
-	var alias partitionIngestAlias
+	var alias ingestAlias
 	if err == nil {
 		err = json.Unmarshal(data, &alias)
 	}
 	return alias, err == nil, err
 }
 
-func (a *Application) savePartitionIngestAlias(ctx context.Context, record acceptedRequest, key string) error {
-	alias := partitionIngestAlias{Key: key, Digest: partitionIngestDigest(record.Request)}
+func (a *Application) saveIngestAlias(ctx context.Context, record acceptedRequest, key string) error {
+	digest := record.AliasDigest
+	if digest == "" {
+		digest = ingestAliasDigest(record.Request)
+	}
+	alias := ingestAlias{Key: key, Digest: digest, Epoch: record.AcceptedEpoch}
 	if record.ReceiptRetention > 0 {
 		alias.Index = record.Index
 	}
@@ -88,7 +94,7 @@ func (a *Application) savePartitionIngestAlias(ctx context.Context, record accep
 	if err != nil {
 		return err
 	}
-	return a.Store.Objects.Put(ctx, a.partitionIngestAliasKey(record.Tenant, record.Generation, record.Request), data)
+	return a.Store.Objects.Put(ctx, a.ingestAliasKey(record.Tenant, record.Generation, record.Request), data)
 }
 
 func (c *Cluster) servePartitionIngest(w http.ResponseWriter, r *http.Request, body []byte, g partition.Graph) bool {
@@ -152,6 +158,10 @@ func (c *Cluster) servePartitionIngest(w http.ResponseWriter, r *http.Request, b
 		data, err = c.propose(r.Context(), cmd)
 	}
 	if err != nil {
+		if errors.Is(err, replication.ErrNotLeader) {
+			c.forward(w, r, body, false, true)
+			return true
+		}
 		c.writeError(w, err)
 		return true
 	}
@@ -220,7 +230,7 @@ func (a *Application) completePartitionIngest(ctx context.Context, cmd command) 
 		return resultJSON(http.StatusBadRequest, map[string]any{"error": "invalid partitioned acceptance identity"})
 	}
 	record, err := a.accepted(ctx, cmd.IDs[0])
-	if errors.Is(err, storage.ErrNotFound) && cmd.PartitionAcceptedIndex != 0 {
+	if errors.Is(err, storage.ErrNotFound) {
 		return resultJSON(http.StatusConflict, map[string]any{"error": "ingest acceptance was reclaimed"})
 	}
 	if err != nil {
@@ -261,10 +271,15 @@ func (a *Application) completeGraphIngestReceipt(ctx context.Context, ref string
 	if err != nil {
 		return err
 	}
+	if record.Partitioned && record.Tenant == txn.Tenant && record.Generation == txn.Generation && record.State != "accepted" &&
+		txn.Identity == partitionIngestTxnIdentity(key, record.Index, record.ReceiptRetention > 0) &&
+		txn.IngestResult != nil && record.Request.BatchID == txn.IngestResult.BatchID {
+		return nil
+	}
 	if !record.Partitioned || record.Tenant != txn.Tenant || record.Generation != txn.Generation || record.State != "accepted" ||
 		txn.Identity != partitionIngestTxnIdentity(key, record.Index, record.ReceiptRetention > 0) ||
-		record.Request.BatchID != txn.IngestResult.BatchID {
-		return fmt.Errorf("graph completion does not match the durable ingest acceptance")
+		txn.IngestResult == nil || record.Request.BatchID != txn.IngestResult.BatchID {
+		return fmt.Errorf("%w: graph completion does not match the durable ingest acceptance", storage.ErrConflict)
 	}
 	return a.savePartitionIngestResult(ctx, key, record, txn, at, true)
 }
@@ -365,12 +380,16 @@ func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph, p
 		return false, err
 	}
 	key, err := c.App.firstPartitionIngest(ctx, g.Tenant, g.Generation)
-	var record acceptedRequest
+	var raw []byte
 	if err == nil && key != "" {
-		record, err = c.App.accepted(ctx, key)
+		raw, err = c.App.Files.Get(ctx, key)
 	}
 	c.App.mu.RUnlock()
 	if err != nil || key == "" {
+		return false, err
+	}
+	var record acceptedRequest
+	if err := json.Unmarshal(raw, &record); err != nil {
 		return false, err
 	}
 	finish := c.metrics.Start("partition_wal_execute")

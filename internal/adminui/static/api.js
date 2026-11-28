@@ -1,7 +1,9 @@
 import { readPreference, savePreference, t } from './i18n.js';
 
-const gatewayPrefix = location.pathname.endsWith('/admin/ui/') ? '/admin' : '';
-const defaults = { data: location.origin, admin: location.origin + gatewayPrefix, router: '', raft: '', clusterID: '' };
+const uiPathMatch = location.pathname.match(/^(.*)\/ui(?:\/.*)?$/);
+const uiBasePrefix = uiPathMatch ? uiPathMatch[1] : '';
+const dataPrefix = uiBasePrefix.endsWith('/admin') ? uiBasePrefix.slice(0, -'/admin'.length) : uiBasePrefix;
+const defaults = { data: location.origin + dataPrefix, admin: location.origin + uiBasePrefix, router: '', raft: '', clusterID: '' };
 let stored;
 try { stored = JSON.parse(readPreference('graphdb.endpoints', '{}')); } catch { stored = {}; }
 export const settings = { ...defaults, ...stored, token: '', routerToken: '', raftToken: '' };
@@ -35,22 +37,33 @@ export function parseJSON(text) {
 export const json = value => JSON.stringify(value, null, 2);
 export const scalar = value => JSON.isRawJSON?.(value) ? value.rawJSON : (typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '—'));
 export const pathID = value => encodeURIComponent(value);
+export function uuid() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 export const params = values => {
   const query = new URLSearchParams(Object.entries(values).filter(([, value]) => value !== '' && value !== undefined));
   return query.size ? '?' + query.toString() : '';
 };
 
 export async function request(endpoint, path, options = {}) {
-  const { method = 'GET', body, signal, headers = {}, raw = false, tenantID = tenant } = options;
+  const { method = 'GET', body, signal, headers = {}, raw = false, blob = false, timeoutMs, tenantID = tenant } = options;
   const base = settings[endpoint];
   if (!base) throw new Error(t('clusterHint'));
   const token = endpoint === 'raft' ? settings.raftToken : endpoint === 'router' ? settings.routerToken : settings.token;
-  const requestHeaders = { Accept: raw ? '*/*' : 'application/json', ...headers };
+  const requestHeaders = { Accept: raw || blob ? '*/*' : 'application/json', ...headers };
   if (tenantID) requestHeaders['X-Tenant-ID'] = tenantID;
   if (token) requestHeaders.Authorization = 'Bearer ' + token;
   if (endpoint === 'raft' && settings.clusterID) requestHeaders['X-Raft-Cluster'] = settings.clusterID;
   if (body !== undefined && !requestHeaders['Content-Type']) requestHeaders['Content-Type'] = 'application/json';
-  const timeout = AbortSignal.timeout(method === 'GET' ? 60000 : 600000);
+  const timeout = AbortSignal.timeout(timeoutMs ?? (method === 'GET' ? 60000 : 600000));
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let response;
   try {
@@ -59,10 +72,15 @@ export async function request(endpoint, path, options = {}) {
     if (signal?.aborted) throw error;
     throw new Error(t('unknownResult'), { cause: error });
   }
+  if (blob && response.ok) {
+    return { data: await response.blob(), status: response.status, headers: response.headers };
+  }
   const text = await response.text();
   let data = text;
   const contentType = response.headers.get('Content-Type')?.split(';')[0].toLowerCase();
-  if (text && (!raw || !response.ok) && (contentType === 'application/json' || contentType?.endsWith('+json'))) data = parseJSON(text);
+  if (text && (!raw || !response.ok) && (contentType === 'application/json' || contentType?.endsWith('+json'))) {
+    try { data = parseJSON(text); } catch { data = text; }
+  }
   if (!response.ok) {
     const error = new Error(`${response.status} · ${data?.message || data?.error || text || response.statusText}`);
     error.status = response.status;

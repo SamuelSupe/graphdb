@@ -92,6 +92,9 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 			if err := s.syncPendingDirectories(); err != nil {
 				return err
 			}
+			if err := s.syncPendingDeleteDirectories(); err != nil {
+				return err
+			}
 			started = time.Now()
 			clear(seen)
 		}

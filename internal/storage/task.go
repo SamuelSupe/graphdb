@@ -11,44 +11,25 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
+	storagetask "github.com/SamuelSupe/graphdb/v2/internal/storage/task"
 )
 
 const (
-	TaskTypeCompact            = "compact"
-	TaskTypeGC                 = "gc"
-	TaskTypeRepair             = "repair"
-	TaskTypeExportSnapshot     = "export_snapshot"
-	TaskTypeReplayDeadLetter   = "replay_deadletters"
-	TaskTypeIndexRebuild       = "index_rebuild"
-	TaskTypeTenantBackup       = "tenant_backup"
-	TaskTypeTenantRestore      = "tenant_restore"
-	TaskTypeTenantRestoreDrill = "tenant_restore_drill"
+	TaskTypeCompact            = storagetask.TypeCompact
+	TaskTypeGC                 = storagetask.TypeGC
+	TaskTypeRepair             = storagetask.TypeRepair
+	TaskTypeExportSnapshot     = storagetask.TypeExportSnapshot
+	TaskTypeReplayDeadLetter   = storagetask.TypeReplayDeadLetter
+	TaskTypeIndexRebuild       = storagetask.TypeIndexRebuild
+	TaskTypeTenantBackup       = storagetask.TypeTenantBackup
+	TaskTypeTenantRestore      = storagetask.TypeTenantRestore
+	TaskTypeTenantRestoreDrill = storagetask.TypeTenantRestoreDrill
 )
 
-type Task struct {
-	ID                string         `json:"id"`
-	TenantID          string         `json:"tenant_id"`
-	Type              string         `json:"type"`
-	Status            string         `json:"status"`
-	Phase             string         `json:"phase,omitempty"`
-	ProgressCompleted int            `json:"progress_completed,omitempty"`
-	ProgressTotal     int            `json:"progress_total,omitempty"`
-	OwnerID           string         `json:"owner_id,omitempty"`
-	Params            map[string]any `json:"params,omitempty"`
-	Checkpoint        map[string]any `json:"checkpoint,omitempty"`
-	Result            map[string]any `json:"result,omitempty"`
-	ResultKey         string         `json:"result_key,omitempty"`
-	Error             string         `json:"error,omitempty"`
-	StartedAt         time.Time      `json:"started_at"`
-	UpdatedAt         time.Time      `json:"updated_at,omitempty"`
-	FinishedAt        time.Time      `json:"finished_at,omitempty"`
-}
-
-type TaskListOptions struct {
-	Type   string
-	Status string
-	Limit  int
-}
+type (
+	Task            = storagetask.Task
+	TaskListOptions = storagetask.ListOptions
+)
 
 func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType string, params map[string]any) (Task, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
@@ -79,8 +60,15 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 		if namespace.Bucket == "" {
 			return Task{}, fmt.Errorf("%w: object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET", ErrInvalidArgument)
 		}
-		if _, _, err := namespace.ParseURI(stringTaskParam(params, "backup_key")); err != nil {
+		uriTenant, _, err := namespace.ParseURI(stringTaskParam(params, "backup_key"))
+		if err != nil {
 			return Task{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		}
+		if EnforceTenantScope(ctx) {
+			required := requiredTenantRestoreSourceFromParams(tenantID, params)
+			if required != "" && uriTenant != required {
+				return Task{}, fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
+			}
 		}
 	}
 
@@ -277,7 +265,10 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 	task.ProgressTotal = taskProgressTotal(task.Type)
 	task.UpdatedAt = mutationTime(ctx)
 	s.trySaveTask(ctx, task)
+	stopHeartbeat := s.startTaskHeartbeat(ctx, task)
+	defer stopHeartbeat()
 	result, resultKey, err := s.runTaskOperation(ctx, task)
+	stopHeartbeat()
 	writeCtx, writeCancel := s.taskFinalizationContext(ctx)
 	defer writeCancel()
 	if task.Type == TaskTypeTenantRestore {
@@ -725,7 +716,9 @@ func (s *TenantStore) getTaskObject(ctx context.Context, tenantID string, taskID
 
 func (s *TenantStore) getTaskObjectWithMeta(ctx context.Context, tenantID string, taskID string) (Task, ObjectMeta, error) {
 	key := s.taskKey(tenantID, taskID)
-	s.clearWriterObjectKey(key)
+	if s.localFileStore() == nil {
+		s.clearWriterObjectKey(key)
+	}
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return Task{}, meta, err

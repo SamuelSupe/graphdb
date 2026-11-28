@@ -247,13 +247,13 @@ func TestStableCursorRejectsChangedFilterWithSameResultSetAnchor(t *testing.T) {
 func TestBlockingSortAddsCandidateCost(t *testing.T) {
 	g := seedPruneGraph(t, 50)
 	plan := PlanQuery(g, Request{Op: "match", Kind: "host", Sort: []SortSpec{{Field: "id"}}})
-	if plan.EstimatedRows != g.Entities.Len() {
+	if plan.EstimatedRows != g.KindCount("host") {
 		t.Fatalf("estimated rows = %d", plan.EstimatedRows)
 	}
 	if plan.EstimatedCost <= plan.EstimatedRows {
 		t.Fatalf("estimated cost = %d, want sort cost included", plan.EstimatedCost)
 	}
-	if plan.Steps[len(plan.Steps)-1].Name != "sort" || plan.Steps[len(plan.Steps)-1].Cost != g.Entities.Len() {
+	if plan.Steps[len(plan.Steps)-1].Name != "sort" || plan.Steps[len(plan.Steps)-1].Cost != g.KindCount("host") {
 		t.Fatalf("sort step = %#v", plan.Steps[len(plan.Steps)-1])
 	}
 }

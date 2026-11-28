@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -155,11 +156,11 @@ func decodeParquetTenantMetadata(ctx context.Context, data []byte) (TenantMetada
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
 			rowMetadata := TenantMetadata{
-				TenantID:    columns.tenantID.Value(i),
-				Status:      normalizeTenantStatus(columns.status.Value(i)),
-				Name:        columns.name.Value(i),
-				Description: columns.description.Value(i),
-				ClonedFrom:  columns.clonedFrom.Value(i),
+				TenantID:    strings.Clone(columns.tenantID.Value(i)),
+				Status:      strings.Clone(normalizeTenantStatus(columns.status.Value(i))),
+				Name:        strings.Clone(columns.name.Value(i)),
+				Description: strings.Clone(columns.description.Value(i)),
+				ClonedFrom:  strings.Clone(columns.clonedFrom.Value(i)),
 				CreatedAt:   parquetio.ParseTime(columns.createdAt.Value(i)),
 				UpdatedAt:   parquetio.ParseTime(columns.updatedAt.Value(i)),
 				DisabledAt:  parquetio.ParseTime(columns.disabledAt.Value(i)),
@@ -167,7 +168,7 @@ func decodeParquetTenantMetadata(ctx context.Context, data []byte) (TenantMetada
 			}
 			if rows == 0 {
 				metadata = rowMetadata
-				expectedHash = columns.contentHash.Value(i)
+				expectedHash = strings.Clone(columns.contentHash.Value(i))
 				labelCount = columns.labelCount.Value(i)
 				metadataCount = columns.metadataCount.Value(i)
 			} else if !sameTenantMetadataBase(metadata, rowMetadata) ||
@@ -276,13 +277,13 @@ func decodeParquetTenantRegistry(ctx context.Context, data []byte) (tenantRegist
 		for i := 0; i < int(batch.NumRows()); i++ {
 			if rows == 0 {
 				count = countColumn.Value(i)
-				registry.UpdatedAt = updatedAtColumn.Value(i)
-				expectedHash = hashColumn.Value(i)
+				registry.UpdatedAt = strings.Clone(updatedAtColumn.Value(i))
+				expectedHash = strings.Clone(hashColumn.Value(i))
 			}
 			if count != countColumn.Value(i) || registry.UpdatedAt != updatedAtColumn.Value(i) || expectedHash != hashColumn.Value(i) {
 				return tenantRegistry{}, fmt.Errorf("tenant registry identity mismatch")
 			}
-			tenantID := tenantIDColumn.Value(i)
+			tenantID := strings.Clone(tenantIDColumn.Value(i))
 			if tenantID != "" {
 				if int64(len(registry.TenantIDs)) != ordinalColumn.Value(i) {
 					return tenantRegistry{}, fmt.Errorf("tenant registry ordinal mismatch")
@@ -399,11 +400,11 @@ func parquetTenantMetadataColumns(batch arrow.RecordBatch) (parquetTenantMetadat
 
 func tenantMetadataEntryFromColumns(columns parquetTenantMetadataColumnSet, row int) tenantMetadataEntry {
 	return tenantMetadataEntry{
-		RowKind:     columns.rowKind.Value(row),
+		RowKind:     strings.Clone(columns.rowKind.Value(row)),
 		Ordinal:     int(columns.ordinal.Value(row)),
-		Key:         columns.entryKey.Value(row),
-		ValueKind:   columns.valueKind.Value(row),
-		StringValue: columns.stringValue.Value(row),
+		Key:         strings.Clone(columns.entryKey.Value(row)),
+		ValueKind:   strings.Clone(columns.valueKind.Value(row)),
+		StringValue: strings.Clone(columns.stringValue.Value(row)),
 		BoolValue:   columns.boolValue.Value(row),
 		FloatValue:  columns.floatValue.Value(row),
 	}

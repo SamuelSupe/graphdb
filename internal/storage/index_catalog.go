@@ -151,7 +151,9 @@ type IndexCatalog struct {
 }
 
 func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (IndexCatalog, error) {
-	ctx = context.WithValue(ctx, adjacencyBuildKey{}, true)
+	ctx = s.withBuildOpts(ctx, func(opts *IndexBuildOpts) {
+		opts.AdjacencyEnabled = true
+	})
 	return s.rebuildIndexes(ctx, tenantID)
 }
 
@@ -232,6 +234,8 @@ func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID stri
 	if found && previous.Version > manifest.Version {
 		return previous, nil
 	}
+	mutator := s.catalogMutator()
+	ctx = mutator.WithAdjacencyInheritance(ctx, previous, found)
 	definitions, err := s.getIndexDefinitions(ctx, tenantID)
 	if err != nil {
 		return IndexCatalog{}, err
@@ -259,7 +263,8 @@ func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID stri
 	if err := s.writeParquetEdgeShards(ctx, tenantID, artifacts.EdgeShards); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.writeParquetEntityPages(ctx, tenantID, artifacts.EntityPages, manifest.Version); err != nil {
+	entityRecordJobs, entityRecordCurrentIDs, err := s.writeParquetEntityPagesDeferredRecords(ctx, tenantID, artifacts.EntityPages, manifest.Version, true)
+	if err != nil {
 		return IndexCatalog{}, err
 	}
 	reverseCatalog, reverseMeta, err := s.prepareReverseIndex(ctx, tenantID, g, manifest.Version)
@@ -287,15 +292,28 @@ func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID stri
 	if !slices.Equal(definitions, currentDefinitions) {
 		return IndexCatalog{}, fmt.Errorf("%w: index definitions changed while rebuilding indexes", ErrConflict)
 	}
-	_, err = s.putIndexCatalogWithMeta(ctx, tenantID, catalog, previousMeta)
-	if err != nil {
-		s.deleteCachedIndexCatalog(tenantID)
+	currentCatalog, currentMeta, currentFound := s.previousIndexCatalog(ctx, tenantID)
+	if currentFound && currentCatalog.Version > manifest.Version {
+		return currentCatalog, nil
+	}
+	if currentFound != found || (currentFound && currentMeta.ETag != previousMeta.ETag) {
+		return IndexCatalog{}, fmt.Errorf("%w: index catalog changed while rebuilding indexes", ErrConflict)
+	}
+	if s.WriteEntityRecords {
+		if err := mutator.PublishEntityRecords(ctx, entityRecordJobs); err != nil {
+			return IndexCatalog{}, err
+		}
+		if err := s.tombstoneStaleEntityRecords(ctx, tenantID, entityRecordCurrentIDs, manifest.Version); err != nil {
+			return IndexCatalog{}, err
+		}
+	}
+	if _, err := mutator.PublishForwardCatalog(ctx, tenantID, catalog, previousMeta, false); err != nil {
 		return IndexCatalog{}, err
 	}
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.putReverseIndexCatalogWithMeta(ctx, tenantID, reverseCatalog, reverseMeta); err != nil {
+	if err := mutator.PublishReverseCatalog(ctx, tenantID, reverseCatalog, manifest.Version, reverseMeta); err != nil {
 		return IndexCatalog{}, fmt.Errorf("rebuild reverse index: %w", err)
 	}
 	s.scheduleRangeCompaction(tenantID)
@@ -304,7 +322,7 @@ func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID stri
 }
 
 func (s *TenantStore) ensureIndexRebuildCurrent(ctx context.Context, tenantID string, loaded Manifest) error {
-	if ordered, _ := ctx.Value(orderedIndexUpdateKey{}).(bool); ordered {
+	if s.executionEnv(ctx).BuildOpts.OrderedCatchup {
 		return s.ensureIncrementalIndexCurrent(ctx, tenantID, loaded.Version)
 	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {

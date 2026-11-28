@@ -215,8 +215,15 @@ func buildChanges(d *directoryReads, before, after *graph.Graph, report graph.Ap
 		}
 	}
 	for id := range plan.Changes {
-		if len(plan.Changes[id]) > MaxChanges {
-			return Plan{}, invalid("partition mutation count exceeds its transaction budget")
+		if len(plan.Changes[id]) > maxFragmentChanges {
+			return Plan{}, &MutationBudgetError{Reason: "partition mutation count exceeds its transaction budget"}
+		}
+		var totalBytes int64
+		for _, row := range plan.Changes[id] {
+			totalBytes += int64(len(row.Key) + len(row.Value))
+			if totalBytes > MaxChangeBytes {
+				return Plan{}, &MutationBudgetError{Reason: "partition mutation byte size exceeds its transaction budget"}
+			}
 		}
 	}
 	return plan, nil

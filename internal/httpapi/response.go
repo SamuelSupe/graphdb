@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -27,6 +29,7 @@ const (
 	ErrorCodeInvalidJSON             ErrorCode = "invalid_json"
 	ErrorCodeInvalidQuery            ErrorCode = "invalid_query"
 	ErrorCodeQueryLimitExceeded      ErrorCode = "query_limit_exceeded"
+	ErrorCodeMutationBudget          ErrorCode = storage.IngestErrorMutationBudget
 	ErrorCodeIndexStale              ErrorCode = "index_stale"
 	ErrorCodeReaderNotFresh          ErrorCode = "reader_not_fresh"
 	ErrorCodeQuotaExceeded           ErrorCode = "quota_exceeded"
@@ -74,6 +77,7 @@ var stableErrorCodes = []ErrorCode{
 	ErrorCodeInvalidJSON,
 	ErrorCodeInvalidQuery,
 	ErrorCodeQueryLimitExceeded,
+	ErrorCodeMutationBudget,
 	ErrorCodeIndexStale,
 	ErrorCodeReaderNotFresh,
 	ErrorCodeQuotaExceeded,
@@ -177,47 +181,91 @@ func writeErrorErr(w http.ResponseWriter, status int, err error) {
 }
 
 func writeStorageError(w http.ResponseWriter, err error) {
-	response := errorResponseFor(http.StatusInternalServerError, err, "", nil)
+	writeStorageErrorDefault(w, http.StatusInternalServerError, err)
+}
+
+func writeStorageErrorDefault(w http.ResponseWriter, defaultStatus int, err error) {
+	var pressure *storage.BackpressureError
+	if errors.As(err, &pressure) && pressure.RetryAfter > 0 {
+		seconds := int((pressure.RetryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	}
+	response := errorResponseFor(defaultStatus, err, "", nil)
 	if response.Code == ErrorCodeInternal {
 		response = buildErrorResponse(ErrorCodeInternal, "internal storage error", false, nil)
 	}
 	writeJSON(w, storageErrorStatus(response.Code), response)
 }
 
+type errorCodeContract struct {
+	Status             int
+	Retryable          bool
+	BackpressureHeader bool
+}
+
+// errorCodeContracts is the single authoritative HTTP status and retryability
+// table for every stable ErrorCode. Exhaustiveness is enforced by
+// TestErrorCodeContractTableIsExhaustive.
+var errorCodeContracts = map[ErrorCode]errorCodeContract{
+	ErrorCodeBadRequest:              {Status: http.StatusBadRequest, Retryable: false},
+	ErrorCodeInvalidTenant:           {Status: http.StatusBadRequest, Retryable: false},
+	ErrorCodeTenantRequired:          {Status: http.StatusBadRequest, Retryable: false},
+	ErrorCodeTenantDisabled:          {Status: http.StatusForbidden, Retryable: false},
+	ErrorCodeTenantDeleted:           {Status: http.StatusGone, Retryable: false},
+	ErrorCodeOperationDisabled:       {Status: http.StatusMethodNotAllowed, Retryable: false},
+	ErrorCodeNotFound:                {Status: http.StatusNotFound, Retryable: false},
+	ErrorCodeMethodNotAllowed:        {Status: http.StatusMethodNotAllowed, Retryable: false},
+	ErrorCodeRequestTooLarge:         {Status: http.StatusRequestEntityTooLarge, Retryable: false},
+	ErrorCodeTooManyRequests:         {Status: http.StatusTooManyRequests, Retryable: true, BackpressureHeader: true},
+	ErrorCodeInternal:                {Status: http.StatusInternalServerError, Retryable: false},
+	ErrorCodeInvalidJSON:             {Status: http.StatusBadRequest, Retryable: false},
+	ErrorCodeInvalidQuery:            {Status: http.StatusBadRequest, Retryable: false},
+	ErrorCodeQueryLimitExceeded:      {Status: http.StatusTooManyRequests, Retryable: true, BackpressureHeader: true},
+	ErrorCodeMutationBudget:          {Status: http.StatusUnprocessableEntity, Retryable: false},
+	ErrorCodeIndexStale:              {Status: http.StatusBadRequest, Retryable: false},
+	ErrorCodeReaderNotFresh:          {Status: http.StatusServiceUnavailable, Retryable: true},
+	ErrorCodeQuotaExceeded:           {Status: http.StatusTooManyRequests, Retryable: false, BackpressureHeader: true},
+	ErrorCodeLeaseHeld:               {Status: http.StatusConflict, Retryable: true},
+	ErrorCodeManifestCASConflict:     {Status: http.StatusConflict, Retryable: true},
+	ErrorCodeObjectWriteConflict:     {Status: http.StatusConflict, Retryable: true},
+	ErrorCodeObjectStoreUnavailable:  {Status: http.StatusServiceUnavailable, Retryable: true},
+	ErrorCodeTaskConflict:            {Status: http.StatusConflict, Retryable: false},
+	ErrorCodeRepairRequired:          {Status: http.StatusConflict, Retryable: false},
+	ErrorCodeVersionConflict:         {Status: http.StatusConflict, Retryable: false},
+	ErrorCodePreconditionFailed:      {Status: http.StatusPreconditionFailed, Retryable: false},
+	ErrorCodeAtomicValidationFailed:  {Status: http.StatusUnprocessableEntity, Retryable: false},
+	ErrorCodeAtomicSuppressed:        {Status: http.StatusConflict, Retryable: false},
+	ErrorCodeIdempotencyConflict:     {Status: http.StatusConflict, Retryable: false},
+	ErrorCodeIdempotencyInProgress:   {Status: http.StatusConflict, Retryable: true},
+	ErrorCodeWriteConflict:           {Status: http.StatusConflict, Retryable: true},
+	ErrorCodeCoordinatorUnavailable:  {Status: http.StatusServiceUnavailable, Retryable: true},
+	ErrorCodeCommitTailTooLong:       {Status: http.StatusTooManyRequests, Retryable: true, BackpressureHeader: true},
+	ErrorCodeIndexRebuildRunning:     {Status: http.StatusTooManyRequests, Retryable: true, BackpressureHeader: true},
+	ErrorCodeMaintenanceTaskRunning:  {Status: http.StatusTooManyRequests, Retryable: true, BackpressureHeader: true},
+	ErrorCodeWriteAdmissionTimeout:   {Status: http.StatusTooManyRequests, Retryable: true, BackpressureHeader: true},
+	ErrorCodeWriteBackpressure:       {Status: http.StatusTooManyRequests, Retryable: true, BackpressureHeader: true},
+	ErrorCodeRequestTimeout:          {Status: http.StatusGatewayTimeout, Retryable: true},
+	ErrorCodeRaftUnavailable:         {Status: http.StatusServiceUnavailable, Retryable: true},
+	ErrorCodeWriteOutcomeUnknown:     {Status: http.StatusServiceUnavailable, Retryable: false},
+	ErrorCodeTenantGenerationChanged: {Status: http.StatusConflict, Retryable: false},
+	ErrorCodeIngestQueueFull:         {Status: http.StatusServiceUnavailable, Retryable: true, BackpressureHeader: true},
+	ErrorCodeRequestCanceled:         {Status: 499, Retryable: false},
+}
+
 func storageErrorStatus(code ErrorCode) int {
-	switch code {
-	case ErrorCodeInternal:
-		return http.StatusInternalServerError
-	case ErrorCodeNotFound:
-		return http.StatusNotFound
-	case ErrorCodeTenantDisabled:
-		return http.StatusForbidden
-	case ErrorCodeTenantDeleted:
-		return http.StatusGone
-	case ErrorCodeQuotaExceeded, ErrorCodeMaintenanceTaskRunning:
-		return http.StatusTooManyRequests
-	case ErrorCodeLeaseHeld,
-		ErrorCodeManifestCASConflict,
-		ErrorCodeObjectWriteConflict,
-		ErrorCodeTaskConflict,
-		ErrorCodeRepairRequired,
-		ErrorCodeVersionConflict,
-		ErrorCodeIdempotencyConflict,
-		ErrorCodeIdempotencyInProgress,
-		ErrorCodeWriteConflict:
-		return http.StatusConflict
-	case ErrorCodeObjectStoreUnavailable, ErrorCodeCoordinatorUnavailable:
-		return http.StatusServiceUnavailable
-	case ErrorCodeRequestTimeout:
-		return http.StatusGatewayTimeout
-	case ErrorCodeRequestCanceled:
-		return 499
-	default:
-		return http.StatusBadRequest
+	if contract, ok := errorCodeContracts[code]; ok {
+		return contract.Status
 	}
+	return http.StatusInternalServerError
 }
 
 func writeErrorDetail(w http.ResponseWriter, status int, code ErrorCode, message string, retryable bool, detail any) {
+	if isStableErrorCode(code) {
+		w.Header().Set("X-GraphDB-Error-Code", string(code))
+	}
 	writeJSON(w, status, buildErrorResponse(code, message, retryable, detail))
 }
 
@@ -283,13 +331,24 @@ func errorResponseFor(status int, err error, message string, detail any) ErrorRe
 	retryable := defaultRetryable(status)
 	if err != nil {
 		code, retryable = classifyError(err, code, retryable)
+	} else {
+		code, retryable = classifyMessage(message, code, retryable)
 	}
-	code, retryable = classifyMessage(message, code, retryable)
 	return buildErrorResponse(code, message, retryable, detail)
 }
 
 func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bool) {
+	var notFresh *readerNotFreshError
+	if errors.As(err, &notFresh) {
+		return ErrorCodeReaderNotFresh, true
+	}
+	var pressure *storage.BackpressureError
+	if errors.As(err, &pressure) {
+		return backpressureErrorContract(pressure.Reasons)
+	}
 	switch {
+	case errors.Is(err, storage.ErrTaskConflict):
+		return ErrorCodeTaskConflict, false
 	case errors.Is(err, storage.ErrLeaseHeld):
 		return ErrorCodeLeaseHeld, true
 	case errors.Is(err, storage.ErrObjectStoreUnavailable):

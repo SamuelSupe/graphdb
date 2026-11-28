@@ -18,9 +18,12 @@ func executeShortestPath(g *graph.Graph, request Request, cursor cursorState, bu
 		return Response{}, err
 	}
 	if !ok {
-		if lazyExecution(g, budget) {
-			return Response{}, ErrIndexUnavailable
+		if lazyExecution(g, budget) && !budget.authoritativeEntities {
+			return Response{}, ErrMaterializedFallback
 		}
+		return Response{}, fmt.Errorf("%w: entity %q not found", ErrInvalid, request.ID)
+	}
+	if !budget.allowsEntity(start) {
 		return Response{}, fmt.Errorf("%w: entity %q not found", ErrInvalid, request.ID)
 	}
 	target, ok, err := materializeEntity(g, request.TargetID, request, budget)
@@ -28,9 +31,12 @@ func executeShortestPath(g *graph.Graph, request Request, cursor cursorState, bu
 		return Response{}, err
 	}
 	if !ok {
-		if lazyExecution(g, budget) {
-			return Response{}, ErrIndexUnavailable
+		if lazyExecution(g, budget) && !budget.authoritativeEntities {
+			return Response{}, ErrMaterializedFallback
 		}
+		return Response{}, fmt.Errorf("%w: entity %q not found", ErrInvalid, request.TargetID)
+	}
+	if !budget.allowsEntity(target) {
 		return Response{}, fmt.Errorf("%w: entity %q not found", ErrInvalid, request.TargetID)
 	}
 	request.Depth = normalizedDepth(request.Depth)
@@ -62,9 +68,28 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 		shortestTargetAllows(start, 0, request.Path) {
 		return graph.Path{Entities: []graph.Entity{start}}, true, nil
 	}
+	if depth > 1 && len(request.Path.Steps) == 0 && request.DirectionStrategy != "impact" &&
+		budget.lookup == nil && budget.entities == nil {
+		if !pathAllowsKind(target.Kind, request.Path) || !shortestTargetAllows(target, 0, request.Path) {
+			return graph.Path{}, false, nil
+		}
+		request.Depth = depth
+		return materializedShortestPath(g, start.ID, target.ID, request, budget)
+	}
+	return shortestPathBFS(g, start, target, request, budget)
+}
+
+func shortestPathBFS(g *graph.Graph, start graph.Entity, target graph.Entity, request Request, budget *budget) (graph.Path, bool, error) {
+	depth := normalizedDepth(request.Depth)
+	stepped := len(request.Path.Steps) > 0
+	if stepped {
+		if depth < len(request.Path.Steps) {
+			return graph.Path{}, false, nil
+		}
+		depth = len(request.Path.Steps)
+	}
 	startState := shortestState{id: start.ID}
 	queue := []shortestState{startState}
-	stepped := len(request.Path.Steps) > 0
 	seen := map[string]struct{}{start.ID: {}}
 	frontiers := map[shortestLevel][]shortestState{}
 	active := map[int]bool{startState.serial: true}
@@ -89,7 +114,12 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 			neighbor graph.Neighbor,
 		) (bool, error) {
 			budget.visited++
-			if shortestPathContains(current, neighbor.Entity.ID, previous) || !shortestStepAllows(current.depth, neighbor, request.Path) {
+			if !budget.allowsEntity(neighbor.Entity) {
+				return true, nil
+			}
+			_, visited := seen[neighbor.Entity.ID]
+			if (!stepped && visited) || (stepped && shortestPathContains(current, neighbor.Entity.ID, previous)) ||
+				!shortestStepAllows(current.depth, neighbor, request.Path) {
 				return true, nil
 			}
 			next := shortestState{id: neighbor.Entity.ID, depth: current.depth + 1, serial: nextSerial}
@@ -109,6 +139,10 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 				targetFound = true
 				return false, nil
 			}
+			if next.depth >= depth {
+				delete(previous, next)
+				return true, nil
+			}
 			if stepped {
 				retained, err := retainSteppedShortestState(next, current, previous, frontiers, active, budget)
 				if err != nil {
@@ -120,11 +154,11 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 					return true, nil
 				}
 			} else {
-				if _, ok := seen[next.id]; ok {
-					delete(previous, next)
-					return true, nil
-				}
 				seen[next.id] = struct{}{}
+			}
+			if len(queue)-head >= maxTraverseFrontier {
+				delete(previous, next)
+				return false, fmt.Errorf("%w: shortest path frontier limit %d exceeded", ErrLimitExceeded, maxTraverseFrontier)
 			}
 			queue = append(queue, next)
 			return true, nil

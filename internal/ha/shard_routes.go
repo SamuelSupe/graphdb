@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
@@ -139,18 +142,44 @@ func (c *Cluster) PrivateHandler() http.Handler {
 			c.writeError(w, err)
 			return
 		}
-		c.App.mu.RLock()
-		data, err := c.App.tenantTransfer(r.Context(), action.Tenant, action.MoveID, action.Epoch)
-		c.App.mu.RUnlock()
+		entry, err := c.buildTenantExport(r.Context(), action)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		defer entry.close()
+		if _, err := entry.file.Seek(0, io.SeekStart); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(data)
+		_, _ = io.Copy(w, entry.file)
 	})
 	mux.HandleFunc("POST /cluster/export/manifest", c.exportChunk)
 	mux.HandleFunc("POST /cluster/export/chunk", c.exportChunk)
+	mux.HandleFunc("GET /cluster/tenant-ids", func(w http.ResponseWriter, r *http.Request) {
+		if c.App.Catalog || c.App.ShardID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := c.Node.ReadBarrier(r.Context()); err != nil {
+			c.writeError(w, err)
+			return
+		}
+		var ids []string
+		var err error
+		if r.URL.Query().Get("include_legacy") == "true" {
+			ids, err = c.App.Store.ListTenantsIncludingLegacy(r.Context())
+		} else {
+			ids, err = c.App.Store.ListManagedTenants(r.Context())
+		}
+		if err != nil {
+			c.writeError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ids)
+	})
 	mux.Handle("/cluster/data/", http.StripPrefix("/cluster/data", c.App.Handler))
 	c.registerPartitionRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +188,9 @@ func (c *Cluster) PrivateHandler() http.Handler {
 			return
 		}
 		r = r.WithContext(forwardedContext(r))
+		if r.Header.Get(raftAdminHeader) == "1" {
+			r = r.WithContext(storage.WithAdminAuthorized(r.Context()))
+		}
 		if strings.HasPrefix(r.URL.Path, "/cluster/") && !strings.HasPrefix(r.URL.Path, "/cluster/data/") && (c.Node.LeaderID() != c.Node.ID() || c.Node.Draining()) {
 			c.forward(w, r, nil, true, !clusterReadRoute(r))
 			return
@@ -183,10 +215,61 @@ func clusterReadRoute(r *http.Request) bool {
 	}
 }
 
-func (c *Cluster) checkShardRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, tenant string) (uint64, bool) {
+func (c *Cluster) routeShardRequest(w http.ResponseWriter, r *http.Request, body []byte, tenant string, write bool) (uint64, bool) {
 	if c.App.ShardID == "" {
 		return 0, true
 	}
+	if write {
+		epoch, graph, ok := c.localShardWriteRoute(r, tenant)
+		if ok {
+			c.setShardRouteHeaders(w, epoch)
+			if graph.Tenant != "" {
+				c.servePartitionIngest(w, r, body, graph)
+				return 0, false
+			}
+			return epoch, true
+		}
+		if !c.routeReadBarrier(w, r, body, true) {
+			return 0, false
+		}
+	}
+	epoch, valid := c.checkShardRequest(r.Context(), w, r, tenant)
+	return epoch, valid && !c.servePartitionedGraph(w, r, body, tenant)
+}
+
+func (c *Cluster) localShardWriteRoute(r *http.Request, tenant string) (uint64, partition.Graph, bool) {
+	epoch, err := strconv.ParseUint(r.Header.Get(sharding.EpochHeader), 10, 64)
+	if err != nil || epoch == 0 || storage.ValidateTenantID(tenant) != nil {
+		return 0, partition.Graph{}, false
+	}
+	c.App.mu.RLock()
+	valid, err := c.App.checkOwnership(r.Context(), tenant, epoch)
+	c.App.mu.RUnlock()
+	if err != nil || !valid {
+		return 0, partition.Graph{}, false
+	}
+	if c.config.Protocol < 5 {
+		return epoch, partition.Graph{}, true
+	}
+	graph, err := c.App.graphDescriptor(r.Context(), tenant)
+	if errors.Is(err, storage.ErrNotFound) {
+		return epoch, partition.Graph{}, true
+	}
+	// Only these positive routing decisions lead to a proposal that rechecks
+	// ownership and graph mode. Other partition operations need a fresh view.
+	if err != nil || graph.State != "active" || c.config.Protocol < partition.IngestProtocol || r.Method != http.MethodPost || r.URL.Path != "/v1/ingest/batches" {
+		return 0, partition.Graph{}, false
+	}
+	if raw := r.Header.Get("X-GraphDB-Read-Generation"); raw != "" {
+		generation, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || generation != graph.Generation {
+			return 0, partition.Graph{}, false
+		}
+	}
+	return epoch, graph, true
+}
+
+func (c *Cluster) checkShardRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, tenant string) (uint64, bool) {
 	if tenant == "" && r.Method == http.MethodGet && (r.URL.Path == "/v1/tenants" || r.URL.Path == "/v1/queries/running") {
 		return 0, true
 	}
@@ -208,22 +291,26 @@ func (c *Cluster) checkShardRequest(ctx context.Context, w http.ResponseWriter, 
 		json.NewEncoder(w).Encode(map[string]any{"code": "shard_epoch_changed", "error": "tenant is moving or belongs to another shard", "retryable": true})
 		return 0, false
 	}
-	w.Header().Set("X-GraphDB-Shard-ID", c.App.ShardID)
-	w.Header().Set(sharding.EpochHeader, fmt.Sprint(epoch))
+	c.setShardRouteHeaders(w, epoch)
 	return epoch, true
+}
+
+func (c *Cluster) setShardRouteHeaders(w http.ResponseWriter, epoch uint64) {
+	w.Header().Set("X-GraphDB-Shard-ID", c.App.ShardID)
+	w.Header().Set(sharding.EpochHeader, strconv.FormatUint(epoch, 10))
 }
 
 func (a *Application) checkShardedMutation(ctx context.Context, cmd command) error {
 	u, err := url.ParseRequestURI(cmd.URI)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", storage.ErrInvalidArgument, err)
 	}
 	if u.Path == "/v1/tenants" && cmd.Method == http.MethodPost {
 		var request struct {
 			Tenant string `json:"tenant_id"`
 		}
 		if json.Unmarshal(cmd.Body, &request) != nil || request.Tenant != cmd.Tenant {
-			return fmt.Errorf("tenant creation must match its routed tenant")
+			return fmt.Errorf("%w: tenant creation must match its routed tenant", storage.ErrConflict)
 		}
 	}
 	if strings.HasSuffix(u.Path, "/clone") {
@@ -237,7 +324,7 @@ func (a *Application) checkShardedMutation(ctx context.Context, cmd command) err
 		}
 		if json.Unmarshal(cmd.Body, &request) == nil && (strings.HasSuffix(u.Path, "/restore-drill") || request.Type == storage.TaskTypeTenantRestoreDrill) {
 			if (request.Cleanup != nil && !*request.Cleanup) || request.Params["cleanup"] == false {
-				return fmt.Errorf("sharded restore drills must clean up their temporary target; use tenant migration for persistent placement")
+				return fmt.Errorf("%w: sharded restore drills must clean up their temporary target; use tenant migration for persistent placement", storage.ErrConflict)
 			}
 		}
 	}
@@ -250,14 +337,14 @@ func (a *Application) checkCloneOwnership(ctx context.Context, body []byte, raw 
 	}
 	epoch, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil || json.Unmarshal(body, &request) != nil || storage.ValidateTenantID(request.Target) != nil {
-		return fmt.Errorf("clone target must be assigned through the router")
+		return fmt.Errorf("%w: clone target must be assigned through the router", storage.ErrConflict)
 	}
 	valid, err := a.checkOwnership(ctx, request.Target, epoch)
 	if err != nil {
 		return err
 	}
 	if !valid {
-		return fmt.Errorf("clone target ownership changed")
+		return fmt.Errorf("%w: clone target ownership changed", storage.ErrConflict)
 	}
 	return nil
 }

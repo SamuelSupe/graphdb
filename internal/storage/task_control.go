@@ -5,15 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	storagetask "github.com/SamuelSupe/graphdb/v2/internal/storage/task"
 )
 
 const (
-	TaskStatusQueued    = "queued"
-	TaskStatusRunning   = "running"
-	TaskStatusCanceled  = "canceled"
-	TaskStatusFailed    = "failed"
-	TaskStatusSucceeded = "succeeded"
+	TaskStatusQueued    = storagetask.StatusQueued
+	TaskStatusRunning   = storagetask.StatusRunning
+	TaskStatusCanceled  = storagetask.StatusCanceled
+	TaskStatusFailed    = storagetask.StatusFailed
+	TaskStatusSucceeded = storagetask.StatusSucceeded
 )
+
+var ErrTaskConflict = errors.New("task conflict")
 
 func (s *TenantStore) CancelTask(ctx context.Context, tenantID string, taskID string) (Task, error) {
 	task, err := s.getTaskObject(ctx, tenantID, taskID)
@@ -25,7 +29,7 @@ func (s *TenantStore) CancelTask(ctx context.Context, tenantID string, taskID st
 	}
 	if task.Result != nil {
 		if _, legacy := task.Result["legacy_index_task"]; legacy {
-			return Task{}, fmt.Errorf("legacy index task cancellation is not supported")
+			return Task{}, fmt.Errorf("%w: legacy index task cancellation is not supported", ErrTaskConflict)
 		}
 	}
 	task, err = s.mutateTask(ctx, tenantID, taskID, func(current *Task) error {
@@ -53,10 +57,10 @@ func (s *TenantStore) RetryTask(ctx context.Context, tenantID string, taskID str
 		return Task{}, err
 	}
 	if task.Status == TaskStatusQueued || task.Status == TaskStatusRunning {
-		return Task{}, fmt.Errorf("task %q is still %s", taskID, task.Status)
+		return Task{}, fmt.Errorf("%w: task %q is still %s", ErrTaskConflict, taskID, task.Status)
 	}
 	if task.Status != TaskStatusFailed && task.Status != TaskStatusCanceled {
-		return Task{}, fmt.Errorf("only failed or canceled tasks can be retried")
+		return Task{}, fmt.Errorf("%w: only failed or canceled tasks can be retried", ErrTaskConflict)
 	}
 	params := retryTaskParams(task)
 	params["retry_of"] = task.ID
@@ -98,12 +102,7 @@ func retryTaskParams(task Task) map[string]any {
 }
 
 func taskTerminal(status string) bool {
-	switch strings.TrimSpace(status) {
-	case TaskStatusCanceled, TaskStatusFailed, TaskStatusSucceeded:
-		return true
-	default:
-		return false
-	}
+	return storagetask.IsTerminal(strings.TrimSpace(status))
 }
 
 func taskRuntimeKey(tenantID string, taskID string) string {
@@ -155,6 +154,9 @@ func (s *TenantStore) StopBackground() {
 
 		for _, cancel := range cancels {
 			cancel()
+		}
+		for _, cache := range s.readerCaches() {
+			cache.Close()
 		}
 		go func() {
 			s.taskWorkers.Wait()

@@ -1,5 +1,18 @@
 package graph
 
+// NeighborScanSize is the unfiltered adjacency size, counting both incidences
+// of a self-loop when both directions are requested.
+func (g *Graph) NeighborScanSize(entityID, direction string) int {
+	switch direction {
+	case "out":
+		return g.out.At(entityID).Len()
+	case "in":
+		return g.in.At(entityID).Len()
+	default:
+		return g.out.At(entityID).Len() + g.in.At(entityID).Len()
+	}
+}
+
 func (g *Graph) NeighborCount(entityID string, direction string, relationTypes map[string]struct{}, nodeKinds []string, impact bool) int {
 	if direction == "" {
 		direction = "both"
@@ -14,9 +27,9 @@ func (g *Graph) NeighborCount(entityID string, direction string, relationTypes m
 	return count
 }
 
-func (g *Graph) countNeighborEdges(entityID string, edgeIDs map[string]struct{}, direction string, relationTypes map[string]struct{}, nodeKinds []string, impact bool) int {
+func (g *Graph) countNeighborEdges(entityID string, edgeIDs *ShardedMap[struct{}], direction string, relationTypes map[string]struct{}, nodeKinds []string, impact bool) int {
 	count := 0
-	for edgeID := range edgeIDs {
+	for edgeID := range edgeIDs.Keys() {
 		edge := g.Edges.At(edgeID)
 		if !neighborRelationAllowed(edge.Type, relationTypes) || !neighborImpactAllowed(g, edge.Type, direction, impact) {
 			continue

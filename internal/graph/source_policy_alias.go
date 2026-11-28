@@ -69,16 +69,24 @@ func applyFieldAliasesToEntity(entity *Entity, policy SourcePolicy) []FieldConfl
 			continue
 		}
 		chosen := values[0]
+		chosenMsg := "incoming alias field value was ignored because another alias mapped to the same canonical field"
+		if marked, ok := firstMarkedAlias(values); ok {
+			chosen = marked
+			chosenMsg = "incoming alias field value was ignored because another override alias mapped to the same canonical field"
+		}
 		fields[canonical] = chosen.Value
 		moveAliasFieldSource(fieldSources, chosen.Alias, canonical)
 		moveAliasFieldMode(fieldModes, chosen.Alias, canonical)
 		delete(fields, chosen.Alias)
-		for _, incoming := range values[1:] {
+		for _, incoming := range values {
+			if incoming.Alias == chosen.Alias {
+				continue
+			}
 			delete(fields, incoming.Alias)
 			delete(fieldSources, incoming.Alias)
 			delete(fieldModes, incoming.Alias)
 			if !reflect.DeepEqual(chosen.Value, incoming.Value) {
-				conflicts = append(conflicts, aliasFieldConflict(*entity, canonical, incoming.Alias, chosen.Value, incoming.Value, "incoming alias field value was ignored because another alias mapped to the same canonical field"))
+				conflicts = append(conflicts, aliasFieldConflict(*entity, canonical, incoming.Alias, chosen.Value, incoming.Value, chosenMsg))
 			}
 		}
 	}

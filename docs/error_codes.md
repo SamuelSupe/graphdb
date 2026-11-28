@@ -1,6 +1,6 @@
 # Error Code Contract
 
-Applies to **GGraphDB 2.5.1**; see [release validation](validation-v2.5.1.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.7.0**; see [release validation](validation-v2.5.1.md) and [version boundaries](naming-and-compatibility.md).
 
 All non-2xx HTTP errors use this envelope:
 
@@ -27,8 +27,9 @@ The following top-level `code` values are stable:
 | `too_many_requests` | 429 | yes | Generic admission/backpressure rejection. |
 | `internal_error` | 500 | no | Unclassified server-side error. |
 | `invalid_json` | 400 | no | Request body is not a single valid JSON document. |
-| `invalid_query` | 400 | no | Query DSL is invalid. |
+| `invalid_query` | 400/422 | no | Query DSL is invalid. |
 | `query_limit_exceeded` | 429 | yes | Query admission or cost limit was exceeded. |
+| `mutation_budget_exceeded` | 422 | no | Partitioned mutation planning exceeded its budget. With home Raft protocol 13, a direct commit may reuse the same key and body after the graph version advances. An accepted ingest batch retains its failed result. |
 | `index_stale` | 400 | no | Persisted index is missing, stale, or unavailable. |
 | `reader_not_fresh` | 503 | yes | The local read view is behind the required version. |
 | `quota_exceeded` | 429 | no | Tenant entity or edge quota would be exceeded. |

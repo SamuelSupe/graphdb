@@ -73,6 +73,9 @@ func trimFieldWriteModes(modes map[string]string, keep map[string]struct{}) map[
 }
 
 func entityFieldName(field string) (string, bool) {
+	if field == "labels" {
+		return graph.ReservedLabelsField, true
+	}
 	switch field {
 	case "", "id", "kind", "source", "external_id", "confidence", "source_priority", "created_at", "updated_at":
 		return "", false

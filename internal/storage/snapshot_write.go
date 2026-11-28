@@ -3,13 +3,15 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func (s *TenantStore) putSnapshotRecordIfAbsentOrEquivalent(ctx context.Context, key string, record snapshotRecord) error {
@@ -92,10 +94,62 @@ func snapshotRecordPayloadJSON(record snapshotRecord) ([]byte, error) {
 	return json.Marshal(legacySnapshotRecordWire(record))
 }
 
+type trimTrailingNewlineWriter struct {
+	dst        io.Writer
+	hasPending bool
+	pending    byte
+}
+
+func (w *trimTrailingNewlineWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if w.hasPending {
+		if _, err := w.dst.Write([]byte{w.pending}); err != nil {
+			return 0, err
+		}
+		w.hasPending = false
+	}
+	if len(p) > 1 {
+		if _, err := w.dst.Write(p[:len(p)-1]); err != nil {
+			return 0, err
+		}
+	}
+	w.pending = p[len(p)-1]
+	w.hasPending = true
+	return len(p), nil
+}
+
+func (w *trimTrailingNewlineWriter) flush() error {
+	if w.hasPending && w.pending != '\n' {
+		_, err := w.dst.Write([]byte{w.pending})
+		w.hasPending = false
+		return err
+	}
+	w.hasPending = false
+	return nil
+}
+
 func snapshotRecordContentHash(record snapshotRecord) (string, error) {
-	data, err := snapshotRecordPayloadJSON(record)
-	if err != nil {
+	record.LayoutVersion = CurrentObjectLayoutVersion
+	record.Snapshot.Index = nil
+	if record.Snapshot.Entities == nil {
+		record.Snapshot.Entities = []graph.Entity{}
+	}
+	if record.Snapshot.RelationTypes == nil {
+		record.Snapshot.RelationTypes = []graph.RelationType{}
+	}
+	if record.Snapshot.Edges == nil {
+		record.Snapshot.Edges = []graph.Edge{}
+	}
+	h := sha256.New()
+	tw := &trimTrailingNewlineWriter{dst: h}
+	enc := json.NewEncoder(tw)
+	if err := enc.Encode(legacySnapshotRecordWire(record)); err != nil {
 		return "", err
 	}
-	return codec.ContentHash(data), nil
+	if err := tw.flush(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

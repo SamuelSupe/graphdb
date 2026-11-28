@@ -51,6 +51,9 @@ mutation 不要同时发送两种名称。
 提交。`idempotency_key` 可选但建议使用。相同 key 和相同 payload 会返回
 已保存结果；相同 key 配合不同 payload 会返回 `idempotency_conflict`。
 
+分片图返回 `422 mutation_budget_exceeded` 时，提交未发布图变更。home Raft 协议 13
+允许在图版本推进后用原幂等键和正文重新提交。若指定了 `expected_version`，它仍须匹配。
+
 提交请求的 32 MiB 上限按完整接收体计算，包括 JSON 空白。Raft 在写入复制日志前
 移除 JSON 外围的 ASCII 空白；字段值与 JSON 校验语义保持不变。
 
@@ -398,6 +401,12 @@ WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记�
 完成的请求会用 WAL 中已 fsync 的 PREPARED 提交计划恢复，不会重复增加
 graph version。首次遇到历史 loose commit 尾部时会将其并入 segment；该租户
 随后不再承担这次迁移成本。
+
+WAL 为终态记录保留独立额度。旧卷已耗尽额度时，恢复过程可为每条已恢复的待决请求追加一条有界的终态记录，再回收旧段。单条受理记录和准备计划即使单独存放也超过 WAL 预算时，该批次进入 `failed`，可按原状态地址查询。其他待决批次造成的暂时空间不足仍走重试。
+
+在普通 Raft HA 和按租户分片的 HA 中，硬清除后旧代次的 WAL 回执不再可查。重建租户后可以复用批次 ID。若状态查询必须对应原来的那次接收，请把接收响应中的 `accepted_lsn` 作为同名查询参数传入。
+
+非分片和按租户分片的 Raft HA 在数据组所有副本启用协议 13 后，可用 `GRAPHDB_HA_INGEST_RECEIPT_RETENTION` 为新受理的 WAL 批次设置终态保留期，默认 `0s`。从批次进入 `committed` 或 `failed` 起算。客户端应保存完整的 `status_url`，包括返回的 `accepted_lsn` 和 `accepted_epoch`。租户迁移后原地址和到期时间继续有效。回收前，同内容使用已受管理的幂等键重试会取回原受理，不同内容返回 409。回收后原状态地址返回 404，批次 ID 和幂等键可复用。待决批次和此前未设置期限的回执沿用原有规则。从批次历史推导的采集器状态按仍保留的记录计算。
 
 `/metrics` 提供 `graphdb_ingest_wal_*`、`graphdb_ingest_queue_*` 和
 `graphdb_ingest_flush_*` 指标，包括 append/fsync、WAL 内存与磁盘占用、

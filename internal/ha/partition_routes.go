@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -20,7 +22,7 @@ func (a *Application) partitionStore() partition.Store {
 }
 
 func (a *Application) partitionStoreFor(objects storage.ObjectStore) partition.Store {
-	return partition.Store{Objects: objects, Prefix: a.Store.Prefix, ReadIngestInput: func(ctx context.Context, tenant string, generation int64, ref string) ([]byte, error) {
+	return partition.Store{Objects: objects, Prefix: a.Store.Prefix, LogicalDigests: &a.logicalDigests, ReadIngestInput: func(ctx context.Context, tenant string, generation int64, ref string) ([]byte, error) {
 		return a.readPartitionIngestInput(ctx, objects, tenant, generation, ref)
 	}}
 }
@@ -55,16 +57,49 @@ func (a *Application) cachedGraphDescriptor(ctx context.Context, tenant string) 
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return entry
 	}
-	if a.graphCache == nil || len(a.graphCache) >= 128 {
+	if a.graphCache == nil {
 		a.graphCache = make(map[string]graphDescriptor)
+	}
+	if len(a.graphCache) >= 128 {
+		for id := range a.graphCache {
+			delete(a.graphCache, id)
+			break
+		}
 	}
 	a.graphCache[tenant] = entry
 	return entry
 }
 
+type partitionActionScopeError struct{ error }
+
+func (err *partitionActionScopeError) Unwrap() error { return err.error }
+
+func partitionTransactionWrite(operation string) bool {
+	switch operation {
+	case "stage_input", "begin", "participants", "prepare", "prepared", "commit", "finalize", "discard", "abort", "complete":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) ([]byte, error) {
 	if c.config.Protocol < 5 || c.App.Catalog || c.App.ShardID == "" {
 		return nil, fmt.Errorf("graph partitions require a protocol-5 data group")
+	}
+	if (action.Operation == "cancel_conversion" || action.Operation == "reclaim_conversion") && c.config.Protocol < partition.ConversionCancellationProtocol {
+		return nil, fmt.Errorf("%w: conversion cancellation requires data Raft protocol %d", storage.ErrConflict, partition.ConversionCancellationProtocol)
+	}
+	if action.Operation == "sync_groups" {
+		if c.config.Protocol < partition.GroupTopologyProtocol {
+			return nil, fmt.Errorf("%w: group topology updates require home Raft protocol %d", storage.ErrConflict, partition.GroupTopologyProtocol)
+		}
+		for id, group := range action.Groups {
+			shard := sharding.Shard{ID: group.ID, ClusterID: group.ClusterID, Peers: group.Peers}
+			if id != group.ID || shard.Validate() != nil {
+				return nil, fmt.Errorf("%w: invalid catalog data group", storage.ErrInvalidArgument)
+			}
+		}
 	}
 	if storage.ValidateTenantID(action.Tenant) != nil || action.Generation <= 0 {
 		return nil, fmt.Errorf("%w: invalid graph scope", storage.ErrInvalidArgument)
@@ -104,7 +139,7 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	var scopeErr error
 	var state partition.DataState
 	switch action.Operation {
-	case "initialize", "reserve", "reserve_partitions", "data_move_reserve":
+	case "initialize", "reserve", "reserve_partitions", "data_move_reserve", "cancel_conversion", "reclaim_conversion":
 	case "prepare", "finalize", "discard", "fence", "data_move_page", "data_move_pages", "data_move_fence", "data_move_install", "data_move_thaw", "data_move_retire", "data_move_capture", "data_gc_begin", "data_gc_step":
 		state, scopeErr = c.App.partitionStore().Data(ctx, action.Tenant, action.Generation, action.Partition)
 	default:
@@ -113,10 +148,14 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 		if scopeErr == nil && g.Generation != action.Generation {
 			scopeErr = fmt.Errorf("%w: graph generation changed", storage.ErrConflict)
 		}
+		if scopeErr == nil && action.Operation == "graph_gc_begin" && action.Sequence == 0 && g.GC == nil &&
+			g.Active != nil && g.Active.State == "preparing" && g.LastRecoveryGCSequence == g.Active.Sequence {
+			action.Sequence = g.Active.Sequence
+		}
 	}
 	c.App.mu.RUnlock()
 	if scopeErr != nil {
-		return nil, scopeErr
+		return nil, &partitionActionScopeError{scopeErr}
 	}
 	if action.Operation == "prepare" || action.Operation == "stage_input" || action.Operation == "data_gc_begin" || action.Operation == "data_move_page" || action.Operation == "data_move_pages" {
 		if err := c.App.Store.CheckWriteDiskSpace(ctx, int64(len(action.Data))+partition.MaxChangeBytes*2); err != nil {
@@ -132,7 +171,11 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 		}
 		action.Verify = verified
 	}
-	cmd, err := newCommand("graph_partition")
+	kind := "graph_partition"
+	if action.Operation == "reclaim_conversion" {
+		kind = "graph_conversion_reclaim"
+	}
+	cmd, err := newCommand(kind)
 	if err != nil {
 		return nil, err
 	}
@@ -152,12 +195,55 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	if c.config.Protocol >= partition.BalancedLeafProtocol && action.Operation == "prepare" {
 		action.Revision = partition.BalancedLeafRevision
 	}
+	if c.config.Protocol >= partition.LargeFragmentProtocol && action.Operation == "prepare" {
+		action.Revision = partition.LargeFragmentRevision
+	}
+	if c.config.Protocol >= partition.BalancedBranchProtocol && action.Operation == "prepare" {
+		action.Revision = partition.BalancedBranchRevision
+	}
+	if c.config.Protocol >= partition.MutationBudgetRestartProtocol && action.Operation == "complete" {
+		action.Revision = partition.MutationBudgetRestartRevision
+	}
+	if recoveryGCStart(action) {
+		if c.config.Protocol < partition.RecoveryGCProtocol {
+			return nil, fmt.Errorf("%w: snapshot recovery GC requires Raft protocol %d", storage.ErrConflict, partition.RecoveryGCProtocol)
+		}
+		action.Revision = partition.RecoveryGCRevision
+	}
 	if c.config.Protocol >= partition.PlannedGCProtocol && action.Operation == "data_gc_step" && action.Purpose != "cancel" && state.GC != nil && state.GC.Phase == "sweep" {
 		if err := c.planGCStep(ctx, &action, state); err != nil {
 			return nil, err
 		}
 	}
 	cmd.Tenant = action.Tenant
+	cmd.snapshotCleanup = partitionSnapshotCleanup(action)
+	cmd.Body, err = json.Marshal(action)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.propose(ctx, cmd)
+	if !snapshotBudgetRejected(err) {
+		return response, err
+	}
+	if action.Operation == "prepare" {
+		receipts, replayErr := c.replayPartitionPrepares(ctx, []partition.Action{action})
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		if len(receipts) != 0 {
+			return resultJSON(http.StatusOK, receipts[0])
+		}
+	}
+	if action.Operation == "prepare" || action.Operation == "participants" {
+		return nil, errors.Join(partition.ErrPrepareSnapshotBudget, err)
+	}
+	if action.NextIngest == nil {
+		return response, err
+	}
+	// The handoff never reached Raft. Finish the current batch and leave its
+	// successor in the durable queue until normal writes can resume.
+	action.NextIngest = nil
+	cmd.snapshotCleanup = true
 	cmd.Body, err = json.Marshal(action)
 	if err != nil {
 		return nil, err
@@ -165,8 +251,50 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	return c.propose(ctx, cmd)
 }
 
+func snapshotBudgetRejected(err error) bool {
+	return errors.Is(err, replication.ErrSnapshotTooLarge) && !errors.Is(err, replication.ErrOutcomeUnknown)
+}
+
+func recoveryGCStart(action partition.Action) bool {
+	return action.Sequence != 0 && (action.Operation == "graph_gc_begin" || action.Operation == "data_gc_begin")
+}
+
+func (c *Cluster) replayPartitionPrepares(ctx context.Context, actions []partition.Action) ([]partition.Prepared, error) {
+	if err := c.Node.ReadBarrier(ctx); err != nil {
+		return nil, err
+	}
+	c.App.mu.RLock()
+	defer c.App.mu.RUnlock()
+	store := c.App.partitionStore()
+	receipts := make([]partition.Prepared, len(actions))
+	for i, action := range actions {
+		receipt, err := store.ReplayPrepare(ctx, action)
+		if err != nil || receipt == nil {
+			return nil, err
+		}
+		receipts[i] = *receipt
+	}
+	return receipts, nil
+}
+
+func partitionSnapshotCleanup(action partition.Action) bool {
+	switch action.Operation {
+	case "prepared", "commit", "abort", "finalize", "discard", "retire_source", "cancel_conversion",
+		"graph_gc_begin", "graph_gc_collect", "graph_gc_prune", "graph_gc_started", "graph_gc_cancel_start", "graph_gc_inputs", "graph_gc_done",
+		"data_gc_begin", "data_gc_step",
+		"graph_move_error", "graph_move_cancel", "graph_move_cancelled", "graph_move_complete",
+		"data_move_thaw", "data_move_retire":
+		return true
+	case "complete":
+		return action.NextIngest == nil
+	default:
+		return false
+	}
+}
+
 func (c *Cluster) registerPartitionRoutes(mux *http.ServeMux) {
 	c.registerPartitionEnable(mux)
+	c.registerPartitionConversionCancellation(mux)
 	c.registerPartitionMove(mux)
 	c.registerPartitionGC(mux)
 	ready := func(w http.ResponseWriter, r *http.Request) bool {
@@ -195,13 +323,19 @@ func (c *Cluster) registerPartitionRoutes(mux *http.ServeMux) {
 			c.partitionError(w, entry.err)
 			return
 		}
-		w.Header().Set("ETag", entry.etag)
-		if r.Header.Get("If-None-Match") == entry.etag {
+		out := entry.graph
+		etag := entry.etag
+		if out.ReadLease != nil && !time.Now().UTC().Add(partition.MaxQueryLifetime).Before(out.ReadLease.ExpiresAt) {
+			out.ReadLease = nil
+			etag = strings.TrimSuffix(etag, `"`) + `-nolease"`
+		}
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(entry.graph)
+		json.NewEncoder(w).Encode(out)
 	})
 	mux.HandleFunc("GET /cluster/graph/transactions/{tenant}/{identity}", func(w http.ResponseWriter, r *http.Request) {
 		if !ready(w, r) {
@@ -252,14 +386,20 @@ func (c *Cluster) registerPartitionRoutes(mux *http.ServeMux) {
 			http.Error(w, "invalid partition action", http.StatusBadRequest)
 			return
 		}
-		fencedIngest := c.config.Protocol >= partition.BatchProtocol &&
-			(action.Operation == "begin" && action.Purpose == "ingest" ||
-				action.Operation == "commit" && len(action.PreparedBatch) != 0 ||
-				action.Operation == "complete" && action.ReceiptRef != "")
-		if !fencedIngest && !ready(w, r) {
+		local := partitionTransactionWrite(action.Operation) && c.config.Protocol >= 5 && !c.App.Catalog && c.App.ShardID != ""
+		if !local && !ready(w, r) {
 			return
 		}
 		data, err := c.partitionAction(r.Context(), action)
+		var scopeErr *partitionActionScopeError
+		if local && errors.As(err, &scopeErr) {
+			// The miss occurred before proposal. Refresh before reporting a
+			// missing or obsolete scope from a possibly lagging new leader.
+			if !ready(w, r) {
+				return
+			}
+			data, err = c.partitionAction(r.Context(), action)
+		}
 		if err != nil {
 			c.partitionError(w, err)
 			return
@@ -345,6 +485,8 @@ func partitionErrorStatus(err error) (int, string) {
 		return http.StatusConflict, "graph_input_expired"
 	case errors.Is(err, partition.ErrVersionNotReady):
 		return http.StatusServiceUnavailable, "reader_not_fresh"
+	case errors.Is(err, partition.ErrPrepareSnapshotBudget):
+		return http.StatusServiceUnavailable, "graph_prepare_snapshot_budget"
 	case errors.Is(err, partition.ErrGraphBusy):
 		return http.StatusTooManyRequests, "graph_busy"
 	case errors.Is(err, partition.ErrPartitionCorrupt):
@@ -364,6 +506,7 @@ func partitionErrorStatus(err error) (int, string) {
 
 func (c *Cluster) partitionError(w http.ResponseWriter, err error) {
 	status, code := partitionErrorStatus(err)
+	w.Header().Set("X-GraphDB-Error-Code", code)
 	data, _ := resultJSON(status, map[string]any{"code": code, "error": err.Error(), "retryable": status == 503 || status == 429 || code == "graph_layout_changed" || code == "graph_input_expired"})
 	writeResult(w, data)
 }

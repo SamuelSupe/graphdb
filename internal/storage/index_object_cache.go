@@ -260,7 +260,7 @@ func indexObjectCacheKey(kind string, tenantID string, version int64, objectKey 
 	if strings.Contains(objectKey, "/packs/") {
 		contentHash = ""
 	}
-	return kind + "\x00" + tenantID + "\x00" + strconv.FormatInt(version, 10) + "\x00" + objectKey + "\x00" + contentHash + "\x00" + schemaHash
+	return kind + "\x00" + tenantID + "\x00" + strconv.FormatInt(indexObjectVersion(version, objectKey), 10) + "\x00" + objectKey + "\x00" + contentHash + "\x00" + schemaHash
 }
 
 func (c *indexObjectCache) get(ctx context.Context, cacheKey string, objectKey string) (cachedIndexObject, bool, error) {

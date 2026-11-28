@@ -6,13 +6,17 @@ import (
 	"time"
 )
 
-func (s *TenantStore) cacheCollectorStatusFromBatches(ctx context.Context, tenantID string, request IngestRequest, result IngestResult, started time.Time, finished time.Time) error {
+func (s *TenantStore) cacheCollectorStatusFromBatches(ctx context.Context, tenantID string, updates []ingestCollectorStatusUpdate) error {
+	request := updates[0].request
 	key := s.collectorStatusKey(tenantID, request.Source, request.CollectorID)
 	if status, meta, ok := s.getCachedCollectorStatus(key); ok {
-		applyCollectorStatusResult(&status, tenantID, request, result, started, finished)
+		for _, update := range updates {
+			applyCollectorStatusResult(&status, tenantID, update.request, update.result, update.started, update.finished)
+		}
 		s.setCachedCollectorStatus(key, status, meta)
 		return nil
 	}
+	// All receipts in this update are already visible to the cold scan.
 	status, err := s.deriveCollectorStatusFromBatches(ctx, tenantID, request.Source, request.CollectorID)
 	if err != nil {
 		return err

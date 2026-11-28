@@ -137,6 +137,24 @@ func TestLoadRouterRequiresProtectedCatalog(t *testing.T) {
 	}
 }
 
+func TestLoadRouterGraphAdmissionLimits(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_ROUTER_TOKEN", "01234567890123456789012345678901")
+	t.Setenv("GRAPHDB_ROUTER_CATALOG_CLUSTER_ID", "catalog")
+	t.Setenv("GRAPHDB_ROUTER_CATALOG_PEERS", `{"1":"http://meta1:8081","2":"http://meta2:8081","3":"http://meta3:8081"}`)
+	t.Setenv("GRAPHDB_ROUTER_GRAPH_READS_PER_SHARD", "12")
+	t.Setenv("GRAPHDB_ROUTER_GRAPH_WRITES_PER_SHARD", "3")
+	t.Setenv("GRAPHDB_ROUTER_GRAPH_QUEUE_WAIT", "0s")
+	cfg, err := LoadRouter()
+	if err != nil || cfg.GraphLimits.Reads != 12 || cfg.GraphLimits.Writes != 3 || cfg.GraphLimits.Wait != 0 {
+		t.Fatalf("loaded limits %+v (%v)", cfg.GraphLimits, err)
+	}
+	t.Setenv("GRAPHDB_ROUTER_GRAPH_QUEUE_WAIT", "2s")
+	if _, err := LoadRouter(); err == nil {
+		t.Fatal("router accepted an unbounded queue wait")
+	}
+}
+
 func TestLoadRejectsRaftTuningWithoutNodeIdentity(t *testing.T) {
 	for _, setting := range []struct{ key, value string }{{"GRAPHDB_RAFT_TICK", "200ms"}, {"GRAPHDB_RAFT_ELECTION_TICKS", "30"}} {
 		t.Run(setting.key, func(t *testing.T) {

@@ -23,6 +23,8 @@ import (
 
 type acceptedRequest struct {
 	ReceiptRetention time.Duration         `json:"receipt_retention_ns,omitempty"`
+	AcceptedEpoch    uint64                `json:"accepted_epoch,omitempty"`
+	AliasDigest      string                `json:"alias_digest,omitempty"`
 	Partitioned      bool                  `json:"partitioned,omitempty"`
 	Tenant           string                `json:"tenant_id"`
 	Request          storage.IngestRequest `json:"request"`
@@ -45,12 +47,31 @@ func (a *Application) ingestKey(tenant, source, collector, batch string, generat
 }
 func (a *Application) accepted(ctx context.Context, key string) (acceptedRequest, error) {
 	record, err := loadAcceptance(ctx, a.Store.Objects, key)
-	if errors.Is(err, storage.ErrNotFound) && a.ShardID != "" {
+	if errors.Is(err, storage.ErrNotFound) {
 		if managedKey := a.managedReceiptKey(key); managedKey != "" {
 			return loadAcceptance(ctx, a.Store.Objects, managedKey)
 		}
 	}
 	return record, err
+}
+
+func (a *Application) loadAcceptedUnderRLock(ctx context.Context, key string) (acceptedRequest, error) {
+	a.mu.RLock()
+	data, err := a.Store.Objects.Get(ctx, key)
+	if errors.Is(err, storage.ErrNotFound) {
+		if managedKey := a.managedReceiptKey(key); managedKey != "" {
+			data, err = a.Store.Objects.Get(ctx, managedKey)
+		}
+	}
+	a.mu.RUnlock()
+	if err != nil {
+		return acceptedRequest{}, err
+	}
+	var record acceptedRequest
+	if err := json.Unmarshal(data, &record); err != nil {
+		return acceptedRequest{}, err
+	}
+	return record, nil
 }
 
 func loadAcceptance(ctx context.Context, objects storage.ObjectStore, key string) (acceptedRequest, error) {
@@ -79,7 +100,7 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 	}
 	var pending pendingAcceptance
 	if a.pending != nil && record.State == "accepted" {
-		pending, err = pendingInfo(record, int64(len(data)))
+		pending, err = a.pendingInfo(record, int64(len(data)))
 		if err != nil {
 			return err
 		}
@@ -98,25 +119,46 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 		if err := a.Store.Objects.Delete(ctx, key); err != nil {
 			return err
 		}
+		a.untrackTenantReceipt(key)
 	}
+	if objectKey == key || (record.AcceptedEpoch != 0 && !record.Partitioned) {
+		a.trackTenantReceipt(record.Tenant, objectKey)
+	} else {
+		a.untrackTenantReceipt(objectKey)
+	}
+	a.updatePendingAcceptance(key, record.State == "accepted", pending)
+	return nil
+}
+
+func (a *Application) updatePendingAcceptance(key string, isPending bool, pending pendingAcceptance) {
 	if a.pending != nil {
 		previous, wasPending := a.pending[key]
-		if wasPending != (record.State == "accepted") {
-			a.pendingIndex.update(key, record.State == "accepted")
+		if wasPending != isPending {
+			a.pendingIndex.update(key, isPending)
 		}
 		if wasPending {
 			a.pendingBytes -= previous.objectBytes
+			if previous.alias != "" {
+				keys := slices.DeleteFunc(a.pendingIngestAliases[previous.alias], func(candidate string) bool { return candidate == key })
+				if len(keys) == 0 {
+					delete(a.pendingIngestAliases, previous.alias)
+				} else {
+					a.pendingIngestAliases[previous.alias] = keys
+				}
+			}
 		}
 		delete(a.pending, key)
-		if record.State == "accepted" {
+		if isPending {
 			a.pending[key] = pending
 			a.pendingBytes += pending.objectBytes
+			if pending.alias != "" {
+				a.pendingIngestAliases[pending.alias] = append(a.pendingIngestAliases[pending.alias], key)
+			}
 		}
 	}
-	if record.State != "accepted" {
+	if !isPending {
 		a.notifyIngestChanged()
 	}
-	return nil
 }
 
 func resultJSON(status int, value any) ([]byte, error) {
@@ -148,9 +190,13 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		return nil, err
 	}
 	sourceGeneration := generation
+	replaysSource := false
 	partitioned := cmd.Kind == "partition_accept"
 	if partitioned {
 		g, err := a.partitionStore().GetGraph(ctx, cmd.Tenant)
+		if errors.Is(err, storage.ErrNotFound) {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "partitioned graph generation is not active"})
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -158,6 +204,7 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 			return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "partitioned graph generation is not active"})
 		}
 		generation = g.Generation
+		replaysSource = g.ConvertsSource(sourceGeneration)
 	}
 	key := a.ingestKey(cmd.Tenant, request.Source, request.CollectorID, request.BatchID, generation)
 	after, err := json.Marshal(request)
@@ -168,22 +215,36 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 	candidate := acceptedRequest{Partitioned: partitioned, Tenant: cmd.Tenant, Request: request, Digest: digest, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
 	if partitioned {
 		candidate.ReceiptRetention = cmd.PartitionReceiptRetention
+	} else {
+		candidate.ReceiptRetention = cmd.OrdinaryReceiptRetention
+		if candidate.ReceiptRetention > 0 && a.ShardID != "" {
+			candidate.AcceptedEpoch = cmd.RouteEpoch
+		}
 	}
 	record, err := a.accepted(ctx, key)
-	if partitioned && errors.Is(err, storage.ErrNotFound) && request.IdempotencyKey != "" {
-		previous, found, aliasErr := a.partitionIngestAlias(ctx, cmd.Tenant, generation, request)
+	if !partitioned && cmd.CompactOrdinaryReceipts && errors.Is(err, storage.ErrNotFound) {
+		record, err = a.ordinaryIngestReceipt(ctx, cmd.Tenant, generation, request.Source, request.CollectorID, request.BatchID)
+	}
+	if (partitioned || cmd.IndexIngestQueue || cmd.CompactOrdinaryReceipts) && errors.Is(err, storage.ErrNotFound) && request.IdempotencyKey != "" {
+		previous, found, aliasErr := a.ingestAlias(ctx, cmd.Tenant, generation, request)
+		if aliasErr == nil && !found && !partitioned {
+			previous, found, aliasErr = a.pendingIngestAlias(ctx, cmd.Tenant, generation, request)
+		}
 		if aliasErr != nil {
 			return nil, aliasErr
 		}
 		if found {
-			if previous.Digest != partitionIngestDigest(request) {
+			if previous.Digest != ingestAliasDigest(request) {
 				return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": "ingest idempotency key was used for a different request"})
 			}
 			record, err := a.accepted(ctx, previous.Key)
+			if errors.Is(err, storage.ErrNotFound) {
+				return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": "ingest alias target acceptance was reclaimed"})
+			}
 			if err != nil {
 				return nil, err
 			}
-			if previous.Index != 0 && previous.Index != record.Index {
+			if previous.Index != 0 && previous.Index != record.Index || previous.Epoch != record.AcceptedEpoch {
 				return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": "ingest alias no longer matches its acceptance"})
 			}
 			return a.acceptanceResponse(record)
@@ -205,7 +266,7 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		return nil, err
 	} else {
 		if partitioned && cmd.ReplaySourceIngest {
-			if generation == sourceGeneration+1 {
+			if replaysSource {
 				previous, found, replayErr := a.replayPartitionSourceIngest(ctx, candidate, sourceGeneration)
 				if errors.Is(replayErr, storage.ErrIngestIdentityConflict) {
 					return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": replayErr.Error()})
@@ -214,7 +275,19 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 					return nil, replayErr
 				}
 				if found {
-					return a.acceptanceResponse(previous)
+					resp, err := a.acceptanceResponse(previous)
+					if err != nil || previous.Generation == candidate.Generation {
+						return resp, err
+					}
+					var result httpResult
+					if json.Unmarshal(resp, &result) == nil {
+						if result.Header == nil {
+							result.Header = make(http.Header)
+						}
+						result.Header.Set("X-GraphDB-Tenant-Generation", fmt.Sprint(candidate.Generation))
+						return json.Marshal(result)
+					}
+					return resp, nil
 				}
 			}
 			if request.FullSync {
@@ -237,11 +310,29 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 			}
 		}
 		if err := a.Store.EnsureTenantWritable(ctx, cmd.Tenant); err != nil {
-			return resultJSON(http.StatusConflict, map[string]any{"error": err.Error()})
+			if errors.Is(err, storage.ErrTenantDisabled) || errors.Is(err, storage.ErrTenantDeleted) || errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrConflict) {
+				return resultJSON(http.StatusConflict, map[string]any{"error": err.Error()})
+			}
+			return nil, err
 		}
 		record = candidate
-		if partitioned && request.IdempotencyKey != "" {
-			aliasKey := a.partitionIngestAliasKey(record.Tenant, record.Generation, record.Request)
+		claimAlias := (partitioned || candidate.ReceiptRetention > 0) && request.IdempotencyKey != ""
+		if claimAlias && !partitioned {
+			// An older tenant receipt may already own this alias.
+			_, found, err := a.Store.LookupIngestReplay(ctx, cmd.Tenant, request)
+			if errors.Is(err, storage.ErrIngestIdentityConflict) {
+				return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": err.Error()})
+			}
+			if err != nil {
+				return nil, err
+			}
+			claimAlias = !found
+		}
+		if claimAlias {
+			if record.AcceptedEpoch != 0 {
+				record.AliasDigest = ingestAliasDigest(request)
+			}
+			aliasKey := a.ingestAliasKey(record.Tenant, record.Generation, record.Request)
 			if err := a.Files.JournalReplicatedObjects(ctx, []string{key, aliasKey}); err != nil {
 				return nil, err
 			}
@@ -249,8 +340,8 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		if err := a.saveAccepted(ctx, key, record); err != nil {
 			return nil, err
 		}
-		if partitioned && request.IdempotencyKey != "" {
-			if err := a.savePartitionIngestAlias(ctx, record, key); err != nil {
+		if claimAlias {
+			if err := a.saveIngestAlias(ctx, record, key); err != nil {
 				return nil, err
 			}
 		}
@@ -261,7 +352,11 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 func (a *Application) acceptanceResponse(record acceptedRequest) ([]byte, error) {
 	statusURL := "/v1/ingest/batches/" + url.PathEscape(record.Request.Source) + "/" + url.PathEscape(record.Request.CollectorID) + "/" + url.PathEscape(record.Request.BatchID)
 	if record.ReceiptRetention > 0 {
-		statusURL += "?accepted_lsn=" + strconv.FormatUint(record.Index, 10)
+		query := url.Values{"accepted_lsn": {strconv.FormatUint(record.Index, 10)}}
+		if record.AcceptedEpoch != 0 {
+			query.Set("accepted_epoch", strconv.FormatUint(record.AcceptedEpoch, 10))
+		}
+		statusURL += "?" + query.Encode()
 	}
 	body, _ := json.Marshal(map[string]any{"tenant_id": record.Tenant, "writer_id": a.Store.InstanceID, "batch_id": record.Request.BatchID, "source": record.Request.Source, "collector_id": record.Request.CollectorID, "generation": record.Generation, "state": record.State, "durability": "raft_majority", "accepted_lsn": record.Index, "accepted_at": record.AcceptedAt, "estimated_flush_at": a.estimatedFlushAt(record), "status_url": statusURL})
 	return json.Marshal(httpResult{Status: http.StatusAccepted, Header: http.Header{"Content-Type": []string{"application/json"}, "Location": []string{statusURL}, "X-GraphDB-Tenant-Generation": []string{fmt.Sprint(record.Generation)}}, Body: body})
@@ -275,6 +370,11 @@ func (a *Application) estimatedFlushAt(record acceptedRequest) time.Time {
 }
 
 func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
+	if cmd.CompactOrdinaryReceipts {
+		if err := a.ensurePending(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if a.ShardID != "" {
 		owner, err := a.ownership(ctx, cmd.Tenant)
 		if err != nil {
@@ -294,6 +394,10 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 			return nil, fmt.Errorf("invalid replicated acceptance key")
 		}
 		record, err := a.accepted(ctx, key)
+		if _, pending := a.pending[key]; (cmd.CompactOrdinaryReceipts || cmd.IndexIngestQueue) && !pending && errors.Is(err, storage.ErrNotFound) {
+			// The queue can drain or reclaim an old generation before this flush applies.
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -316,13 +420,25 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 			}
 		}
 		entryIndexes = append(entryIndexes, len(records)-1)
-		entries = append(entries, storage.IngestBatchEntry{Request: record.Request, AcceptedAt: record.AcceptedAt, AcceptedGeneration: record.Generation})
+		entry := storage.IngestBatchEntry{Request: record.Request, AcceptedAt: record.AcceptedAt, AcceptedGeneration: record.Generation}
+		if (cmd.CompactOrdinaryReceipts || record.AcceptedEpoch != 0) && record.Digest != "" {
+			entry.ReplicatedReceipt = &storage.ReplicatedIngestReceipt{
+				Generation: record.Generation, Index: record.Index, Epoch: record.AcceptedEpoch, Digest: record.Digest,
+			}
+		}
+		entries = append(entries, entry)
 	}
 	if len(records) == 0 {
 		return json.Marshal([]storage.IngestResult{})
 	}
+	var retire []bool
 	if len(entries) > 0 {
-		applied, err := a.Store.IngestDurableBatch(ctx, cmd.Tenant, entries)
+		var hooks storage.IngestBatchHooks
+		if cmd.CompactOrdinaryReceipts {
+			retire = make([]bool, len(records))
+			hooks.ReceiptStored = func(index int) { retire[entryIndexes[index]] = true }
+		}
+		applied, err := a.Store.IngestDurableBatchWithHooks(ctx, cmd.Tenant, entries, hooks)
 		if err != nil {
 			if !errors.Is(err, storage.ErrTenantDeleted) && !errors.Is(err, storage.ErrTenantDisabled) {
 				return nil, err
@@ -340,6 +456,14 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 		}
 	}
 	for i, record := range records {
+		if retire != nil && retire[i] && record.ReceiptRetention <= 0 {
+			if err := a.Store.Objects.Delete(ctx, keys[i]); err != nil {
+				return nil, err
+			}
+			a.untrackTenantReceipt(keys[i])
+			a.updatePendingAcceptance(keys[i], false, pendingAcceptance{})
+			continue
+		}
 		record.State = "committed"
 		if results[i].Failed > 0 {
 			record.State = "failed"
@@ -353,7 +477,11 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 			}
 			record.Digest = fmt.Sprintf("%x", sha256.Sum256(request))
 		}
-		record.Request = storage.IngestRequest{Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID}
+		request := storage.IngestRequest{Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID}
+		if record.ReceiptRetention > 0 {
+			request.IdempotencyKey = record.Request.IdempotencyKey
+		}
+		record.Request = request
 		if err := a.saveAccepted(ctx, keys[i], record); err != nil {
 			return nil, err
 		}
@@ -386,10 +514,12 @@ func (c *Cluster) batchStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	generation, err := c.App.Store.ReplicationTenantGeneration(r.Context(), r.Header.Get("X-Tenant-ID"))
 	sourceGeneration := generation
+	replaysSource := false
 	if err == nil && c.App.ShardID != "" {
 		g, graphErr := c.App.graphDescriptor(r.Context(), r.Header.Get("X-Tenant-ID"))
 		if graphErr == nil {
 			generation = g.Generation
+			replaysSource = g.ConvertsSource(sourceGeneration)
 		} else if !errors.Is(graphErr, storage.ErrNotFound) {
 			err = graphErr
 		}
@@ -401,12 +531,23 @@ func (c *Cluster) batchStatus(w http.ResponseWriter, r *http.Request) {
 	key := c.App.ingestKey(r.Header.Get("X-Tenant-ID"), segments[0], segments[1], segments[2], generation)
 	c.App.mu.RLock()
 	record, err := c.App.accepted(r.Context(), key)
-	if errors.Is(err, storage.ErrNotFound) && generation == sourceGeneration+1 {
-		record, err = c.App.partitionSourceIngestStatus(r.Context(), r.Header.Get("X-Tenant-ID"), sourceGeneration, segments[0], segments[1], segments[2])
+	if errors.Is(err, storage.ErrNotFound) {
+		switch {
+		case replaysSource:
+			record, err = c.App.partitionSourceIngestStatus(r.Context(), r.Header.Get("X-Tenant-ID"), sourceGeneration, segments[0], segments[1], segments[2])
+		case c.App.ShardID == "" && c.config.Protocol >= ingestQueueCheckpointProtocol:
+			record, err = c.App.ordinaryIngestReceipt(r.Context(), r.Header.Get("X-Tenant-ID"), generation, segments[0], segments[1], segments[2])
+		}
 	}
 	c.App.mu.RUnlock()
-	if lsn := r.URL.Query().Get("accepted_lsn"); err == nil && lsn != "" && lsn != strconv.FormatUint(record.Index, 10) {
-		err = storage.ErrNotFound
+	if err == nil {
+		query := r.URL.Query()
+		lsn, epoch := query.Get("accepted_lsn"), query.Get("accepted_epoch")
+		if (lsn != "" && lsn != strconv.FormatUint(record.Index, 10)) ||
+			(epoch != "" && (lsn == "" || epoch != strconv.FormatUint(record.AcceptedEpoch, 10))) ||
+			(lsn != "" && record.AcceptedEpoch != 0 && epoch == "") {
+			err = storage.ErrNotFound
+		}
 	}
 	if err != nil {
 		if !errors.Is(err, storage.ErrNotFound) {
@@ -446,9 +587,45 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		return err
 	}
 	key := c.App.ingestKey(acceptance.Tenant, acceptance.Source, acceptance.Collector, acceptance.Batch, acceptance.Generation)
+	statusURL, err := url.Parse(acceptance.StatusURL)
+	if err != nil {
+		return err
+	}
+	query := statusURL.Query()
+	managed := query.Has("accepted_lsn")
+	acceptedEpoch := query.Get("accepted_epoch")
+	stillPendingInMemory := func() bool {
+		c.App.mu.RLock()
+		defer c.App.mu.RUnlock()
+		if c.App.pending == nil {
+			return false
+		}
+		p, ok := c.App.pending[key]
+		return ok && (!managed || p.index == acceptance.Index)
+	}
+	load := func() (acceptedRequest, error) {
+		record, err := c.App.loadAcceptedUnderRLock(ctx, key)
+		if err != nil {
+			if c.App.ShardID == "" && c.config.Protocol >= ingestQueueCheckpointProtocol && errors.Is(err, storage.ErrNotFound) {
+				c.App.mu.RLock()
+				fallbackRecord, fallbackErr := c.App.ordinaryIngestReceipt(ctx, acceptance.Tenant, acceptance.Generation, acceptance.Source, acceptance.Collector, acceptance.Batch)
+				c.App.mu.RUnlock()
+				if fallbackErr != nil {
+					return acceptedRequest{}, fallbackErr
+				}
+				if fallbackRecord.Index != acceptance.Index {
+					return acceptedRequest{}, storage.ErrNotFound
+				}
+				return fallbackRecord, nil
+			}
+			return acceptedRequest{}, err
+		}
+		return record, nil
+	}
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	checkBarrier := false
+	validatedInitial := false
 	for {
 		if checkBarrier {
 			if err := c.Node.ReadBarrier(ctx); err != nil {
@@ -457,10 +634,23 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 			checkBarrier = false
 		}
 		waitCh := c.App.ingestWaitCh()
-		c.App.mu.RLock()
-		record, err := c.App.accepted(ctx, key)
-		c.App.mu.RUnlock()
-		if strings.Contains(acceptance.StatusURL, "?accepted_lsn=") && (errors.Is(err, storage.ErrNotFound) || err == nil && acceptance.Index != record.Index) {
+		// Avoid O(N^2) full-payload disk reads and JSON unmarshals across all
+		// concurrent waiters when an unrelated batch completes: if our key is
+		// still in the in-memory pending index, wait for the next signal.
+		if validatedInitial && stillPendingInMemory() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-waitCh:
+				continue
+			case <-ticker.C:
+				checkBarrier = true
+				continue
+			}
+		}
+		record, err := load()
+		if managed && (errors.Is(err, storage.ErrNotFound) || err == nil &&
+			(acceptance.Index != record.Index || acceptedEpoch != "" && acceptedEpoch != strconv.FormatUint(record.AcceptedEpoch, 10))) {
 			http.Error(w, "ingest receipt expired", http.StatusNotFound)
 			return nil
 		}
@@ -469,14 +659,13 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 				if barrierErr := c.Node.ReadBarrier(ctx); barrierErr != nil {
 					return barrierErr
 				}
-				c.App.mu.RLock()
-				record, err = c.App.accepted(ctx, key)
-				c.App.mu.RUnlock()
+				record, err = load()
 			}
 			if err != nil {
 				return err
 			}
 		}
+		validatedInitial = true
 		if record.Result != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Preference-Applied", "wait=committed")
@@ -561,11 +750,16 @@ func (c *Cluster) flushQueues(ctx context.Context, tenant string, all, oneBatch 
 		limit := max(c.FlushMaxRequests, 1)
 		for len(requests) > 0 && (all || len(requests) >= limit || bytes >= max(c.FlushMaxBytes, 1)) {
 			count, size := 1, requests[0].record.requestBytes
+			aliases := map[string]bool{requests[0].record.alias: true}
 			for count < len(requests) && count < limit {
 				next := requests[count].record
-				if next.generation != requests[0].record.generation || size+next.requestBytes > c.FlushMaxBytes {
+				// Legacy acceptances can share an alias. Publish its first
+				// result before resolving another acceptance against it.
+				if next.generation != requests[0].record.generation || size+next.requestBytes > c.FlushMaxBytes ||
+					next.alias != "" && aliases[next.alias] {
 					break
 				}
+				aliases[next.alias] = true
 				count++
 				size += next.requestBytes
 			}

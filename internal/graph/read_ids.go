@@ -78,23 +78,50 @@ func (g *Graph) sortedEntityIDs(kind string) []string {
 	if existing, ok := g.entityOrder[kind]; ok {
 		return existing
 	}
-	if g.entityOrder == nil {
+	entryBytes := stringSliceBytes(ids)
+	if entryBytes > maxReadOrderCacheBytes {
+		return ids
+	}
+	if g.entityOrder == nil || g.entityOrderBytes+entryBytes > maxReadOrderCacheBytes {
 		g.entityOrder = map[string][]string{}
+		g.entityOrderBytes = 0
 	}
 	g.entityOrder[kind] = ids
+	g.entityOrderBytes += entryBytes
 	return ids
+}
+
+const maxReadOrderCacheBytes = 32 << 20
+
+func stringSliceBytes(items []string) int64 {
+	total := int64(len(items)) * 16
+	for _, s := range items {
+		total += int64(len(s))
+	}
+	return total
+}
+
+func fieldValueOrderSize(order fieldValueOrder) int64 {
+	total := int64(len(order.text)+len(order.numeric)+len(order.nonNumeric)) * 40
+	for _, v := range order.text {
+		total += int64(len(v.key) + len(v.text))
+	}
+	return total
 }
 
 func (g *Graph) invalidateEntityOrder() {
 	g.entityOrderMu.Lock()
 	g.entityOrder = nil
+	g.entityOrderBytes = 0
 	g.entityOrderMu.Unlock()
 }
 
 func (g *Graph) invalidateFieldIndexOrder() {
 	g.fieldIndexOrderMu.Lock()
 	g.fieldIndexOrder = nil
+	g.fieldIndexOrderBytes = 0
 	g.fieldValueOrder = nil
+	g.fieldValueOrderBytes = 0
 	g.fieldIndexOrderMu.Unlock()
 }
 
@@ -105,18 +132,24 @@ func (g *Graph) inheritReadOrder(source *Graph) {
 	source.neighborOrderMu.Unlock()
 	source.entityOrderMu.Lock()
 	entityOrder := maps.Clone(source.entityOrder)
+	entityOrderBytes := source.entityOrderBytes
 	source.entityOrderMu.Unlock()
 	source.fieldIndexOrderMu.Lock()
 	fieldOrder := maps.Clone(source.fieldIndexOrder)
+	fieldOrderBytes := source.fieldIndexOrderBytes
 	valueOrder := maps.Clone(source.fieldValueOrder)
+	valueOrderBytes := source.fieldValueOrderBytes
 	source.fieldIndexOrderMu.Unlock()
 	// Cached slices are immutable; only the maps need their own ownership.
 	g.entityOrderMu.Lock()
 	g.entityOrder = entityOrder
+	g.entityOrderBytes = entityOrderBytes
 	g.entityOrderMu.Unlock()
 	g.fieldIndexOrderMu.Lock()
 	g.fieldIndexOrder = fieldOrder
+	g.fieldIndexOrderBytes = fieldOrderBytes
 	g.fieldValueOrder = valueOrder
+	g.fieldValueOrderBytes = valueOrderBytes
 	g.fieldIndexOrderMu.Unlock()
 	g.neighborOrderMu.Lock()
 	g.neighborOrder = neighborOrder
@@ -133,21 +166,33 @@ func (g *Graph) HasEntityOrder(kind string) bool {
 }
 
 func (g *Graph) invalidateFieldKeyOrder(kind, field string) {
+	key := fieldValueOrderKey{kind: kind, field: field}
 	g.fieldIndexOrderMu.Lock()
-	delete(g.fieldValueOrder, fieldValueOrderKey{kind: kind, field: field})
+	if existing, ok := g.fieldValueOrder[key]; ok {
+		g.fieldValueOrderBytes = max(0, g.fieldValueOrderBytes-fieldValueOrderSize(existing))
+		delete(g.fieldValueOrder, key)
+	}
 	g.fieldIndexOrderMu.Unlock()
 }
 
 func (g *Graph) invalidateEntityKindOrder(kind string) {
 	g.entityOrderMu.Lock()
-	delete(g.entityOrder, "")
-	delete(g.entityOrder, kind)
+	for _, k := range []string{"", kind} {
+		if existing, ok := g.entityOrder[k]; ok {
+			g.entityOrderBytes = max(0, g.entityOrderBytes-stringSliceBytes(existing))
+			delete(g.entityOrder, k)
+		}
+	}
 	g.entityOrderMu.Unlock()
 }
 
 func (g *Graph) invalidateFieldValueOrder(kind, field, value string) {
+	key := fieldIndexOrderKey{kind: kind, field: field, value: value}
 	g.fieldIndexOrderMu.Lock()
-	delete(g.fieldIndexOrder, fieldIndexOrderKey{kind: kind, field: field, value: value})
+	if existing, ok := g.fieldIndexOrder[key]; ok {
+		g.fieldIndexOrderBytes = max(0, g.fieldIndexOrderBytes-stringSliceBytes(existing))
+		delete(g.fieldIndexOrder, key)
+	}
 	g.fieldIndexOrderMu.Unlock()
 }
 
@@ -170,10 +215,16 @@ func (g *Graph) sortedFieldIndexIDs(kind, field, value string) []string {
 	if existing, ok := g.fieldIndexOrder[cacheKey]; ok {
 		return existing
 	}
-	if g.fieldIndexOrder == nil || len(g.fieldIndexOrder) >= 1024 {
+	entryBytes := stringSliceBytes(ids)
+	if entryBytes > maxReadOrderCacheBytes {
+		return ids
+	}
+	if g.fieldIndexOrder == nil || len(g.fieldIndexOrder) >= 1024 || g.fieldIndexOrderBytes+entryBytes > maxReadOrderCacheBytes {
 		g.fieldIndexOrder = map[fieldIndexOrderKey][]string{}
+		g.fieldIndexOrderBytes = 0
 	}
 	g.fieldIndexOrder[cacheKey] = ids
+	g.fieldIndexOrderBytes += entryBytes
 	return ids
 }
 

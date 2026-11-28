@@ -14,21 +14,22 @@ import (
 )
 
 type GraphGC struct {
-	FenceAt       time.Time `json:"fence_at,omitempty"`
-	Error         string    `json:"error,omitempty"`
-	ID            string    `json:"id"`
-	BaseVersion   int64     `json:"base_version"`
-	Phase         string    `json:"phase"`
-	Versions      []int64   `json:"versions"`
-	Cursor        string    `json:"cursor,omitempty"`
-	Started       [256]bool `json:"started"`
-	Done          [256]bool `json:"done"`
-	Collected     bool      `json:"collected,omitempty"`
-	ReclaimInputs bool      `json:"reclaim_inputs,omitempty"`
+	RecoverySequence uint64    `json:"recovery_sequence,omitempty"`
+	FenceAt          time.Time `json:"fence_at,omitempty"`
+	Error            string    `json:"error,omitempty"`
+	ID               string    `json:"id"`
+	BaseVersion      int64     `json:"base_version"`
+	Phase            string    `json:"phase"`
+	Versions         []int64   `json:"versions"`
+	Cursor           string    `json:"cursor,omitempty"`
+	Started          [256]bool `json:"started"`
+	Done             [256]bool `json:"done"`
+	Collected        bool      `json:"collected,omitempty"`
+	ReclaimInputs    bool      `json:"reclaim_inputs,omitempty"`
 }
 
 func (gc *GraphGC) BlocksWrites() bool {
-	return gc != nil && (gc.Phase == "starting" || gc.Phase == "prune" && !gc.Collected)
+	return gc != nil && (gc.RecoverySequence != 0 || gc.Phase == "starting" || gc.Phase == "prune" && !gc.Collected)
 }
 
 func (gc *GraphGC) Keeps(version int64) bool {
@@ -45,10 +46,24 @@ func (gc *GraphGC) keep(version int64) {
 
 func (s Store) applyGraphGC(ctx context.Context, g Graph, a Action) (any, error) {
 	if a.Operation == "graph_gc_begin" {
-		if g.State != "active" || g.Active != nil || g.Move != nil || g.GC != nil || !validTokenID(a.Txn) || a.At.IsZero() {
+		allowedState := g.State == "active" || (a.Sequence != 0 && g.State == "initializing")
+		if !allowedState || g.Move != nil || !validTokenID(a.Txn) || a.At.IsZero() {
 			return nil, conflict("graph is not ready for GC")
 		}
-		g.GC = &GraphGC{ID: a.Txn, BaseVersion: g.Version, Phase: "collect", ReclaimInputs: a.Revision >= InputGCRevision}
+		if a.Sequence != 0 {
+			if a.Revision < RecoveryGCRevision || g.Active == nil || g.Active.State != "preparing" || g.Active.Sequence != a.Sequence {
+				return nil, conflict("graph transaction changed before snapshot recovery")
+			}
+			if g.GC != nil && (g.GC.ID != a.Txn || g.GC.Phase != "collect") {
+				return nil, conflict("graph GC collection checkpoint changed")
+			}
+		} else if g.Active != nil || g.GC != nil {
+			return nil, conflict("graph is not ready for GC")
+		}
+		if g.GC == nil {
+			g.GC = &GraphGC{ID: a.Txn, BaseVersion: g.Version, Phase: "collect", ReclaimInputs: a.Revision >= InputGCRevision}
+		}
+		g.GC.RecoverySequence = a.Sequence
 		if a.Revision == 0 {
 			// Old log entries expect pruning before the mark boundary.
 			g.GC.Phase = "prune"
@@ -103,7 +118,7 @@ func (s Store) applyGraphGC(ctx context.Context, g Graph, a Action) (any, error)
 				}
 				gc.Cursor, gc.Collected = next, next == ""
 			}
-			if gc.Collected && g.Active == nil {
+			if gc.Collected && (g.Active == nil || gc.RecoverySequence != 0) {
 				gc.BaseVersion = g.Version
 				gc.keep(g.Version)
 				gc.Phase = "starting"
@@ -186,6 +201,9 @@ func (s Store) applyGraphGC(ctx context.Context, g Graph, a Action) (any, error)
 			}
 			if all {
 				g.LastGCAt = a.At
+				if gc.RecoverySequence != 0 && gc.Phase == "running" {
+					g.LastRecoveryGCSequence = gc.RecoverySequence
+				}
 				g.GC = nil
 			}
 		default:

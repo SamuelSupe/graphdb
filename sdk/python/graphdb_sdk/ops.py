@@ -56,11 +56,60 @@ class OpsMixin:
     def index_health(self, deep: bool = False) -> dict:
         return self._json("GET", "/v1/indexes/health", query={"deep": deep})
 
+    def index_catalog(self) -> dict:
+        return self._json("GET", "/v1/indexes")
+
+    def list_index_definitions(self) -> dict:
+        return self._json("GET", "/v1/indexes/definitions")
+
+    def create_index(self, kind: str, field: str, *, name: str = "", unique: bool = False) -> dict:
+        body: dict = {"kind": kind, "field": field, "unique": unique}
+        if name:
+            body["name"] = name
+        return self._json("POST", "/v1/indexes", body=body)
+
+    def drop_index(self, name: str) -> dict:
+        return self._json("DELETE", f"/v1/indexes/definitions/{self._escape(name)}")
+
     def rebuild_indexes(self, async_: bool = False) -> dict:
         return self._json("POST", "/v1/indexes/rebuild", query={"async": async_})
 
     def reader_freshness(self) -> dict:
         return self._json("GET", "/v1/control/reader-freshness")
+
+    def reader_fleet_readiness(
+        self,
+        *,
+        min_ready: int | None = None,
+        max_staleness_ms: int | None = None,
+        min_version: int | None = None,
+        target_version: int | None = None,
+    ) -> dict:
+        version_floor = min_version if min_version is not None else target_version
+        query = {
+            "min_ready": min_ready,
+            "max_staleness_ms": max_staleness_ms,
+            "min_version": version_floor,
+        }
+        return self._json("GET", "/v1/control/reader-fleet-readiness", query=query)
+
+    def reader_traffic_gate(
+        self,
+        *,
+        max_staleness_ms: int | None = None,
+        min_version: int | None = None,
+        target_version: int | None = None,
+        allow_stale: bool | None = None,
+        refresh: bool | None = None,
+    ) -> dict:
+        version_floor = min_version if min_version is not None else target_version
+        query = {
+            "max_staleness_ms": max_staleness_ms,
+            "min_version": version_floor,
+            "allow_stale": allow_stale,
+            "refresh": refresh,
+        }
+        return self._json("GET", "/v1/control/reader-traffic-gate", query=query)
 
     def writer_lease(self) -> dict:
         return self._json("GET", "/v1/control/writer-lease")
@@ -70,3 +119,22 @@ class OpsMixin:
 
     def repair(self, apply: bool = False) -> dict:
         return self._json("POST", "/v1/control/repair", body={"apply": apply})
+
+    def recover(self) -> dict:
+        return self._json("POST", "/v1/control/recover")
+
+    def cleanup_commits(self) -> dict:
+        return self._json("POST", "/v1/control/cleanup-commits")
+
+    def gc(self, *, keep_snapshots: int = 2, dry_run: bool = False, max_deletes: int | None = None, cleanup_index_orphans: bool = True) -> dict:
+        body: dict = {
+            "keep_snapshots": keep_snapshots,
+            "dry_run": dry_run,
+            "cleanup_index_orphans": cleanup_index_orphans,
+        }
+        if max_deletes is not None:
+            body["max_deletes"] = max_deletes
+        return self._json("POST", "/v1/control/gc", body=body)
+
+    def compact(self) -> dict:
+        return self._json("POST", "/v1/compact")

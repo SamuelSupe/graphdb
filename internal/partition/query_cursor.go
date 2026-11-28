@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
 
@@ -20,6 +21,10 @@ type queryCursor struct {
 }
 
 func ExecutePinnedQuery(ctx context.Context, remote Remote, home Group, g Graph, request query.Request) (query.Response, error) {
+	return ExecutePinnedQueryWithFilter(ctx, remote, home, g, request, "", nil)
+}
+
+func ExecutePinnedQueryWithFilter(ctx context.Context, remote Remote, home Group, g Graph, request query.Request, filterTag string, predicate func(graph.Entity) bool) (query.Response, error) {
 	if err := query.ValidateRequest(request); err != nil {
 		return query.Response{}, err
 	}
@@ -28,6 +33,10 @@ func ExecutePinnedQuery(ctx context.Context, remote Remote, home Group, g Graph,
 	signatureRequest := request
 	signatureRequest.Cursor = ""
 	signature, _ := json.Marshal(signatureRequest)
+	if filterTag != "" {
+		signature = append(signature, '\x00')
+		signature = append(signature, filterTag...)
+	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(signature))
 	envelope := queryCursor{}
 	var pinned PinnedView
@@ -68,7 +77,7 @@ func ExecutePinnedQuery(ctx context.Context, remote Remote, home Group, g Graph,
 		return query.Response{}, err
 	}
 	request.Cursor = envelope.Cursor
-	response, err := ExecuteQuery(ctx, View{Graph: pinned.Graph, Remote: remote}, request)
+	response, err := ExecuteQueryWithPredicate(ctx, View{Graph: pinned.Graph, Remote: remote}, request, predicate)
 	if err != nil {
 		return query.Response{}, err
 	}

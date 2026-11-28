@@ -72,8 +72,9 @@ func (c *ReaderCache) startStoreLoad(
 		}
 
 		c.mu.Lock()
+		now := time.Now()
 		entry, ok := c.entries[tenantID]
-		if ok && cacheEntryNewerThanLoaded(entry, loaded) && entry.manifest.Version >= minVersion {
+		if ok && cacheEntryFresh(entry, now, minVersion) && cacheEntryNewerThanLoaded(entry, loaded) {
 			c.mu.Unlock()
 			finished = true
 			c.recordCache(tenantID, "hit_newer")
@@ -87,7 +88,6 @@ func (c *ReaderCache) startStoreLoad(
 			c.finishLoad(tenantID, load, nil)
 			return
 		}
-		now := time.Now()
 		next := cacheEntry{
 			graph: loaded.Graph, manifest: loaded.Manifest, meta: loaded.Meta,
 			cachedAt: now, expiresAt: c.expiry(now), lastAccess: now,
@@ -251,10 +251,11 @@ func waitCacheLoad(ctx context.Context, load *cacheLoad) error {
 
 func (c *ReaderCache) setLoadCancel(load *cacheLoad, cancel context.CancelFunc, independent bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	load.cancel = cancel
 	load.independent = independent
-	if load.superseded {
+	shouldCancel := load.superseded || c.closed
+	c.mu.Unlock()
+	if shouldCancel && cancel != nil {
 		cancel()
 	}
 }

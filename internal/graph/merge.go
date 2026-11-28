@@ -28,7 +28,7 @@ func (g *Graph) applyMerge(
 		return err
 	}
 	g.removeEntityFromIndexes(target.ID, target)
-	affectedMergeEdges := map[string]struct{}{}
+	sources := make(map[string]bool, len(request.SourceIDs))
 	for _, sourceID := range request.SourceIDs {
 		if sourceID == request.TargetID {
 			continue
@@ -42,17 +42,7 @@ func (g *Graph) applyMerge(
 		}
 		target = mergeEntityWithSpecs(target, source, fields)
 		target.MergedFrom = appendUnique(target.MergedFrom, sourceID)
-		if err := g.redirectMergeEdges(
-			sourceID,
-			request.TargetID,
-			version,
-			now,
-			tracker,
-			reportAffectedEdges,
-			affectedMergeEdges,
-		); err != nil {
-			return err
-		}
+		sources[sourceID] = true
 		g.removeEntityFromIndexes(sourceID, source)
 		g.Entities.Delete(sourceID)
 		affected.add(sourceID)
@@ -72,5 +62,9 @@ func (g *Graph) applyMerge(
 	}
 	g.addEntityToIndexes(request.TargetID, target)
 	uniqueValidator.add(target)
+	affectedMergeEdges := map[string]struct{}{}
+	if err := g.redirectMergeEdges(request.SourceIDs, sources, request.TargetID, version, now, tracker, reportAffectedEdges, affectedMergeEdges); err != nil {
+		return err
+	}
 	return g.validateAffectedMergeEdges(affectedMergeEdges)
 }

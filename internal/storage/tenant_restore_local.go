@@ -173,6 +173,9 @@ func (s *TenantStore) publishLocalTenantRestore(ctx context.Context, files *File
 	if err := files.syncPendingDirectories(); err != nil {
 		return err
 	}
+	if err := files.syncPendingDeleteDirectories(); err != nil {
+		return err
+	}
 	target, err := files.path(targetKey)
 	if err != nil {
 		return err
@@ -204,6 +207,9 @@ func (files *FileStore) publishTenantDirectory(ctx context.Context, dir, targetK
 	if err := files.syncPendingDirectories(); err != nil {
 		return err
 	}
+	if err := files.syncPendingDeleteDirectories(); err != nil {
+		return err
+	}
 	err = files.publishRestoreDirectory(ctx, dir, targetKey)
 	_, journalErr := os.Lstat(filepath.Join(dir, "journal.json"))
 	r := files.runtime
@@ -226,4 +232,6 @@ func (s *TenantStore) invalidateLocalRestoredTenant(tenantID string) {
 	files := s.localFileStore()
 	files.changed(s.manifestKey(tenantID), "", false)
 	files.changed(s.tenantMetadataKey(tenantID), "", false)
+	files.changed(s.indexCatalogKey(tenantID), "", false)
+	files.changed(s.reverseIndexCatalogKey(tenantID), "", false)
 }

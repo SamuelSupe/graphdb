@@ -8,12 +8,103 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 type fileListBeforeKey struct{}
 type fileListDirectoriesKey struct{}
-type fileListDirectories map[string][]os.DirEntry
+
+type fileListDirectories struct {
+	mu      sync.Mutex
+	store   *FileStore
+	entries map[string][]os.DirEntry
+}
+
+func newFileListDirectories() *fileListDirectories {
+	return &fileListDirectories{
+		entries: make(map[string][]os.DirEntry),
+	}
+}
+
+func (d *fileListDirectories) reset() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	clear(d.entries)
+	d.mu.Unlock()
+}
+
+func (d *fileListDirectories) bind(store *FileStore) bool {
+	if d == nil || store == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.store == nil {
+		d.store = store
+		return true
+	}
+	return d.store == store
+}
+
+func (d *fileListDirectories) pruneOutside(walkRoot string) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	for dir := range d.entries {
+		if dir != walkRoot && !strings.HasPrefix(dir, walkRoot+string(filepath.Separator)) && !strings.HasPrefix(walkRoot, dir+string(filepath.Separator)) {
+			delete(d.entries, dir)
+		}
+	}
+	d.mu.Unlock()
+}
+
+func (d *fileListDirectories) get(dir string) ([]os.DirEntry, bool) {
+	if d == nil {
+		return nil, false
+	}
+	d.mu.Lock()
+	entries, ok := d.entries[dir]
+	d.mu.Unlock()
+	return entries, ok
+}
+
+func (d *fileListDirectories) set(dir string, entries []os.DirEntry) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.entries == nil {
+		d.entries = make(map[string][]os.DirEntry)
+	}
+	d.entries[dir] = entries
+	d.mu.Unlock()
+}
+
+func (d *fileListDirectories) delete(dir string) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	delete(d.entries, dir)
+	d.mu.Unlock()
+}
+
+// WithFileListPageCache reuses the directory entries on the active list path
+// across one sequential scan. Start a new context for each complete pass.
+func WithFileListPageCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, fileListDirectoriesKey{}, newFileListDirectories())
+}
+
+// ResetFileListPageCache discards cached directory entries when a sequential
+// scan has to restart within the same context.
+func ResetFileListPageCache(ctx context.Context) {
+	directories, _ := ctx.Value(fileListDirectoriesKey{}).(*fileListDirectories)
+	directories.reset()
+}
 
 // ListPage retains only one page and the entries of directories on its path.
 // Completed subtrees are skipped using the exclusive object-key cursor.
@@ -53,15 +144,11 @@ func (s *FileStore) listLoosePageMatching(ctx context.Context, prefix, after str
 	before, _ := ctx.Value(fileListBeforeKey{}).(time.Time)
 	// A GC sweep reuses sorted entries along the current path. This avoids
 	// rescanning a large flat directory for every page without caching a tree.
-	directories, _ := ctx.Value(fileListDirectoriesKey{}).(fileListDirectories)
-	if limit <= 0 {
+	directories, _ := ctx.Value(fileListDirectoriesKey{}).(*fileListDirectories)
+	if limit <= 0 || !directories.bind(s) {
 		directories = nil
 	}
-	for dir := range directories {
-		if dir != walkRoot && !strings.HasPrefix(dir, walkRoot+string(filepath.Separator)) && !strings.HasPrefix(walkRoot, dir+string(filepath.Separator)) {
-			delete(directories, dir)
-		}
-	}
+	directories.pruneOutside(walkRoot)
 	items := make([]ObjectInfo, 0)
 	var walk func(string) error
 	walk = func(dir string) error {
@@ -76,7 +163,7 @@ func (s *FileStore) listLoosePageMatching(ctx context.Context, prefix, after str
 			}
 			return e.Name()
 		}
-		entries, cached := directories[dir]
+		entries, cached := directories.get(dir)
 		if !cached {
 			entries, err = os.ReadDir(dir)
 			if os.IsNotExist(err) {
@@ -86,9 +173,7 @@ func (s *FileStore) listLoosePageMatching(ctx context.Context, prefix, after str
 				return err
 			}
 			sort.Slice(entries, func(i, j int) bool { return name(entries[i]) < name(entries[j]) })
-			if directories != nil {
-				directories[dir] = entries
-			}
+			directories.set(dir, entries)
 		}
 		relDir, err := filepath.Rel(root, dir)
 		if err != nil {
@@ -148,7 +233,7 @@ func (s *FileStore) listLoosePageMatching(ctx context.Context, prefix, after str
 				return filepath.SkipAll
 			}
 		}
-		delete(directories, dir)
+		directories.delete(dir)
 		return nil
 	}
 	if err := walk(walkRoot); err != nil && !errors.Is(err, filepath.SkipAll) {

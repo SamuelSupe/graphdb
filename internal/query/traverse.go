@@ -15,9 +15,12 @@ func executeTraverse(g *graph.Graph, request Request, cursor cursorState, budget
 		return Response{}, err
 	}
 	if !ok {
-		if lazyExecution(g, budget) {
-			return Response{}, ErrIndexUnavailable
+		if lazyExecution(g, budget) && !budget.authoritativeEntities {
+			return Response{}, ErrMaterializedFallback
 		}
+		return Response{}, fmt.Errorf("%w: entity %q not found", ErrInvalid, request.ID)
+	}
+	if !budget.allowsEntity(start) {
 		return Response{}, fmt.Errorf("%w: entity %q not found", ErrInvalid, request.ID)
 	}
 	if err := validateDirection(request.Direction); err != nil {
@@ -59,6 +62,12 @@ func executeCompleteTraverse(
 		fmt.Sprintf("depth=%d", normalizedDepth(request.Depth)),
 		0,
 		func() (int, error) {
+			if request.Path.MaxPaths > 0 {
+				return visitPathsInIdentityOrder(
+					g, start, request, completePathScanLimit(request),
+					budget, collector.add,
+				)
+			}
 			return visitPaths(
 				g, start, request, completePathScanLimit(request),
 				budget, collector.add,
@@ -108,6 +117,68 @@ func collectPaths(g *graph.Graph, start graph.Entity, request Request, maxResult
 	return results, err
 }
 
+const maxTraverseFrontier = 65536
+
+type bfsPathNode struct {
+	parent *bfsPathNode
+	entity graph.Entity
+	edge   *graph.Edge
+	depth  int
+}
+
+func (n *bfsPathNode) contains(id string) bool {
+	for cur := n; cur != nil; cur = cur.parent {
+		if cur.entity.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *bfsPathNode) toPath() graph.Path {
+	entities := make([]graph.Entity, n.depth+1)
+	var edges []graph.Edge
+	if n.depth > 0 {
+		edges = make([]graph.Edge, n.depth)
+	}
+	for cur := n; cur != nil; cur = cur.parent {
+		entities[cur.depth] = cur.entity
+		if cur.edge != nil {
+			edges[cur.depth-1] = *cur.edge
+		}
+	}
+	return graph.Path{Entities: entities, Edges: edges}
+}
+
+func bfsStepMatches(edge graph.Edge, entity graph.Entity, filter PathFilter, stepIdx int) bool {
+	if len(filter.NodeKinds) > 0 && !pathAllowsKind(entity.Kind, filter) {
+		return false
+	}
+	if len(filter.Steps) == 0 {
+		return true
+	}
+	if stepIdx >= len(filter.Steps) {
+		return false
+	}
+	step := filter.Steps[stepIdx]
+	if !stringSliceAllows(edge.Type, step.RelationTypes) {
+		return false
+	}
+	if !edgeMatches(edge, step.EdgeWhere) || !edgeExprMatches(edge, step.EdgeWhereExpr) {
+		return false
+	}
+	if !stringSliceAllows(entity.Kind, step.NodeKinds) {
+		return false
+	}
+	if len(step.Where) > 0 && !entityMatches(&entity, step.Where) {
+		return false
+	}
+	if !entityExprMatches(&entity, step.WhereExpr) {
+		return false
+	}
+	return true
+}
+
 func visitPaths(
 	g *graph.Graph,
 	start graph.Entity,
@@ -116,20 +187,23 @@ func visitPaths(
 	budget *budget,
 	visit func(graph.Path) error,
 ) (int, error) {
-	queue := []pendingPath{{
-		entityID: start.ID,
-		path:     graph.Path{Entities: []graph.Entity{start}},
-	}}
+	if len(request.Path.NodeKinds) > 0 && !pathAllowsKind(start.Kind, request.Path) {
+		return 0, nil
+	}
+	queue := []*bfsPathNode{{entity: start, depth: 0}}
 	matched := 0
 	depth := normalizedDepth(request.Depth)
-	if !pathPrefixMatches(queue[0].path, request.Path, false) {
-		return 0, nil
+	if len(request.Path.Steps) > 0 {
+		if depth < len(request.Path.Steps) {
+			return 0, nil
+		}
+		depth = len(request.Path.Steps)
 	}
 	for level := 0; level < depth && len(queue) > 0; level++ {
 		if err := budget.check(); err != nil {
 			return matched, err
 		}
-		next := make([]pendingPath, 0)
+		next := make([]*bfsPathNode, 0)
 		finalLevel := level+1 == depth
 		for _, current := range queue {
 			levelRequest := requestForPathLevel(request, level)
@@ -138,34 +212,50 @@ func visitPaths(
 				neighbor graph.Neighbor,
 			) (bool, error) {
 				budget.visited++
-				if pathContainsEntity(current.path, neighbor.Entity.ID) {
+				if current.contains(neighbor.Entity.ID) {
 					return true, nil
 				}
-				newPath := clonePath(current.path)
-				newPath.Entities = append(newPath.Entities, neighbor.Entity)
-				newPath.Edges = append(newPath.Edges, neighbor.Edge)
-				if !pathPrefixMatches(newPath, request.Path, finalLevel) {
+				if !budget.allowsEntity(neighbor.Entity) {
 					return true, nil
 				}
-				if pathMatches(newPath, request.Path) {
-					if err := visit(newPath); err != nil {
-						return false, err
-					}
-					matched++
-					if maxResults > 0 && matched >= maxResults {
-						limitReached = true
-						return false, nil
+				if !bfsStepMatches(neighbor.Edge, neighbor.Entity, request.Path, level) {
+					return true, nil
+				}
+				edgeCopy := neighbor.Edge
+				node := &bfsPathNode{
+					parent: current,
+					entity: neighbor.Entity,
+					edge:   &edgeCopy,
+					depth:  current.depth + 1,
+				}
+				if len(request.Path.Steps) == 0 || node.depth == len(request.Path.Steps) {
+					end := node.entity
+					endOK := (request.Path.EndKind == "" || end.Kind == request.Path.EndKind) &&
+						(len(request.Path.EndWhere) == 0 || entityMatches(&end, request.Path.EndWhere)) &&
+						entityExprMatches(&end, request.Path.EndWhereExpr)
+					if endOK {
+						if err := visit(node.toPath()); err != nil {
+							return false, err
+						}
+						matched++
+						if maxResults > 0 && matched >= maxResults {
+							limitReached = true
+							return false, nil
+						}
 					}
 				}
 				if finalLevel {
 					return true, nil
 				}
-				next = append(next, pendingPath{entityID: neighbor.Entity.ID, path: newPath})
+				if len(next) >= maxTraverseFrontier {
+					return false, fmt.Errorf("%w: traversal frontier limit %d exceeded", ErrLimitExceeded, maxTraverseFrontier)
+				}
+				next = append(next, node)
 				return true, nil
 			}
 			used, err := visitIndexedPathNeighbors(
 				g,
-				current.entityID,
+				current.entity.ID,
 				levelRequest,
 				budget,
 				processNeighbor,
@@ -175,7 +265,7 @@ func visitPaths(
 			}
 			if !used {
 				neighbors, err := neighborsForBudget(
-					g, current.entityID, levelRequest, budget,
+					g, current.entity.ID, levelRequest, budget,
 				)
 				if err != nil {
 					return matched, err

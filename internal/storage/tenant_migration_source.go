@@ -1,11 +1,16 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // ValidateTenantMigrationSource cold-loads the published graph and relation
@@ -69,10 +74,106 @@ func ValidateTenantMigrationSource(ctx context.Context, source *TenantStore, ten
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	if _, err := cold.GetReverseIndexCatalog(ctx, tenantID, catalog.Version); err != nil && !errors.Is(err, ErrNotFound) {
+	if err == nil && catalog.Version > manifest.Version {
+		return fmt.Errorf("migration index catalog version %d exceeds manifest version %d", catalog.Version, manifest.Version)
+	}
+	if revCatalog, err := cold.GetReverseIndexCatalog(ctx, tenantID, catalog.Version); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	} else if err == nil && revCatalog.Version > manifest.Version {
+		return fmt.Errorf("migration reverse index catalog version %d exceeds manifest version %d", revCatalog.Version, manifest.Version)
+	}
+	if err := validateMigrationReceiptDB(ctx, objects, cold.tenantObjectPrefix(tenantID)+receiptDatabase); err != nil {
 		return err
 	}
 	return objects.validateEncodings(ctx, cold, tenantID)
+}
+
+func validateMigrationReceiptDB(ctx context.Context, objects ObjectStore, key string) error {
+	data, err := objects.Get(ctx, key)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("invalid tenant receipt database: empty file")
+	}
+	tmp, err := os.CreateTemp("", "graphdb-validate-receipts-*.db")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return checkMigrationReceiptDBFile(ctx, name)
+}
+
+// checkMigrationReceiptDBFile validates the bbolt freelist, every reachable
+// B+tree branch/leaf page, and every packed receipt payload synchronously on
+// the calling goroutine so SetPanicOnFault and recover() reliably contain
+// mmap/bbolt faults without calling tx.Check()'s unprotected child goroutine.
+func checkMigrationReceiptDBFile(ctx context.Context, name string) (err error) {
+	var handle *receiptDBHandle
+	defer func() {
+		if value := recover(); value != nil {
+			err = fmt.Errorf("corrupt tenant receipt database: %v", value)
+			if handle != nil && receiptDatabasePanic(value) {
+				handle.err = err
+			}
+		}
+		if handle != nil {
+			_ = handle.close()
+		}
+	}()
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	handle, err = openBoltReceipt(name, true, true)
+	if err != nil {
+		return fmt.Errorf("invalid tenant receipt database: %w", err)
+	}
+	return handle.db.View(func(tx *bolt.Tx) error {
+		return tx.ForEach(func(bucketName []byte, b *bolt.Bucket) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			isReceipts := bytes.Equal(bucketName, receiptBucket)
+			return b.ForEach(func(k, v []byte) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if !isReceipts {
+					return nil
+				}
+				if len(v) == 0 || !isParquetBytes(v) {
+					return fmt.Errorf("corrupt tenant receipt database: invalid packed receipt %q", k)
+				}
+				keyName := string(k)
+				switch {
+				case strings.HasPrefix(keyName, "idempotency/commits/"):
+					record, err := decodeParquetDirectCommitRecord(ctx, v)
+					if err != nil {
+						return fmt.Errorf("corrupt tenant receipt database: receipt %q: %w", keyName, err)
+					}
+					if directCommitRecordStatus(record) != directCommitStatusCommitted {
+						return fmt.Errorf("corrupt tenant receipt database: nonterminal direct receipt %q", keyName)
+					}
+				case strings.HasPrefix(keyName, "ingest/"):
+					if _, err := decodeParquetIngestRecord(ctx, v); err != nil {
+						return fmt.Errorf("corrupt tenant receipt database: receipt %q: %w", keyName, err)
+					}
+				default:
+					return fmt.Errorf("corrupt tenant receipt database: unexpected receipt key %q", keyName)
+				}
+				return nil
+			})
+		})
+	})
 }
 
 type tenantMigrationValidationStore struct {
@@ -145,7 +246,7 @@ func (s *tenantMigrationValidationStore) validateEncodings(ctx context.Context, 
 		// The same decoder/encoder used by copy must succeed before an install
 		// changes live incarnation controls. Orphan and optional catalogs can
 		// otherwise turn a deterministic bad payload into a group-wide apply failure.
-		if _, _, err := cold.rewriteTenantMigrationObject(ctx, data, key, tenantID, tenantID, prefix, prefix, nil, writerFenceRef{}); err != nil {
+		if _, _, _, err := cold.rewriteTenantMigrationObject(ctx, data, key, tenantID, tenantID, prefix, prefix, nil, writerFenceRef{}); err != nil {
 			return fmt.Errorf("migration object %q: %w", key, err)
 		}
 	}

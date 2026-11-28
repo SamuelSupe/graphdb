@@ -12,6 +12,15 @@ type adjacencyBuildKey struct{}
 
 var errAdjacencyIndex = errors.New("adjacency index update failed")
 
+func indexCatalogHasAdjacency(catalog IndexCatalog) bool {
+	for _, spec := range catalog.EdgeShards {
+		if spec.AdjacencyRoot != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func adjacencyNodeBytes(n adjacencyNode) int64 {
 	bytes := int64(96)
 	for _, e := range n.Entries {
@@ -26,12 +35,18 @@ func adjacencyNodeBytes(n adjacencyNode) int64 {
 // Full conversion is confined to explicit rebuilds, with the existing captured
 // manifest/fence/CAS publication. Feed bounded payload chunks into the tree;
 // no whole-bucket endpoint map or flat adjacency directory is constructed.
-func (s *TenantStore) buildAdjacencyRoots(ctx context.Context, tenant string, version int64, specs []EdgeShard, parts []EdgeShardData, reverse bool) error {
-	if enabled, _ := ctx.Value(adjacencyBuildKey{}).(bool); !enabled || !s.WriteIndexAdjacencyPages {
+func (s *TenantStore) buildAdjacencyRoots(ctx context.Context, tenant string, version int64, specs []EdgeShard, parts []EdgeShardData, reverse bool) (err error) {
+	if !s.executionEnv(ctx).BuildOpts.AdjacencyEnabled || !s.WriteIndexAdjacencyPages {
 		return nil
 	}
 	if !s.WriteIndexRangePages {
 		return fmt.Errorf("adjacency pages require range pages")
+	}
+	if localFiles := s.localFileStore(); localFiles != nil && !IsReplicatedContext(ctx) {
+		ctx = context.WithValue(ctx, fileBatchKey{}, localFiles)
+		defer func() {
+			err = errors.Join(err, localFiles.syncPendingDirectories())
+		}()
 	}
 	byKey := make(map[string]int, len(specs))
 	for i, spec := range specs {
@@ -66,13 +81,19 @@ func (s *TenantStore) buildAdjacencyRoots(ctx context.Context, tenant string, ve
 	return nil
 }
 
-func (s *TenantStore) updateEdgeAdjacency(ctx context.Context, tenant string, old EdgeShard, next *EdgeShard, before, after *graph.Graph, ids map[string]bool, version int64, reverse bool) error {
+func (s *TenantStore) updateEdgeAdjacency(ctx context.Context, tenant string, old EdgeShard, next *EdgeShard, before, after *graph.Graph, ids map[string]bool, version int64, reverse bool) (err error) {
 	if old.AdjacencyRoot == nil {
-		if old.EdgeCount > 0 || !s.WriteIndexAdjacencyPages || !s.WriteIndexRangePages {
+		if old.EdgeCount > 0 || !s.WriteIndexAdjacencyPages || !s.WriteIndexRangePages || !s.executionEnv(ctx).BuildOpts.AdjacencyEnabled {
 			return nil
 		}
 	} else if old.AdjacencyRoot.Count != old.EdgeCount {
 		return fmt.Errorf("%w: root count mismatch", errAdjacencyIndex)
+	}
+	if localFiles := s.localFileStore(); localFiles != nil && !IsReplicatedContext(ctx) {
+		ctx = context.WithValue(ctx, fileBatchKey{}, localFiles)
+		defer func() {
+			err = errors.Join(err, localFiles.syncPendingDirectories())
+		}()
 	}
 	var changes []adjacencyChange
 	keyFor := func(g *graph.Graph, id string) (adjacencyKey, bool) {

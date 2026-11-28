@@ -82,17 +82,30 @@ func (r partitionCoordinator) planNextIngest(ctx context.Context, complete parti
 		return nil
 	}
 
-	app.mu.Lock()
-	current := app.pending[app.ingestPrefix()+complete.ReceiptRef+".json"]
 	var key string
-	var record acceptedRequest
-	if current.index != 0 && current.partitioned && current.tenant == g.Tenant && current.generation == g.Generation {
-		key, err = app.partitionIngestAfter(ctx, g.Tenant, g.Generation, current.index)
-		if err == nil && key != "" {
-			record, err = app.accepted(ctx, key)
+	app.mu.RLock()
+	needsPending := app.pending == nil
+	if !needsPending {
+		current := app.pending[app.ingestPrefix()+complete.ReceiptRef+".json"]
+		if current.index != 0 && current.partitioned && current.tenant == g.Tenant && current.generation == g.Generation {
+			key, err = app.partitionIngestAfter(ctx, g.Tenant, g.Generation, current.index)
 		}
 	}
-	app.mu.Unlock()
+	app.mu.RUnlock()
+	if needsPending {
+		app.mu.Lock()
+		if err = app.ensurePending(ctx); err == nil {
+			current := app.pending[app.ingestPrefix()+complete.ReceiptRef+".json"]
+			if current.index != 0 && current.partitioned && current.tenant == g.Tenant && current.generation == g.Generation {
+				key, err = app.partitionIngestAfter(ctx, g.Tenant, g.Generation, current.index)
+			}
+		}
+		app.mu.Unlock()
+	}
+	var record acceptedRequest
+	if err == nil && key != "" {
+		record, err = app.loadAcceptedUnderRLock(ctx, key)
+	}
 	if err != nil || key == "" || record.State != "accepted" {
 		return nil
 	}

@@ -180,13 +180,23 @@ func (s *FileStore) deletePackedReceipt(ctx context.Context, key string, conditi
 	if !ok {
 		return checkCondition(condition, "", false)
 	}
-	if _, err := s.packedReceipt(ctx, key); err != nil {
+	dbPath, err := s.path(location.database)
+	if err != nil {
+		return err
+	}
+	if err := s.verifySafeParent(dbPath); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return checkCondition(condition, "", false)
 		}
 		return err
 	}
-	err := s.withReceiptDB(ctx, location.database, true, func(db *bolt.DB) error {
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		return checkCondition(condition, "", false)
+	} else if statErr != nil {
+		return statErr
+	}
+	deleted := false
+	err = s.withReceiptDB(ctx, location.database, true, func(db *bolt.DB) error {
 		return db.Update(func(tx *bolt.Tx) error {
 			bucket := tx.Bucket(receiptBucket)
 			if bucket == nil {
@@ -201,10 +211,14 @@ func (s *FileStore) deletePackedReceipt(ctx context.Context, key string, conditi
 			if err := checkCondition(condition, etag, stored != nil); err != nil {
 				return err
 			}
+			if stored == nil {
+				return nil
+			}
+			deleted = true
 			return bucket.Delete(name)
 		})
 	})
-	if err == nil {
+	if err == nil && deleted {
 		s.changed(location.database, "", false)
 		s.changed(key, "", true)
 	}

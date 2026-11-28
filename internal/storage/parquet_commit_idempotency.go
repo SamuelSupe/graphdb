@@ -22,6 +22,7 @@ const directCommitRecordCodecParquet = "direct-commit-record-arrow-parquet-v1"
 
 const (
 	directCommitRowMetadata        = "direct_commit_metadata"
+	directCommitRowCollectorState  = "direct_commit_collector_state"
 	directCommitRowSegment         = "direct_commit_segment"
 	directCommitRowCommitKey       = "direct_commit_key"
 	directCommitRowSuppressed      = "direct_commit_suppressed"
@@ -93,7 +94,7 @@ func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCo
 
 	var record DirectCommitRecord
 	var expectedHash string
-	build := &commitBuild{}
+	build := codec.NewCommitBuilder(table.NumRows())
 	rows := 0
 	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
@@ -121,24 +122,20 @@ func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCo
 				return DirectCommitRecord{}, fmt.Errorf("direct commit record identity mismatch")
 			}
 			row := codec.ParquetCommitRowFromColumns(columns, i)
+			if err := columns.ValidateOrdinals(i, table.NumRows(), true); err != nil {
+				return DirectCommitRecord{}, err
+			}
 			if err := applyDirectCommitRow(&record, build, row); err != nil {
 				return DirectCommitRecord{}, err
 			}
 			rows++
 		}
 	}
-	for ordinal, item := range build.CITypes() {
-		record.Request.Mutations.UpsertCITypes = codec.SetCITypeAt(record.Request.Mutations.UpsertCITypes, ordinal, item)
+	mutations, err := build.FinishMutations()
+	if err != nil {
+		return DirectCommitRecord{}, err
 	}
-	for ordinal, item := range build.Relations() {
-		record.Request.Mutations.UpsertRelationTypes = codec.SetRelationTypeAt(record.Request.Mutations.UpsertRelationTypes, ordinal, item)
-	}
-	for ordinal, item := range build.Entities() {
-		record.Request.Mutations.UpsertEntities = codec.SetEntityAt(record.Request.Mutations.UpsertEntities, ordinal, item)
-	}
-	for ordinal, item := range build.Edges() {
-		record.Request.Mutations.UpsertEdges = codec.SetEdgeAt(record.Request.Mutations.UpsertEdges, ordinal, item)
-	}
+	record.Request.Mutations = mutations
 	hash, err := directCommitRecordContentHash(record)
 	if err != nil {
 		return DirectCommitRecord{}, err
@@ -179,6 +176,14 @@ func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row pa
 			value := row.EntitySource.Priority
 			expected := int64(value)
 			record.Request.ExpectedVersion = &expected
+		}
+	case directCommitRowCollectorState:
+		record.Request.CollectorState = &CollectorStateUpdate{
+			Source:      row.Source,
+			CollectorID: row.SourceID,
+			BatchID:     row.ID,
+			Cursor:      row.EntryKey,
+			Version:     row.VersionValue,
 		}
 	case directCommitRowSegment:
 		hash, err := codec.StringFromCommitValue(row.Value)
@@ -282,6 +287,16 @@ func directCommitRecordRows(record DirectCommitRecord) ([]parquetCommitRow, erro
 		metadata.EntitySource.Priority = int(*record.Request.ExpectedVersion)
 	}
 	rows := []parquetCommitRow{metadata}
+	if cs := record.Request.CollectorState; cs != nil {
+		rows = append(rows, parquetCommitRow{
+			Kind:         directCommitRowCollectorState,
+			Source:       cs.Source,
+			SourceID:     cs.CollectorID,
+			ID:           cs.BatchID,
+			EntryKey:     cs.Cursor,
+			VersionValue: cs.Version,
+		})
+	}
 	mutationRows, err := codec.CommitRows(graph.Commit{Mutations: record.Request.Mutations})
 	if err != nil {
 		return nil, err

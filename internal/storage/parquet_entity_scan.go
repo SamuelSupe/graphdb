@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -36,8 +37,8 @@ type parquetEntityCandidateState struct {
 	shard    string
 }
 
-func shouldScanParquetEntityCandidates(options EntityScanOptions, cursor scanCursor) bool {
-	return options.Kind != "" || options.Source != "" || cursor.After != ""
+func shouldScanParquetEntityCandidates(options EntityScanOptions) bool {
+	return options.Kind != "" || options.Source != ""
 }
 
 func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard string, options EntityScanOptions, cursor scanCursor) (parquetEntityCandidateScan, error) {
@@ -60,6 +61,9 @@ func scanParquetEntityObjectCandidatesReader(ctx context.Context, source parquet
 		return out, err
 	}
 	defer reader.Close()
+	if reader.MetaData().Schema.NumColumns() <= parquetEntityColumnEntitySourceSource {
+		return out, fmt.Errorf("parquet entity page has %d columns, want at least %d", reader.MetaData().Schema.NumColumns(), parquetEntityColumnEntitySourceSource+1)
+	}
 
 	rowGroups := parquetEntityCandidateRowGroups(reader, options)
 	out.RowGroupsRead = len(rowGroups)
@@ -119,13 +123,14 @@ func scanParquetEntityObjectCandidatesReader(ctx context.Context, source parquet
 			}
 			state := states[id]
 			if state == nil {
+				id = strings.Clone(id)
 				state = &parquetEntityCandidateState{}
 				states[id] = state
 			}
 			if !state.baseSet {
 				state.baseSet = true
 				state.baseOK = options.Kind == "" || kinds.Value(row) == options.Kind
-				state.shard = shards.Value(row)
+				state.shard = strings.Clone(shards.Value(row))
 			}
 			if options.Source == "" {
 				state.sourceOK = true

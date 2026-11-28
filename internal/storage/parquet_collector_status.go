@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -132,15 +133,15 @@ func decodeParquetCollectorStatus(ctx context.Context, data []byte) (CollectorSt
 		return CollectorStatus{}, err
 	}
 	status := CollectorStatus{
-		TenantID:       tenantColumn.Value(0),
-		Source:         sourceColumn.Value(0),
-		CollectorID:    collectorColumn.Value(0),
-		LastBatchID:    lastBatchColumn.Value(0),
+		TenantID:       strings.Clone(tenantColumn.Value(0)),
+		Source:         strings.Clone(sourceColumn.Value(0)),
+		CollectorID:    strings.Clone(collectorColumn.Value(0)),
+		LastBatchID:    strings.Clone(lastBatchColumn.Value(0)),
 		LastVersion:    lastVersionColumn.Value(0),
-		LastCursor:     cursorColumn.Value(0),
+		LastCursor:     strings.Clone(cursorColumn.Value(0)),
 		LastStartedAt:  parquetio.ParseTime(startedColumn.Value(0)),
 		LastFinishedAt: parquetio.ParseTime(finishedColumn.Value(0)),
-		LastError:      errorColumn.Value(0),
+		LastError:      strings.Clone(errorColumn.Value(0)),
 		AppliedTotal:   int(appliedColumn.Value(0)),
 		FailedTotal:    int(failedColumn.Value(0)),
 	}

@@ -49,6 +49,9 @@ func pageBothNeighborsFromVisitor(
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	_, cursorEdgeID, hasCursorEdge := cursorNeighborEdge(cursor)
+	if !cursor.Legacy && cursor.After != "" && !hasCursorEdge {
+		return nil, nil, true, invalidCursorAfter(cursor)
+	}
 	startEdgeID := ""
 	if hasCursorEdge {
 		startEdgeID = cursorEdgeID
@@ -67,9 +70,16 @@ func pageBothNeighborsFromVisitor(
 				relationTypeSet(request),
 				startEdgeID,
 				func(edge graph.Edge, direction string) (bool, error) {
+					if hasCursorEdge && !state.pastCursor && edge.ID > cursorEdgeID {
+						return false, invalidCursorAfter(cursor)
+					}
 					scanned++
 					if err := budget.add(1); err != nil {
 						return false, err
+					}
+					if !requestEdgeMatches(request, edge) {
+						budget.visited++
+						return true, nil
 					}
 					entity, ok, err := materializeEntity(
 						g,
@@ -86,7 +96,7 @@ func pageBothNeighborsFromVisitor(
 						}
 						return true, nil
 					}
-					if !pathAllowsKind(entity.Kind, request.Path) {
+					if !budget.allowsEntity(entity) || !pathAllowsKind(entity.Kind, request.Path) {
 						return true, nil
 					}
 					stop, err := appendPageNeighbor(
@@ -125,6 +135,9 @@ func pageDirectedNeighborsFromVisitor(
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	cursorEdgeID, hasCursorEdge := cursorDirectedEdgeID(cursor, direction)
+	if !cursor.Legacy && cursor.After != "" && !hasCursorEdge {
+		return nil, state, true, invalidCursorAfter(cursor)
+	}
 	startEdgeID := ""
 	if hasCursorEdge {
 		startEdgeID = cursorEdgeID
@@ -159,6 +172,10 @@ func pageDirectedNeighborsFromVisitor(
 					if err := budget.add(1); err != nil {
 						return false, err
 					}
+					if !requestEdgeMatches(request, edge) {
+						budget.visited++
+						return true, nil
+					}
 					entityID := directedNeighborID(edge, direction)
 					entity, ok, err := materializeEntity(
 						g, entityID, request, budget,
@@ -172,7 +189,7 @@ func pageDirectedNeighborsFromVisitor(
 						}
 						return true, nil
 					}
-					if !pathAllowsKind(entity.Kind, request.Path) {
+					if !budget.allowsEntity(entity) || !pathAllowsKind(entity.Kind, request.Path) {
 						return true, nil
 					}
 					stop, err := appendPageNeighbor(
@@ -260,7 +277,8 @@ func confirmCursorDirectedNeighbor(
 		}
 		return invalidCursorAfter(cursor)
 	}
-	if !pathAllowsKind(entity.Kind, request.Path) ||
+	if !budget.allowsEntity(entity) ||
+		!pathAllowsKind(entity.Kind, request.Path) ||
 		!requestEntityMatches(&request, &entity) ||
 		!requestEdgeMatches(request, edge) {
 		return invalidCursorAfter(cursor)

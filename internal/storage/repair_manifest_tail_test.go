@@ -7,6 +7,39 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func TestRepairManifestReopensLooseCommitBeforeSegment(t *testing.T) {
+	ctx := t.Context()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	const tenant = "tenant-a"
+	if _, err := store.InitTenant(ctx, tenant); err != nil {
+		t.Fatal(err)
+	}
+	sharded, err := store.putShardedSnapshot(ctx, tenant, graph.Snapshot{Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := graph.Commit{ID: "loose", TenantID: tenant, Version: 2}
+	if err := store.putCommitObjectIfAbsent(ctx, store.commitKey(tenant, first.Version, first.ID), first); err != nil {
+		t.Fatal(err)
+	}
+	second := graph.Commit{ID: "segment", TenantID: tenant, Version: 3}
+	if _, err := store.putCommitSegment(ctx, tenant, []commitSegmentItem{
+		{Key: store.commitKey(tenant, second.Version, second.ID), Commit: second},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.repairManifest(ctx, tenant)
+	if err != nil || manifest.Version != 3 || manifest.SnapshotCatalogKey != sharded.Key {
+		t.Fatalf("repaired manifest = %+v, %v", manifest, err)
+	}
+	reader := NewTenantStore(objects, "test")
+	loaded, _, err := reader.Load(ctx, tenant)
+	if err != nil || loaded == nil || loaded.Version != 3 {
+		t.Fatalf("cold load repaired manifest = %v, %v", loaded, err)
+	}
+}
+
 type keyGetCountingStore struct {
 	ObjectStore
 	calls map[string]int

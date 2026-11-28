@@ -1,42 +1,34 @@
-# GGraphDB v2.6.5
+# GGraphDB v2.7.0
 
-从上一正式版 2.6.2 升级到 2.6.5，可获得以下 GC、流式查询和 Raft 恢复修复。
+从 2.6.5 升级到 2.7.0，获得架构收敛及全链路稳定性、持久化、并发安全与性能加固。
 
-- 本地磁盘 GC 扫描索引时，若并发写入更新了索引或 manifest，当前文件留待后续 GC 重新检查。本轮扫描从该文件之后继续，避免因游标重复而导致维护任务失败。
-- Prometheus 指标 `graphdb_http_interrupted_streams_total` 补全 HELP 说明，保留原有计数语义。
-- Go 和 Python SDK 校验 NDJSON 完成标记并报告流中的终止错误。服务同时记录中断流的 HTTP 指标和访问日志。
-- 快照写入保留已持久化的最高 Raft 协议。首次升级读取旧快照目录时，根据仍保留的日志修正协议下限。
-- Router 将请求取消与 Catalog 故障分开处理，业务版本冲突保留租户路由。写入背压使用租户的 CAS 冲突窗口。
-- 对象缓存阻止并发旧读覆盖新值，超预算对象不会挤掉其他热键。普通 WAL 刷新一次按租户归组，独占文件存储的 HA 维护调度复用待执行任务索引。单机 WAL 恢复复用已有检查点。
-- 审计改进涵盖输入规范化与图校验、查询资源限制、读缓存并发、复制回滚和备份调度。
-
-分片 GC 识别数据组返回的精简批处理回执，保留已完成分片的进度。v2.6.3 和 v2.6.4 是未发布的候选标签。
+- **存储、WAL 与 Parquet 持久化加固**：重构并收敛底层存储后端、Catalog、Lease、Task、Backup 与 WAL 子系统；引入分片写时复制（Sharded COW）邻接与分区映射降低写放大和锁争用；加固 manifest 保护、稀疏 Parquet 写入、行列裁剪扫描、回执过期索引、本地/对象缓存并发一致性以及 S3 备份与恢复容错。
+- **Raft 高可用、分片与协议升级**：新增 Raft ReadIndex 线性一致读、内联快照传输与压缩后的 Raft 日志尾保留索引；支持 Raft 协议 1 至 14（默认仍为协议 1，协议 13 涵盖保留检查点、采集队列检查点、快照载荷摘要、JSON 载荷帧、大图转换取消/回滚与托管 WAL 回执迁移）；修复并发维护、切主、分区 2PC 与迁移恢复路径上的锁序、数据竞争与恢复边界问题。
+- **查询引擎、HTTP API、控制台与 SDK**：新增查询 IR 能力校验、物化最短路径执行、优化的来源扫描与差分模糊测试；强化查询与流式响应的取消/资源预算、HTTP 准入与错误码契约、AdminUI 边界校验，以及 Go/Python SDK 的连接池、错误码同步、重试和流完整性检查。
 
 ## 升级
 
-替换各 Raft 节点时沿用已配置的协议。按组滚动替换，各副本追平后再继续。需要启用新协议时使用独立维护窗口。使用流式 SDK 的调用方应读取到流结束并检查错误。首次从旧目录核对协议下限的耗时取决于保留的日志数量。[滚动升级](https://github.com/SamuelSupe/graphdb/blob/v2.6.5/docs/raft-rolling-upgrade.zh-CN.md) · [SDK 文档](https://github.com/SamuelSupe/graphdb/blob/v2.6.5/docs/user/sdk.zh-CN.md) · [发布验证](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.5)
+单机 2.x 升级前请先保留完整的运行状态备份（包含数据目录与 WAL 目录），停止旧进程后替换为 2.7.0 并沿用原 `GRAPHDB_DATA_DIR` 与 prefix。替换各 Raft 节点时沿用已配置的协议，按组滚动替换并在副本追平后继续；需要启用新协议时使用独立维护窗口。使用流式 SDK 的调用方应读取到流结束并检查错误。[滚动升级](https://github.com/SamuelSupe/graphdb/blob/v2.7.0/docs/raft-rolling-upgrade.zh-CN.md) · [SDK 文档](https://github.com/SamuelSupe/graphdb/blob/v2.7.0/docs/user/sdk.zh-CN.md) · [发布验证](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.7.0)
 
 ## 下载和校验
 
 | 平台 | 归档 |
 | --- | --- |
-| Linux x86_64 | `graphdb-v2.6.5-linux-amd64.tar.gz` |
-| Linux aarch64 | `graphdb-v2.6.5-linux-arm64.tar.gz` |
-| 完整版（含 macOS ARM64 二进制） | `graphdb-v2.6.5.tar.gz` |
+| Linux x86_64 | `graphdb-v2.7.0-linux-amd64.tar.gz` |
+| Linux aarch64 | `graphdb-v2.7.0-linux-arm64.tar.gz` |
+| 完整版（含 macOS ARM64 二进制） | `graphdb-v2.7.0.tar.gz` |
 
 将归档与对应的 `.sha256` 放在同一目录。以下命令校验 Linux AMD64 归档并检查版本。
 
 ```sh
-archive=graphdb-v2.6.5-linux-amd64.tar.gz
+archive=graphdb-v2.7.0-linux-amd64.tar.gz
 sha256sum -c "$archive.sha256"
 tar -xzf "$archive"
-./graphdb-v2.6.5-linux-amd64/graphdb version
+./graphdb-v2.7.0-linux-amd64/graphdb version
 ```
 
 完整版包含源码、SDK、部署示例和发布门禁证据。`BUILD-METADATA.json` 记录版本和构建提交。
 
 ## 本次发布验证范围
 
-本次从 `v2.6.5` 标签直接打包，提交为 `17f86dd1b7ce603f5dafc550aced58eecd969d66`。已完成本地磁盘和 WAL 恢复、对象备份还原、网关验证，以及针对本地 GC 游标的回归测试。包内附有本次标签的对象备份和网关记录。
-
-本次发布跳过长时间混合负载和完整 Raft 检查。常规 GitHub Actions 标签流程已停止，全量静态检查作业当时也尚未完成。[查看各项检查结果](https://github.com/SamuelSupe/graphdb/actions/runs/45300753426)
+本次发布已在本地完成工作区卫生检查、发布冻结契约校验、`go vet -mod=readonly ./...`、全仓库 18 个 Go 包的 `-race -count=1` 单元测试与多轮回归测试、管理控制台边界测试、Python SDK 测试及自动化脚本测试。推送 `v2.7.0` 标签后，GitHub Actions 发布流水线将自动执行静态与集成门禁、对象备份门禁、网关门禁、30 分钟本地磁盘混合负载长测、Raft 门禁，并在原生 Linux AMD64/ARM64 环境验证发行包后自动发布资产。[查看发布流水线](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.7.0)

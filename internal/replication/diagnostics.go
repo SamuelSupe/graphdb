@@ -85,7 +85,7 @@ func (n *Node) Status() map[string]any {
 	failure := n.failure
 	snapshotFailure := n.snapshotFailure
 	cleanupFailure := n.snapshotCleanupFailure
-	proposals, reads := len(n.proposals), len(n.reads)
+	proposals, reads := len(n.proposals), n.readWaiters
 	n.mu.Unlock()
 	raftStatus := n.raft.Status()
 	applied := n.applied.Load()

@@ -21,6 +21,7 @@ func writeGraphSnapshotJSON(w http.ResponseWriter, ctx context.Context, tenant s
 	}
 	w.Header().Set("Content-Type", "application/json")
 	encoder := json.NewEncoder(w)
+	flush := streamFlush(w)
 	var err error
 	write := func(text string) {
 		if err == nil {
@@ -32,6 +33,9 @@ func writeGraphSnapshotJSON(w http.ResponseWriter, ctx context.Context, tenant s
 			err = ctx.Err()
 			if err == nil {
 				err = encoder.Encode(value)
+			}
+			if err == nil {
+				err = flush()
 			}
 		}
 	}
@@ -101,31 +105,21 @@ func (s *Server) streamGraphSnapshot(w http.ResponseWriter, r *http.Request, ten
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
-	if err := encodeStreamItem(r.Context(), encoder, map[string]any{
+	abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{
 		"stream": "snapshot", "tenant_id": tenantID, "version": version,
-	}, flush); err != nil {
-		return
-	}
+	}, flush))
 	for _, name := range slices.Sorted(maps.Keys(g.CITypes)) {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"ci_type": g.CITypes[name]}, flush); err != nil {
-			return
-		}
+		abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"ci_type": g.CITypes[name]}, flush))
 	}
 	for _, name := range slices.Sorted(maps.Keys(g.RelationTypes)) {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"relation_type": g.RelationTypes[name]}, flush); err != nil {
-			return
-		}
+		abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"relation_type": g.RelationTypes[name]}, flush))
 	}
-	if err := g.VisitEntitiesByID("", "", func(entity graph.Entity) (bool, error) {
+	abortScanWrite(g.VisitEntitiesByID("", "", func(entity graph.Entity) (bool, error) {
 		err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush)
 		return err == nil, err
-	}); err != nil {
-		return
-	}
+	}))
 	for _, id := range slices.Sorted(g.Edges.Keys()) {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge": g.Edges.At(id)}, flush); err != nil {
-			return
-		}
+		abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"edge": g.Edges.At(id)}, flush))
 	}
-	_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": version}, flush)
+	abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": version}, flush))
 }

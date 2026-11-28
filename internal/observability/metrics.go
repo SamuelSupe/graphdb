@@ -20,6 +20,11 @@ var ingestTerminalBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 
 
 type Metrics struct {
 	mu           sync.Mutex
+	httpMu       sync.Mutex
+	objectMu     sync.Mutex
+	queryMu      sync.Mutex
+	ingestMu     sync.Mutex
+	labelMu      sync.RWMutex
 	tenantLabels map[string]struct{}
 	sourceLabels map[string]struct{}
 
@@ -160,9 +165,9 @@ func (m *Metrics) RecordMaintenancePhase(phase string, duration time.Duration) {
 
 func (m *Metrics) RecordInterruptedHTTPStream() {
 	if m != nil {
-		m.mu.Lock()
+		m.httpMu.Lock()
 		m.httpInterruptedStreams++
-		m.mu.Unlock()
+		m.httpMu.Unlock()
 	}
 }
 
@@ -170,14 +175,14 @@ func (m *Metrics) RecordHTTPRequest(method string, route string, status int, dur
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	switch method {
 	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
 	default:
 		method = "OTHER"
 	}
 	key := labelKey(method, route, strconv.Itoa(status))
+	m.httpMu.Lock()
+	defer m.httpMu.Unlock()
 	m.httpRequests[key]++
 	m.observe(m.httpDuration, key, httpBuckets, duration.Seconds())
 }
@@ -186,18 +191,19 @@ func (m *Metrics) RecordObjectStoreOperation(operation string, status string, du
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.observe(m.objectDuration, labelKey(operation, status), writeBuckets, duration.Seconds())
+	key := labelKey(operation, status)
+	m.objectMu.Lock()
+	defer m.objectMu.Unlock()
+	m.observe(m.objectDuration, key, writeBuckets, duration.Seconds())
 }
 
 func (m *Metrics) RecordTaskFailure(tenantID, taskType string) {
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.taskFailures[labelKey(tenantID, taskType)]++
 }
 
@@ -205,9 +211,9 @@ func (m *Metrics) RecordWriteBackpressure(tenantID string, reason string) {
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.writeBackpressure[labelKey(tenantID, reason)]++
 }
 
@@ -215,9 +221,9 @@ func (m *Metrics) RecordWriteAdmissionQueue(tenantID string, status string, dura
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.observe(m.writeAdmission, labelKey(tenantID, status), writeBuckets, duration.Seconds())
 }
 
@@ -225,9 +231,9 @@ func (m *Metrics) RecordManifestCASConflict(tenantID string) {
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.manifestConflicts[tenantID]++
 }
 
@@ -235,9 +241,9 @@ func (m *Metrics) RecordCommitTail(tenantID string, length int) {
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.commitTailLength[tenantID] = float64(length)
 }
 
@@ -245,9 +251,9 @@ func (m *Metrics) RecordCoordinatorCAS(tenantID string, status string) {
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.coordinatorCAS[labelKey(tenantID, status)]++
 }
 
@@ -255,9 +261,9 @@ func (m *Metrics) RecordCoordinatorHeadRevision(tenantID string, revision int64)
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	if value := float64(revision); value > m.coordinatorHeads[tenantID] {
 		m.coordinatorHeads[tenantID] = value
 	}
@@ -295,10 +301,10 @@ func (m *Metrics) RecordQuery(tenantID string, op string, status string, duratio
 		return
 	}
 	op = normalizeQueryMetricOp(op)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
+	tenantID = m.metricTenant(tenantID)
 	key := labelKey(tenantID, op, status)
+	m.queryMu.Lock()
+	defer m.queryMu.Unlock()
 	m.queries[key]++
 	m.observe(m.queryDuration, key, queryBuckets, duration.Seconds())
 	if slow {
@@ -321,9 +327,9 @@ func (m *Metrics) RecordReadAdmissionQueue(tenantID string, status string, durat
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
+	tenantID = m.metricTenant(tenantID)
+	m.queryMu.Lock()
+	defer m.queryMu.Unlock()
 	m.observe(m.readAdmission, labelKey(tenantID, status), writeBuckets, duration.Seconds())
 }
 
@@ -331,9 +337,9 @@ func (m *Metrics) RecordReaderNotFresh(tenantID string, reason string) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
+	tenantID = m.metricTenant(tenantID)
+	m.queryMu.Lock()
+	defer m.queryMu.Unlock()
 	m.readerNotFresh[labelKey(tenantID, reason)]++
 }
 
@@ -341,9 +347,9 @@ func (m *Metrics) RecordReaderVisibleVersion(tenantID string, version int64) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
+	tenantID = m.metricTenant(tenantID)
+	m.queryMu.Lock()
+	defer m.queryMu.Unlock()
 	m.readerVisibleVersion[tenantID] = float64(version)
 }
 
@@ -351,10 +357,10 @@ func (m *Metrics) RecordReaderCatchup(tenantID string, status string, duration t
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
+	tenantID = m.metricTenant(tenantID)
 	key := labelKey(tenantID, status)
+	m.queryMu.Lock()
+	defer m.queryMu.Unlock()
 	m.readerCatchup[key]++
 	m.observe(m.readerCatchupLatency, key, queryBuckets, duration.Seconds())
 }
@@ -363,9 +369,9 @@ func (m *Metrics) RecordReaderCache(tenantID string, status string) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
+	tenantID = m.metricTenant(tenantID)
+	m.queryMu.Lock()
+	defer m.queryMu.Unlock()
 	m.readerCache[labelKey(tenantID, status)]++
 }
 
@@ -373,9 +379,9 @@ func (m *Metrics) RecordSuppressed(tenantID string, resourceType string, count i
 	if m == nil || count <= 0 {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.suppressed[labelKey(tenantID, resourceType)] += float64(count)
 }
 
@@ -383,10 +389,10 @@ func (m *Metrics) RecordIngestSuppressed(tenantID string, source string, count i
 	if m == nil || count <= 0 {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
-	source = m.metricSourceLocked(source)
+	tenantID = m.metricTenant(tenantID)
+	source = m.metricSource(source)
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestSuppressed[labelKey(tenantID, source)] += float64(count)
 }
 
@@ -394,10 +400,10 @@ func (m *Metrics) RecordIngestSkipped(tenantID string, source string, reason str
 	if m == nil || reason == "" {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
-	source = m.metricSourceLocked(source)
+	tenantID = m.metricTenant(tenantID)
+	source = m.metricSource(source)
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestSkipped[labelKey(tenantID, source, reason)]++
 }
 
@@ -405,8 +411,8 @@ func (m *Metrics) RecordIngestWALAppend(recordType string, status string, bytes 
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestWALAppend[labelKey(recordType, status)]++
 	if status == "ok" {
 		m.ingestWALBytes += float64(bytes)
@@ -417,9 +423,9 @@ func (m *Metrics) RecordIngestWALSync(status string, records int, bytes int, dur
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	key := labelKey(status)
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestWALSync[key]++
 	m.observe(m.ingestWALSyncTime, key, writeBuckets, duration.Seconds())
 	m.observe(m.ingestWALGroups, key, ingestGroupBuckets, float64(records))
@@ -429,8 +435,8 @@ func (m *Metrics) RecordIngestWALState(bufferBytes int, diskBytes int64, written
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestWALBuffer = float64(bufferBytes)
 	m.ingestWALDisk = float64(diskBytes)
 	m.ingestWALWritten = float64(writtenLSN)
@@ -441,8 +447,8 @@ func (m *Metrics) RecordIngestQueue(pending int, bytes int64, oldest time.Durati
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestQueue = float64(pending)
 	m.ingestQueueBytes = float64(bytes)
 	m.ingestQueueMemory = float64(bytes)
@@ -453,8 +459,8 @@ func (m *Metrics) RecordIngestQueueCache(event string) {
 	if m == nil || (event != "hit" && event != "eviction") {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestQueueCache[event]++
 }
 
@@ -471,9 +477,9 @@ func (m *Metrics) RecordIngestFlush(
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	key := labelKey(status)
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestFlush[key]++
 	m.observe(m.ingestFlushTime, key, queryBuckets, duration.Seconds())
 	m.observe(m.ingestFlushReqs, key, ingestGroupBuckets, float64(requests))
@@ -490,8 +496,8 @@ func (m *Metrics) RecordIngestTerminal(state string, duration time.Duration) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.observe(m.ingestTerminalTime, state, ingestTerminalBuckets, duration.Seconds())
 }
 
@@ -499,9 +505,9 @@ func (m *Metrics) RecordIngestRecovery(status string, records int, pending int, 
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	key := labelKey(status)
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
 	m.ingestRecovery[key]++
 	m.observe(m.ingestRecoveryTime, key, queryBuckets, duration.Seconds())
 }
@@ -510,12 +516,78 @@ func (m *Metrics) RecordIndexHealth(tenantID string, status string, issues int) 
 	if m == nil {
 		return
 	}
+	tenantID = m.metricTenant(tenantID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tenantID = m.metricTenantLocked(tenantID)
 	m.indexHealthChecks[labelKey(tenantID, status)]++
 	m.indexHealthStatus[tenantID] = status
 	m.indexHealthIssues[tenantID] = float64(issues)
+}
+
+func (m *Metrics) forgetTenant(tenant string) {
+	if m == nil || tenant == "" || tenant == "__other__" {
+		return
+	}
+	m.labelMu.Lock()
+	if _, exists := m.tenantLabels[tenant]; !exists {
+		m.labelMu.Unlock()
+		return
+	}
+	delete(m.tenantLabels, tenant)
+	m.labelMu.Unlock()
+
+	prefix := labelKey(tenant, "")
+	m.queryMu.Lock()
+	for _, series := range []map[string]float64{
+		m.queries, m.slowQueries, m.readerNotFresh, m.readerCatchup, m.readerCache,
+	} {
+		for key := range series {
+			if strings.HasPrefix(key, prefix) {
+				delete(series, key)
+			}
+		}
+	}
+	for _, series := range []map[string]*histogram{m.queryDuration, m.readAdmission, m.readerCatchupLatency} {
+		for key := range series {
+			if strings.HasPrefix(key, prefix) {
+				delete(series, key)
+			}
+		}
+	}
+	delete(m.readerVisibleVersion, tenant)
+	m.queryMu.Unlock()
+
+	m.ingestMu.Lock()
+	for _, series := range []map[string]float64{m.ingestSuppressed, m.ingestSkipped} {
+		for key := range series {
+			if strings.HasPrefix(key, prefix) {
+				delete(series, key)
+			}
+		}
+	}
+	m.ingestMu.Unlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, series := range []map[string]float64{
+		m.writeBackpressure, m.taskFailures, m.coordinatorCAS, m.suppressed, m.indexHealthChecks,
+	} {
+		for key := range series {
+			if strings.HasPrefix(key, prefix) {
+				delete(series, key)
+			}
+		}
+	}
+	for key := range m.writeAdmission {
+		if strings.HasPrefix(key, prefix) {
+			delete(m.writeAdmission, key)
+		}
+	}
+	delete(m.manifestConflicts, tenant)
+	delete(m.commitTailLength, tenant)
+	delete(m.coordinatorHeads, tenant)
+	delete(m.indexHealthStatus, tenant)
+	delete(m.indexHealthIssues, tenant)
 }
 
 func cloneHistograms(src map[string]*histogram) map[string]*histogram {
@@ -535,24 +607,76 @@ func cloneHistograms(src map[string]*histogram) map[string]*histogram {
 }
 
 func (m *Metrics) snapshot() *Metrics {
+	m.httpMu.Lock()
+	httpRequests := maps.Clone(m.httpRequests)
+	httpInterruptedStreams := m.httpInterruptedStreams
+	httpDuration := cloneHistograms(m.httpDuration)
+	m.httpMu.Unlock()
+
+	m.objectMu.Lock()
+	objectDuration := cloneHistograms(m.objectDuration)
+	m.objectMu.Unlock()
+
+	m.queryMu.Lock()
+	queries := maps.Clone(m.queries)
+	queryDuration := cloneHistograms(m.queryDuration)
+	slowQueries := maps.Clone(m.slowQueries)
+	readAdmission := cloneHistograms(m.readAdmission)
+	readerNotFresh := maps.Clone(m.readerNotFresh)
+	readerVisibleVersion := maps.Clone(m.readerVisibleVersion)
+	readerCatchup := maps.Clone(m.readerCatchup)
+	readerCatchupLatency := cloneHistograms(m.readerCatchupLatency)
+	readerCache := maps.Clone(m.readerCache)
+	m.queryMu.Unlock()
+
+	m.ingestMu.Lock()
+	ingestSuppressed := maps.Clone(m.ingestSuppressed)
+	ingestSkipped := maps.Clone(m.ingestSkipped)
+	ingestWALAppend := maps.Clone(m.ingestWALAppend)
+	ingestWALBytes := m.ingestWALBytes
+	ingestWALSync := maps.Clone(m.ingestWALSync)
+	ingestWALSyncTime := cloneHistograms(m.ingestWALSyncTime)
+	ingestWALGroups := cloneHistograms(m.ingestWALGroups)
+	ingestWALBuffer := m.ingestWALBuffer
+	ingestWALDisk := m.ingestWALDisk
+	ingestWALWritten := m.ingestWALWritten
+	ingestWALDurable := m.ingestWALDurable
+	ingestQueue := m.ingestQueue
+	ingestQueueBytes := m.ingestQueueBytes
+	ingestQueueMemory := m.ingestQueueMemory
+	ingestQueueOldest := m.ingestQueueOldest
+	ingestQueueCache := maps.Clone(m.ingestQueueCache)
+	ingestFlush := maps.Clone(m.ingestFlush)
+	ingestFlushTime := cloneHistograms(m.ingestFlushTime)
+	ingestTerminalTime := cloneHistograms(m.ingestTerminalTime)
+	ingestFlushReqs := cloneHistograms(m.ingestFlushReqs)
+	ingestFlushCommit := cloneHistograms(m.ingestFlushCommit)
+	ingestFlushSegs := cloneHistograms(m.ingestFlushSegs)
+	ingestFlushPub := cloneHistograms(m.ingestFlushPub)
+	ingestFlushDedup := m.ingestFlushDedup
+	ingestFlushFall := m.ingestFlushFall
+	ingestRecovery := maps.Clone(m.ingestRecovery)
+	ingestRecoveryTime := cloneHistograms(m.ingestRecoveryTime)
+	m.ingestMu.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return &Metrics{
-		httpRequests:           maps.Clone(m.httpRequests),
-		httpInterruptedStreams: m.httpInterruptedStreams,
-		httpDuration:           cloneHistograms(m.httpDuration),
-		objectDuration:         cloneHistograms(m.objectDuration),
+		httpRequests:           httpRequests,
+		httpInterruptedStreams: httpInterruptedStreams,
+		httpDuration:           httpDuration,
+		objectDuration:         objectDuration,
 		maintenanceDuration:    cloneHistograms(m.maintenanceDuration),
 		maintenanceMemory:      maps.Clone(m.maintenanceMemory),
-		queries:                maps.Clone(m.queries),
-		queryDuration:          cloneHistograms(m.queryDuration),
-		slowQueries:            maps.Clone(m.slowQueries),
-		readAdmission:          cloneHistograms(m.readAdmission),
-		readerNotFresh:         maps.Clone(m.readerNotFresh),
-		readerVisibleVersion:   maps.Clone(m.readerVisibleVersion),
-		readerCatchup:          maps.Clone(m.readerCatchup),
-		readerCatchupLatency:   cloneHistograms(m.readerCatchupLatency),
-		readerCache:            maps.Clone(m.readerCache),
+		queries:                queries,
+		queryDuration:          queryDuration,
+		slowQueries:            slowQueries,
+		readAdmission:          readAdmission,
+		readerNotFresh:         readerNotFresh,
+		readerVisibleVersion:   readerVisibleVersion,
+		readerCatchup:          readerCatchup,
+		readerCatchupLatency:   readerCatchupLatency,
+		readerCache:            readerCache,
 		writeBackpressure:      maps.Clone(m.writeBackpressure),
 		taskFailures:           maps.Clone(m.taskFailures),
 		writeAdmission:         cloneHistograms(m.writeAdmission),
@@ -564,33 +688,33 @@ func (m *Metrics) snapshot() *Metrics {
 		coordinatorHeads:       maps.Clone(m.coordinatorHeads),
 		coordinatorStatus:      maps.Clone(m.coordinatorStatus),
 		suppressed:             maps.Clone(m.suppressed),
-		ingestSuppressed:       maps.Clone(m.ingestSuppressed),
-		ingestSkipped:          maps.Clone(m.ingestSkipped),
-		ingestWALAppend:        maps.Clone(m.ingestWALAppend),
-		ingestWALBytes:         m.ingestWALBytes,
-		ingestWALSync:          maps.Clone(m.ingestWALSync),
-		ingestWALSyncTime:      cloneHistograms(m.ingestWALSyncTime),
-		ingestWALGroups:        cloneHistograms(m.ingestWALGroups),
-		ingestWALBuffer:        m.ingestWALBuffer,
-		ingestWALDisk:          m.ingestWALDisk,
-		ingestWALWritten:       m.ingestWALWritten,
-		ingestWALDurable:       m.ingestWALDurable,
-		ingestQueue:            m.ingestQueue,
-		ingestQueueBytes:       m.ingestQueueBytes,
-		ingestQueueMemory:      m.ingestQueueMemory,
-		ingestQueueOldest:      m.ingestQueueOldest,
-		ingestQueueCache:       maps.Clone(m.ingestQueueCache),
-		ingestFlush:            maps.Clone(m.ingestFlush),
-		ingestFlushTime:        cloneHistograms(m.ingestFlushTime),
-		ingestTerminalTime:     cloneHistograms(m.ingestTerminalTime),
-		ingestFlushReqs:        cloneHistograms(m.ingestFlushReqs),
-		ingestFlushCommit:      cloneHistograms(m.ingestFlushCommit),
-		ingestFlushSegs:        cloneHistograms(m.ingestFlushSegs),
-		ingestFlushPub:         cloneHistograms(m.ingestFlushPub),
-		ingestFlushDedup:       m.ingestFlushDedup,
-		ingestFlushFall:        m.ingestFlushFall,
-		ingestRecovery:         maps.Clone(m.ingestRecovery),
-		ingestRecoveryTime:     cloneHistograms(m.ingestRecoveryTime),
+		ingestSuppressed:       ingestSuppressed,
+		ingestSkipped:          ingestSkipped,
+		ingestWALAppend:        ingestWALAppend,
+		ingestWALBytes:         ingestWALBytes,
+		ingestWALSync:          ingestWALSync,
+		ingestWALSyncTime:      ingestWALSyncTime,
+		ingestWALGroups:        ingestWALGroups,
+		ingestWALBuffer:        ingestWALBuffer,
+		ingestWALDisk:          ingestWALDisk,
+		ingestWALWritten:       ingestWALWritten,
+		ingestWALDurable:       ingestWALDurable,
+		ingestQueue:            ingestQueue,
+		ingestQueueBytes:       ingestQueueBytes,
+		ingestQueueMemory:      ingestQueueMemory,
+		ingestQueueOldest:      ingestQueueOldest,
+		ingestQueueCache:       ingestQueueCache,
+		ingestFlush:            ingestFlush,
+		ingestFlushTime:        ingestFlushTime,
+		ingestTerminalTime:     ingestTerminalTime,
+		ingestFlushReqs:        ingestFlushReqs,
+		ingestFlushCommit:      ingestFlushCommit,
+		ingestFlushSegs:        ingestFlushSegs,
+		ingestFlushPub:         ingestFlushPub,
+		ingestFlushDedup:       ingestFlushDedup,
+		ingestFlushFall:        ingestFlushFall,
+		ingestRecovery:         ingestRecovery,
+		ingestRecoveryTime:     ingestRecoveryTime,
 		indexHealthChecks:      maps.Clone(m.indexHealthChecks),
 		indexHealthStatus:      maps.Clone(m.indexHealthStatus),
 		indexHealthIssues:      maps.Clone(m.indexHealthIssues),
@@ -817,7 +941,7 @@ func sortedKeysString(values map[string]string) []string {
 
 // Invalid or excess tenant labels are aggregated, never discarded. The same
 // process-wide bound covers all tenant metric families, including failed reads.
-func (m *Metrics) metricTenantLocked(tenant string) string {
+func (m *Metrics) metricTenant(tenant string) string {
 	if tenant == "" {
 		return ""
 	}
@@ -826,6 +950,14 @@ func (m *Metrics) metricTenantLocked(tenant string) string {
 	}) >= 0 {
 		return "__other__"
 	}
+	m.labelMu.RLock()
+	_, ok := m.tenantLabels[tenant]
+	m.labelMu.RUnlock()
+	if ok {
+		return tenant
+	}
+	m.labelMu.Lock()
+	defer m.labelMu.Unlock()
 	if _, ok := m.tenantLabels[tenant]; ok {
 		return tenant
 	}
@@ -839,13 +971,21 @@ func (m *Metrics) metricTenantLocked(tenant string) string {
 	return tenant
 }
 
-func (m *Metrics) metricSourceLocked(source string) string {
+func (m *Metrics) metricSource(source string) string {
 	if source == "" {
 		return ""
 	}
 	if len(source) > 128 {
 		return "__other__"
 	}
+	m.labelMu.RLock()
+	_, ok := m.sourceLabels[source]
+	m.labelMu.RUnlock()
+	if ok {
+		return source
+	}
+	m.labelMu.Lock()
+	defer m.labelMu.Unlock()
 	if _, ok := m.sourceLabels[source]; ok {
 		return source
 	}

@@ -22,6 +22,20 @@ type legacyTenantScopeKey struct{}
 
 type legacyIdentityKey struct{}
 
+type adminAuthorizedKey struct{}
+
+// WithAdminAuthorized marks a request context that passed admin authentication
+// (either on public ingress, over the authenticated private Raft listener, or
+// replayed from an admin-authorized Raft log entry).
+func WithAdminAuthorized(ctx context.Context) context.Context {
+	return context.WithValue(ctx, adminAuthorizedKey{}, true)
+}
+
+func IsAdminAuthorized(ctx context.Context) bool {
+	v, _ := ctx.Value(adminAuthorizedKey{}).(bool)
+	return v
+}
+
 // LegacyIdentityContext replays commands written before tuple identity matching.
 func LegacyIdentityContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, legacyIdentityKey{}, true)

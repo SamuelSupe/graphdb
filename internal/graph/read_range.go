@@ -104,11 +104,11 @@ func (g *Graph) sortedFieldValues(kind, field string) fieldValueOrder {
 		case strings.HasPrefix(key, "s:"), strings.HasPrefix(key, "b:"):
 			value.text = key[2:]
 		case strings.HasPrefix(key, "n:"):
-			value.text = key[2:]
-			number, err := strconv.ParseFloat(value.text, 64)
+			number, err := strconv.ParseFloat(key[2:], 64)
 			if err != nil {
 				continue
 			}
+			value.text = canonicalNumberText(number)
 			value.number = number
 			order.text = append(order.text, value)
 			if !math.IsNaN(number) {
@@ -129,11 +129,27 @@ func (g *Graph) sortedFieldValues(kind, field string) fieldValueOrder {
 	if existing, ok := g.fieldValueOrder[key]; ok {
 		return existing
 	}
-	if g.fieldValueOrder == nil || len(g.fieldValueOrder) >= 256 {
+	entryBytes := fieldValueOrderSize(order)
+	if entryBytes > maxReadOrderCacheBytes {
+		return order
+	}
+	if g.fieldValueOrder == nil || len(g.fieldValueOrder) >= 256 || g.fieldValueOrderBytes+entryBytes > maxReadOrderCacheBytes {
 		g.fieldValueOrder = make(map[fieldValueOrderKey]fieldValueOrder)
+		g.fieldValueOrderBytes = 0
 	}
 	g.fieldValueOrder[key] = order
+	g.fieldValueOrderBytes += entryBytes
 	return order
+}
+
+func canonicalNumberText(value float64) string {
+	if !math.IsNaN(value) && !math.IsInf(value, 0) && math.Trunc(value) == value && math.Abs(value) <= 1e20 {
+		if value == 0 {
+			return "0"
+		}
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	}
+	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
 func fieldValuesInRange(values []orderedFieldValue, bound FieldIndexRange, numeric bool) []orderedFieldValue {

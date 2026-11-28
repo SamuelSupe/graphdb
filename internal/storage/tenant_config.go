@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/admission"
 )
+
+const MaxDurationSeconds = math.MaxInt64 / int64(time.Second)
+const MaxDurationMilliseconds = math.MaxInt64 / int64(time.Millisecond)
 
 type TenantConfig struct {
 	Backup       TenantBackupConfig       `json:"backup,omitempty"`
@@ -277,10 +281,10 @@ func validateTenantConfig(config TenantConfig) error {
 	if err := validateBackupPolicy(config.Backup); err != nil {
 		return err
 	}
-	if err := nonNegativeInt64("backpressure.object_latency_threshold_ms", config.Backpressure.ObjectLatencyThresholdMS); err != nil {
+	if err := validateDurationMilliseconds("backpressure.object_latency_threshold_ms", config.Backpressure.ObjectLatencyThresholdMS); err != nil {
 		return err
 	}
-	if err := nonNegativeInt64("backpressure.cas_conflict_window_ms", config.Backpressure.CASConflictWindowMS); err != nil {
+	if err := validateDurationMilliseconds("backpressure.cas_conflict_window_ms", config.Backpressure.CASConflictWindowMS); err != nil {
 		return err
 	}
 	if err := nonNegativeInt("backpressure.cas_conflict_threshold", config.Backpressure.CASConflictThreshold); err != nil {
@@ -289,7 +293,7 @@ func validateTenantConfig(config TenantConfig) error {
 	if err := nonNegativeInt("backpressure.max_commit_tail", config.Backpressure.MaxCommitTail); err != nil {
 		return err
 	}
-	if err := nonNegativeInt64("backpressure.retry_after_ms", config.Backpressure.RetryAfterMS); err != nil {
+	if err := validateDurationMilliseconds("backpressure.retry_after_ms", config.Backpressure.RetryAfterMS); err != nil {
 		return err
 	}
 	if err := nonNegativeInt("quota.max_entities_per_tenant", config.Quota.MaxEntitiesPerTenant); err != nil {
@@ -325,16 +329,30 @@ func validateTenantConfig(config TenantConfig) error {
 	if err := nonNegativeInt("maintenance.edge_shard_merge_threshold", config.Maintenance.EdgeShardMergeThreshold); err != nil {
 		return err
 	}
-	if err := nonNegativeInt64("maintenance.gc_interval_seconds", config.Maintenance.GCIntervalSeconds); err != nil {
+	if err := validateDurationSeconds("maintenance.gc_interval_seconds", config.Maintenance.GCIntervalSeconds); err != nil {
 		return err
 	}
 	if err := nonNegativeInt("maintenance.keep_snapshots", config.Maintenance.KeepSnapshots); err != nil {
 		return err
 	}
-	if err := nonNegativeInt64("maintenance.deadletter_max_age_seconds", config.Maintenance.DeadLetterMaxAgeSeconds); err != nil {
+	if err := validateDurationSeconds("maintenance.deadletter_max_age_seconds", config.Maintenance.DeadLetterMaxAgeSeconds); err != nil {
 		return err
 	}
-	return nonNegativeInt64("maintenance.task_max_age_seconds", config.Maintenance.TaskMaxAgeSeconds)
+	return validateDurationSeconds("maintenance.task_max_age_seconds", config.Maintenance.TaskMaxAgeSeconds)
+}
+
+func validateDurationSeconds(name string, value *int64) error {
+	if value != nil && (*value < 0 || *value > MaxDurationSeconds) {
+		return fmt.Errorf("%s must be between 0 and %d", name, MaxDurationSeconds)
+	}
+	return nil
+}
+
+func validateDurationMilliseconds(name string, value *int64) error {
+	if value != nil && (*value < 0 || *value > MaxDurationMilliseconds) {
+		return fmt.Errorf("%s must be between 0 and %d", name, MaxDurationMilliseconds)
+	}
+	return nil
 }
 
 func nonNegativeInt(name string, value *int) error {

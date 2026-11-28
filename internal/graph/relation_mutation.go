@@ -20,7 +20,7 @@ func (g *Graph) applyRelationTypeDeletes(
 		deleted[name] = struct{}{}
 	}
 	for name := range deleted {
-		for edgeID := range g.edgeTypeIndex[name] {
+		for edgeID := range g.edgeTypeIndex.At(name).Keys() {
 			edge, ok := g.Edges.Get(edgeID)
 			if !ok {
 				continue

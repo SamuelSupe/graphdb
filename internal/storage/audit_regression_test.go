@@ -216,3 +216,164 @@ func TestDecodeParquetSnapshotRecordRejectsOutOfRangeOrdinal(t *testing.T) {
 		t.Fatalf("expected invalid parquet snapshot ordinal error, got %v", err)
 	}
 }
+
+func TestApplyReplicatedDefersReaderPublicationAndClearsWrapperCachesOnRollback(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+
+	protected := NewReadProtectedObjectStore(files, ReadProtectionConfig{MaxConcurrent: 4, Singleflight: true})
+	cache := NewWriterObjectCache(protected, WriterObjectCacheConfig{MaxBytes: 16 << 20, MaxKeys: 1024, NegativeTTL: time.Minute})
+	store := NewTenantStore(cache, "graphdb")
+	readers := NewReaderCache(store, time.Minute)
+
+	// Seed committed version 1 inside journal index 1.
+	if _, err := files.ApplyReplicated(ctx, 1, "seed", time.Unix(100, 0).UTC(), func(tx context.Context) ([]byte, error) {
+		_, err := store.Commit(tx, "tenant-a", graph.Mutations{
+			UpsertCITypes:  []graph.CIType{{Name: "host"}},
+			UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}},
+		}, CommitOptions{})
+		return []byte("v1"), err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g1, m1, err := readers.Load(ctx, "tenant-a")
+	if err != nil || m1.Version != 1 || g1.Entities.Len() != 1 {
+		t.Fatalf("initial reader load: v=%d len=%d err=%v", m1.Version, g1.Entities.Len(), err)
+	}
+
+	// Journal index 2 writes commit v2 + saved query, checks reader isolation mid-batch, then rejects.
+	rejected := &ReplicationRejectedError{Response: []byte("conflict")}
+	_, err = files.ApplyReplicated(ctx, 2, "batch-reject", time.Unix(101, 0).UTC(), func(tx context.Context) ([]byte, error) {
+		if _, err := store.Commit(tx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: "host:2", Kind: "host"}},
+		}, CommitOptions{}); err != nil {
+			return nil, err
+		}
+		if _, err := store.SaveQuery(tx, "tenant-a", SavedQuery{
+			Name: "uncommitted-q",
+		}); err != nil {
+			// SaveQuery validates Request; write a raw object through cache to test wrapper rollback invalidation.
+			if putErr := store.Objects.Put(tx, "graphdb/tenants/tenant-a/custom-temp.bin", []byte("uncommitted")); putErr != nil {
+				return nil, putErr
+			}
+		}
+		// Before journal commit, ReaderCache cached view must not have published v2 via publishGraph.
+		if cachedVer, ok := readers.CachedVersion("tenant-a"); ok && cachedVer != 1 {
+			t.Fatalf("uncommitted version %d leaked into ReaderCache mid-journal", cachedVer)
+		}
+		return nil, rejected
+	})
+	if err != rejected {
+		t.Fatalf("expected rejected error, got %v", err)
+	}
+
+	if _, err := store.Objects.Get(ctx, "graphdb/tenants/tenant-a/custom-temp.bin"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rolled-back object leaked through WriterObjectCache: %v", err)
+	}
+	gAfter, mAfter, err := readers.Load(ctx, "tenant-a")
+	if err != nil || mAfter.Version != 1 || gAfter.Entities.Len() != 1 {
+		t.Fatalf("reader after rollback saw dirty state: v=%d len=%d err=%v", mAfter.Version, gAfter.Entities.Len(), err)
+	}
+}
+
+func TestRetainedCheckpointMaterializedOnCleanCloseAndCacheListPreserved(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedCtx := WithCheckpointInReplicationJournal(ctx)
+	if _, err := files.ApplyReplicated(retainedCtx, 7, "p13", time.Unix(200, 0).UTC(), func(tx context.Context) ([]byte, error) {
+		return []byte("committed-7"), files.Put(tx, "graphdb/k", []byte("v"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := NewFileStore(root).ReplicationCheckpoint()
+	if err != nil || cp.Index != 7 || string(cp.Response) != "committed-7" {
+		t.Fatalf("clean Close did not materialize retained checkpoint: %+v, err=%v", cp, err)
+	}
+
+	// NegativeTTL == 0 missing-key Get must not evict cached ancestor Lists.
+	mem := NewMemoryStore()
+	if err := mem.Put(ctx, "tenants/t1/a", []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	wcache := NewWriterObjectCache(mem, WriterObjectCacheConfig{MaxBytes: 1 << 20, MaxKeys: 64, NegativeTTL: 0})
+	if items, err := wcache.List(ctx, "tenants/t1/"); err != nil || len(items) != 1 {
+		t.Fatalf("warm list: %+v %v", items, err)
+	}
+	if _, err := wcache.Get(ctx, "tenants/t1/missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	wcache.mu.Lock()
+	_, listStillCached := wcache.lists["tenants/t1/"]
+	wcache.mu.Unlock()
+	if !listStillCached {
+		t.Fatal("NegativeTTL=0 missing Get evicted cached prefix list")
+	}
+
+	// Millisecond backpressure config overflow must be rejected.
+	tstore := NewTenantStore(NewMemoryStore(), "test")
+	overflowMS := MaxDurationMilliseconds + 1
+	if _, err := tstore.PutTenantConfig(ctx, "tenant-a", TenantConfig{
+		Backpressure: TenantBackpressureConfig{
+			ObjectLatencyThresholdMS: &overflowMS,
+		},
+	}); err == nil {
+		t.Fatal("expected overflow ObjectLatencyThresholdMS to fail validation")
+	}
+}
+
+func TestSingleTenantWALHeadOfLineDrainsUnderTightReserve(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 1
+	config.WAL.MaxBytes = 8192
+	config.WAL.SegmentBytes = 8192
+	config.WAL.ControlReserveBytes = 512
+	config.QueueMemoryBytes = 7400
+
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+
+	var accepted []IngestAcceptance
+	for i := range 6 {
+		req := ingestEntityRequest("hol-"+string(rune('a'+i)), "host:"+string(rune('a'+i)))
+		req.Items[0].Entity.Fields = graph.Fields{"payload": strings.Repeat("p", 800)}
+		a, acceptErr := service.Accept(ctx, "tenant-a", req)
+		if errors.Is(acceptErr, ErrIngestWALFull) || errors.Is(acceptErr, ErrIngestQueueFull) {
+			break
+		}
+		if acceptErr != nil {
+			t.Fatalf("accept %d: %v", i, acceptErr)
+		}
+		accepted = append(accepted, a)
+	}
+	if len(accepted) < 3 {
+		t.Fatalf("expected multiple accepted requests queued, got %d", len(accepted))
+	}
+	if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+		t.Fatalf("FlushTenant deadlocked or failed: %v", err)
+	}
+	for i, a := range accepted {
+		res, waitErr := service.WaitCommitted(ctx, a)
+		if waitErr != nil || res.Applied != 1 {
+			t.Fatalf("item %d did not commit: res=%+v err=%v", i, res, waitErr)
+		}
+	}
+}

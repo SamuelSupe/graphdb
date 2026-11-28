@@ -17,24 +17,34 @@ import (
 const partitionReceiptPage = 64
 const partitionReceiptBytes = 4 << 20
 
-// A zero interval runs the compatibility sweep once. Expiry starts another
-// pass after the interval, including for deadlines accepted before a restart.
-func (c *Cluster) runPartitionReceiptSweep(ctx context.Context, name string, stepDelay, interval time.Duration, step func(context.Context, string) (string, error)) {
+// Compatibility sweeps can wait for a lifecycle change after the first pass.
+func (c *Cluster) runReceiptSweep(ctx context.Context, name string, stepDelay, interval time.Duration, wake <-chan struct{}, step func(context.Context, string) (string, error)) {
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
+	tick := timer.C
+	var changed <-chan struct{}
+	var scan context.Context
 	cursor := ""
 	backoff := time.Second
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-changed:
+			timer.Reset(time.Second)
+			tick, changed = timer.C, nil
+			continue
+		case <-tick:
 		}
 		if c.Node.LeaderID() != c.config.ID {
+			cursor, scan = "", nil
 			timer.Reset(time.Second)
 			continue
 		}
-		operation, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if scan == nil {
+			scan = storage.WithFileListPageCache(ctx)
+		}
+		operation, cancel := context.WithTimeout(scan, 3*time.Second)
 		next, err := step(operation, cursor)
 		cancel()
 		if err != nil {
@@ -47,8 +57,13 @@ func (c *Cluster) runPartitionReceiptSweep(ctx context.Context, name string, ste
 		}
 		cursor, backoff = next, time.Second
 		if cursor == "" {
+			scan = nil
 			if interval == 0 {
-				return
+				if wake == nil {
+					return
+				}
+				tick, changed = nil, wake
+				continue
 			}
 			timer.Reset(interval)
 		} else {

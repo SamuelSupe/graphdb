@@ -89,6 +89,10 @@ func (s Store) createPin(ctx context.Context, g Graph, a Action) (PinnedView, er
 		a.BaseVersion < 0 || a.BaseVersion > g.Version {
 		return PinnedView{}, invalid("invalid graph read pin")
 	}
+	cutoff := g.HistoryCutoff
+	if g.Move != nil && g.Move.CaptureAt.After(cutoff) {
+		cutoff = g.Move.CaptureAt
+	}
 	key := s.pinKey(g.Tenant, g.Generation, a.Txn)
 	var pin Pin
 	err := s.load(ctx, key, &pin)
@@ -97,10 +101,10 @@ func (s Store) createPin(ctx context.Context, g Graph, a Action) (PinnedView, er
 		if pin.Query != a.Digest || pin.Version != a.BaseVersion || pin.Generation != g.Generation {
 			return PinnedView{}, conflict("read pin identity was reused")
 		}
-		if (!a.At.Before(pin.ExpiresAt) || !pin.KeepUntil.After(g.HistoryCutoff)) && a.BaseVersion != g.Version {
+		if (!a.At.Before(pin.ExpiresAt) || !pin.KeepUntil.After(cutoff)) && a.BaseVersion != g.Version {
 			return PinnedView{}, invalid("graph cursor expired")
 		}
-		if pin.KeepUntil.After(g.HistoryCutoff) && a.At.Add(MaxQueryLifetime).Before(pin.ExpiresAt) {
+		if pin.KeepUntil.After(cutoff) && a.At.Add(MaxQueryLifetime).Before(pin.ExpiresAt) {
 			return s.Pinned(ctx, g.Tenant, pin.ID, pin.Query, a.At)
 		}
 	case errors.Is(err, storage.ErrNotFound):

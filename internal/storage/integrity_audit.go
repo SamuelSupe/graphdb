@@ -48,6 +48,11 @@ func (s *TenantStore) AuditIntegrity(ctx context.Context, tenantID string, optio
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IntegrityAuditReport{}, err
 	}
+	releaseView, err := s.PinReadView(ctx, tenantID)
+	if err != nil {
+		return IntegrityAuditReport{}, err
+	}
+	defer releaseView()
 	report := IntegrityAuditReport{
 		TenantID:  tenantID,
 		Status:    "ok",
@@ -64,6 +69,7 @@ func (s *TenantStore) AuditIntegrity(ctx context.Context, tenantID string, optio
 	s.auditManifestObject(ctx, tenantID, manifest, &report)
 	s.auditSnapshotCatalog(ctx, tenantID, manifest, &report)
 	s.auditIndexCatalog(ctx, tenantID, manifest, options, &report)
+	s.auditReverseIndexCatalog(ctx, tenantID, manifest, options, &report)
 	report.finish()
 	return report, nil
 }

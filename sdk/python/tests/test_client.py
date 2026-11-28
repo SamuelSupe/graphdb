@@ -6,6 +6,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import parse
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -295,6 +296,20 @@ class ClientTest(unittest.TestCase):
         with client.stream_snapshot(min_version=2) as stream:
             self.assertEqual(len(list(stream)), 3)
 
+    def test_operational_query_preserves_boolean_values_and_zero(self):
+        client = GraphDBClient(self.base_url, tenant_id="tenant-a")
+        with patch("graphdb_sdk.transport.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b"{}"
+            for call, expected in [
+                (lambda: client.purge_tenant("tenant-a", force=True), {"force": ["true"]}),
+                (lambda: client.rebuild_indexes(async_=True), {"async": ["true"]}),
+                (lambda: client.integrity_audit(deep=False), {"deep": ["false"]}),
+                (lambda: client.list_tasks(limit=0), {"limit": ["0"]}),
+            ]:
+                call()
+                url = urlopen.call_args.args[0].full_url
+                self.assertEqual(parse.parse_qs(parse.urlsplit(url).query), expected)
+
     def test_query_stream_completion_errors(self):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")
         for mode, expected in [("truncated", EOFError), ("timeout", GraphDBAPIError)]:
@@ -357,6 +372,7 @@ class ClientTest(unittest.TestCase):
 
     def test_submit_ingest_acceptance_location_owner_status_and_wait(self):
         server, handler = start_ingest_server(self, "submit_wait")
+        handler.status_path = "/v1/ingest/batches/agent/collector-a/batch-1?accepted_epoch=2&accepted_lsn=42"
         client = GraphDBClient(f"http://127.0.0.1:{server.server_port}", tenant_id="tenant-a")
         batch = {
             "source": "agent",
@@ -423,6 +439,11 @@ class ClientTest(unittest.TestCase):
             "https://other.example/v1/ingest/batches/agent/collector/batch",
             "/v1/query/graphql",
             "/v1/ingest/batches/agent/collector/batch?tenant=other",
+            "/v1/ingest/batches/agent/collector/batch?accepted_lsn=1&accepted_lsn=2",
+            "/v1/ingest/batches/agent/collector/batch?accepted_lsn=0",
+            "/v1/ingest/batches/agent/collector/batch?accepted_lsn=18446744073709551616",
+            "/v1/ingest/batches/agent/collector/batch?accepted_epoch=2",
+            "/v1/ingest/batches/agent/collector/batch?accepted_lsn=42&accepted_epoch=2&accepted_epoch=3",
         ):
             with self.assertRaises(ValueError):
                 client.get_ingest_status(status_url)

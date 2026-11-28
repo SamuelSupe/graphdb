@@ -31,21 +31,22 @@ import (
 )
 
 type testReplica struct {
-	mu                  sync.RWMutex
-	cluster             *Cluster
-	handler             http.Handler
-	files               *storage.FileStore
-	store               *storage.TenantStore
-	peer                *httptest.Server
-	blocked             atomic.Bool
-	blockedMessages     atomic.Bool
-	blockGraphFinalize  atomic.Bool
-	graphAction         atomic.Pointer[func(http.ResponseWriter, *http.Request, *Cluster, partition.Action) bool]
-	loseInstallResponse atomic.Bool
-	loseStageResponse   atomic.Bool
-	stageRequests       atomic.Int64
-	legacyExportOnly    atomic.Bool
-	cfg                 config.Config
+	mu                     sync.RWMutex
+	cluster                *Cluster
+	handler                http.Handler
+	files                  *storage.FileStore
+	store                  *storage.TenantStore
+	peer                   *httptest.Server
+	blocked                atomic.Bool
+	blockedMessages        atomic.Bool
+	blockGraphFinalize     atomic.Bool
+	blockConversionReclaim atomic.Bool
+	graphAction            atomic.Pointer[func(http.ResponseWriter, *http.Request, *Cluster, partition.Action) bool]
+	loseInstallResponse    atomic.Bool
+	loseStageResponse      atomic.Bool
+	stageRequests          atomic.Int64
+	legacyExportOnly       atomic.Bool
+	cfg                    config.Config
 }
 
 type testCluster struct {
@@ -81,6 +82,10 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 			}
 			if replica.legacyExportOnly.Load() && strings.HasPrefix(r.URL.Path, "/cluster/export/") {
 				http.NotFound(w, r)
+				return
+			}
+			if replica.blockConversionReclaim.Load() && r.URL.Path == "/cluster/graph/conversion-reclaim" {
+				http.Error(w, "conversion cleanup paused", http.StatusServiceUnavailable)
 				return
 			}
 			graphAction := replica.graphAction.Load()
@@ -311,16 +316,49 @@ func (g *testCluster) waitApplied(i int, index uint64, timeout ...time.Duration)
 }
 
 func TestHAReplicationFailoverAndSnapshot(t *testing.T) {
-	testHAReplicationFailoverAndSnapshot(t, false)
+	testHAReplicationFailoverAndSnapshot(t, false, 0)
 }
 
 func TestHAStreamingReplicationFailoverAndSnapshot(t *testing.T) {
-	testHAReplicationFailoverAndSnapshot(t, true)
+	for _, protocol := range []int{0, 13} {
+		t.Run(fmt.Sprint(protocol), func(t *testing.T) { testHAReplicationFailoverAndSnapshot(t, true, protocol) })
+	}
 }
 
 func TestHAPreparedMaintenanceKeepsOtherTenantWritable(t *testing.T) {
 	for _, protocol := range []int{2, 3} {
 		t.Run(fmt.Sprint("protocol-", protocol), func(t *testing.T) { testHAPreparedMaintenanceKeepsOtherTenantWritable(t, protocol) })
+	}
+}
+
+func TestHAPreparedMaintenanceBudgetPublishesFailedTask(t *testing.T) {
+	group := newTestCluster(t, false)
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i, replica := range group.nodes {
+		replica.cfg.Raft.Protocol = 3
+		replica.cfg.Raft.SnapshotEntries = 1000
+		group.start(i)
+	}
+	leader := group.leader(-1)
+	group.mustRequest(leader, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host"}]}}`, http.StatusOK)
+	app := group.nodes[leader].cluster.App
+	app.mu.Lock()
+	app.MaxSnapshotBytes = 1
+	app.mu.Unlock()
+	accepted := group.mustRequest(leader, http.MethodPost, "/v1/tasks", `{"type":"compact"}`, http.StatusAccepted)
+	var task storage.Task
+	if err := json.Unmarshal(accepted.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.nodes[leader].cluster.runQueuedTask(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := group.nodes[leader].store.GetTask(t.Context(), "tenant-a", task.ID)
+	if err != nil || stored.Status != storage.TaskStatusFailed {
+		t.Fatalf("oversized prepared task did not reach failed state: %+v, %v", stored, err)
 	}
 }
 
@@ -716,12 +754,13 @@ func TestHADiagnosticsRemainLocalWithoutQuorum(t *testing.T) {
 	}
 }
 
-func testHAReplicationFailoverAndSnapshot(t *testing.T, stream bool) {
+func testHAReplicationFailoverAndSnapshot(t *testing.T, stream bool, protocol int) {
 	group := newTestCluster(t, false)
 	if stream {
 		for i := range group.nodes {
 			group.stop(i)
 			group.nodes[i].cfg.Raft.StreamSnapshots = true
+			group.nodes[i].cfg.Raft.Protocol = protocol
 			group.start(i)
 		}
 	}
@@ -732,6 +771,7 @@ func testHAReplicationFailoverAndSnapshot(t *testing.T, stream bool) {
 	initial := group.manifest(leader)
 	follower := (leader + 1) % 3
 	group.mustRequest(follower, "GET", "/v1/entities", "", http.StatusOK)
+	beforeOffline := group.nodes[leader].cluster.Node.Status()["applied_index"].(uint64)
 	group.stop(follower)
 	for i := 0; i < 8; i++ {
 		group.mustRequest(leader, "POST", "/v1/commits", fmt.Sprintf(`{"idempotency_key":"update-%d","mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"name":"value-%d"}}]}}`, i, i), http.StatusOK)
@@ -739,6 +779,18 @@ func testHAReplicationFailoverAndSnapshot(t *testing.T, stream bool) {
 	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if protocol == 13 {
+		// Establish that the follower's missing entries were compacted before
+		// reconnecting it, so ordinary append cannot cover the entire gap.
+		node := group.nodes[leader].cluster.Node
+		deadline := time.Now().Add(10 * time.Second)
+		for node.Status()["snapshot_index"].(uint64) <= beforeOffline {
+			if time.Now().After(deadline) {
+				t.Fatalf("expected a snapshot covering the stopped follower: %v", node.Status())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 	group.start(follower)
 	group.waitApplied(follower, checkpoint.Index)
@@ -1416,7 +1468,7 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 			if task.Params["backup_key"] != "graphdb/unavailable-backup" {
 				return
 			}
-			if _, err := app.stageRestore(r.Context(), command{Tenant: task.TenantID, IDs: []string{task.ID}, Body: seed.body, Restore: seed.input}); err != nil {
+			if _, err := app.stageRestore(r.Context(), command{Tenant: task.TenantID, IDs: []string{task.ID}, Body: seed.body, Restore: seed.input}).toCommandResult(); err != nil {
 				t.Error(err)
 			}
 		})
@@ -2336,10 +2388,16 @@ func TestHASnapshotBudgetKeepsReadsAvailable(t *testing.T) {
 	group := newTestCluster(t, false)
 	leader := group.leader(-1)
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
-	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host"}]}}`, http.StatusOK)
+	var field strings.Builder
+	for i := range 1024 {
+		sum := sha256.Sum256([]byte(fmt.Sprint(i)))
+		field.WriteString(hex.EncodeToString(sum[:]))
+	}
+	seed := fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"payload":%q}}]}}`, field.String())
+	group.mustRequest(leader, "POST", "/v1/commits", seed, http.StatusOK)
 	for _, replica := range group.nodes {
 		replica.cluster.App.mu.Lock()
-		replica.cluster.App.MaxSnapshotBytes = 1
+		replica.cluster.App.MaxSnapshotBytes = 16 << 10
 		replica.cluster.App.mu.Unlock()
 	}
 	for range 12 {
@@ -2356,6 +2414,19 @@ func TestHASnapshotBudgetKeepsReadsAvailable(t *testing.T) {
 	}
 	group.mustRequest(leader, "GET", "/v1/entities/host:1", "", http.StatusOK)
 	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:2","kind":"host"}]}}`, http.StatusServiceUnavailable)
+	group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/purge", "", http.StatusBadRequest)
+	group.mustRequest(leader, "GET", "/v1/entities/host:1", "", http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/purge?force=true", "", http.StatusOK)
+	deadline := time.Now().Add(10 * time.Second)
+	node := group.nodes[leader].cluster.Node
+	for node.Status()["snapshot_error"] != nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("purge did not bring the snapshot back within budget: %v", node.Status())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:2","kind":"host"}]}}`, http.StatusOK)
 }
 
 func TestHALongReadAllowsPublicationAndCancellation(t *testing.T) {
@@ -2384,6 +2455,10 @@ func TestHALongReadAllowsPublicationAndCancellation(t *testing.T) {
 	}
 	// A publication must complete while the query retains its read view.
 	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:2","kind":"host"}]}}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/query/templates?source=console", `{"name":"hosts","request":{"op":"match","kind":"host","limit":5}}`, http.StatusOK)
+	if saved, err := group.nodes[leader].store.GetSavedQuery(context.Background(), "tenant-a", "hosts"); err != nil || saved.Request.Kind != "host" || saved.Request.Limit != 5 {
+		t.Fatalf("template publication during pinned read: %+v %v", saved, err)
+	}
 	writeDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		writeDone <- group.request(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-other"}`)

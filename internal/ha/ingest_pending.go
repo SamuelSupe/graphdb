@@ -11,7 +11,10 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+const ingestQueueCheckpointProtocol = 13
+
 type pendingAcceptance struct {
+	alias        string
 	partitioned  bool
 	indexedTxn   bool
 	tenant       string
@@ -21,16 +24,22 @@ type pendingAcceptance struct {
 	objectBytes  int64
 }
 
-func pendingInfo(record acceptedRequest, objectBytes int64) (pendingAcceptance, error) {
+func (a *Application) pendingInfo(record acceptedRequest, objectBytes int64) (pendingAcceptance, error) {
 	request, err := json.Marshal(record.Request)
-	return pendingAcceptance{partitioned: record.Partitioned, indexedTxn: record.ReceiptRetention > 0, tenant: record.Tenant, generation: record.Generation,
+	var alias string
+	if !record.Partitioned && record.Request.IdempotencyKey != "" {
+		alias = a.ingestAliasKey(record.Tenant, record.Generation, record.Request)
+	}
+	return pendingAcceptance{alias: alias, partitioned: record.Partitioned, indexedTxn: record.ReceiptRetention > 0, tenant: record.Tenant, generation: record.Generation,
 		index: record.Index, requestBytes: int64(len(request)), objectBytes: objectBytes}, err
 }
 
 func (a *Application) resetPending() {
 	a.pending = nil
+	a.pendingIngestAliases = nil
 	a.pendingBytes = 0
 	a.pendingIndex = pendingReceiptIndex{}
+	a.resetTenantReceipts()
 }
 
 // The application lock protects this index. Keep only active queue metadata;
@@ -40,7 +49,7 @@ func (a *Application) ensurePending(ctx context.Context) error {
 		return nil
 	}
 	var hint *storage.ReplicationIngestQueue
-	if a.Files != nil && a.ShardID != "" {
+	if a.Files != nil {
 		checkpoint, err := a.Files.ReplicationCheckpoint()
 		if err != nil {
 			return err
@@ -67,6 +76,7 @@ func (a *Application) ensurePending(ctx context.Context) error {
 		}
 	}
 	pending := make(map[string]pendingAcceptance)
+	aliases := make(map[string][]string)
 	var size int64
 	for _, key := range keys {
 		record, bytes, err := loadAcceptanceWithSize(ctx, a.Store.Objects, key)
@@ -79,17 +89,20 @@ func (a *Application) ensurePending(ctx context.Context) error {
 			}
 			continue
 		}
-		if !indexed && a.ShardID != "" && a.Files != nil {
+		if !indexed && a.Files != nil {
 			name := path.Base(key)
 			if !validPendingName(name) || key != a.ingestPrefix()+name {
 				return fmt.Errorf("invalid pending receipt key %q", key)
 			}
 		}
-		info, err := pendingInfo(record, bytes)
+		info, err := a.pendingInfo(record, bytes)
 		if err != nil {
 			return err
 		}
 		pending[key] = info
+		if info.alias != "" {
+			aliases[info.alias] = append(aliases[info.alias], key)
+		}
 		size += info.objectBytes
 	}
 	if indexed && len(pending) != hint.Count {
@@ -101,9 +114,24 @@ func (a *Application) ensurePending(ctx context.Context) error {
 		clear(a.pendingIndex.dirty)
 	}
 	a.pendingIndex.current = indexed
-	a.pending, a.pendingBytes = pending, size
+	a.pending, a.pendingBytes, a.pendingIngestAliases = pending, size, aliases
 	a.observePending()
 	return nil
+}
+
+func (a *Application) pendingIngestAlias(ctx context.Context, tenant string, generation int64, request storage.IngestRequest) (ingestAlias, bool, error) {
+	var key string
+	var index uint64
+	for _, candidate := range a.pendingIngestAliases[a.ingestAliasKey(tenant, generation, request)] {
+		if current := a.pending[candidate].index; current != 0 && (key == "" || current < index) {
+			key, index = candidate, current
+		}
+	}
+	if key == "" {
+		return ingestAlias{}, false, nil
+	}
+	record, err := loadAcceptance(ctx, a.Store.Objects, key)
+	return ingestAlias{Key: key, Digest: ingestAliasDigest(record.Request), Index: index, Epoch: record.AcceptedEpoch}, err == nil, err
 }
 
 // Return with the read lock held, including after rebuilding the durable queue.

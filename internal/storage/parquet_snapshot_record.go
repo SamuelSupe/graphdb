@@ -116,8 +116,8 @@ func decodeParquetSnapshotRecordReader(ctx context.Context, source parquet.Reade
 
 	var record snapshotRecord
 	var expectedHash string
-	build := &commitBuild{}
 	maxRows := file.NumRows()
+	build := codec.NewCommitBuilder(maxRows)
 	rows := 0
 	for reader.Next() {
 		if err := objectContextErr(ctx); err != nil {
@@ -144,10 +144,8 @@ func decodeParquetSnapshotRecordReader(ctx context.Context, source parquet.Reade
 				return snapshotRecord{}, fmt.Errorf("snapshot record identity mismatch")
 			}
 			row := codec.ParquetCommitRowFromColumns(columns, i)
-			if row.ParentOrdinal < 0 || int64(row.ParentOrdinal) >= maxRows ||
-				row.ChildOrdinal < 0 || int64(row.ChildOrdinal) >= maxRows ||
-				row.NestedOrdinal < 0 || int64(row.NestedOrdinal) >= maxRows {
-				return snapshotRecord{}, fmt.Errorf("invalid parquet snapshot ordinal for %d rows", maxRows)
+			if err := columns.ValidateOrdinals(i, maxRows, true); err != nil {
+				return snapshotRecord{}, fmt.Errorf("invalid parquet snapshot ordinal: %w", err)
 			}
 			switch row.Kind {
 			case commitRowMetadata,
@@ -196,6 +194,9 @@ func decodeParquetSnapshotRecordReader(ctx context.Context, source parquet.Reade
 		}
 		record.Snapshot.Edges = codec.SetEdgeAt(record.Snapshot.Edges, ordinal, item)
 	}
+	// Drop the intermediate builder before hashing so peak decode memory does
+	// not retain both the builder and normalized snapshot simultaneously.
+	build = nil
 	if err := normalizeObjectAfterRead(&record, "snapshot"); err != nil {
 		return snapshotRecord{}, err
 	}

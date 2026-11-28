@@ -19,45 +19,28 @@ func ExecuteContext(ctx context.Context, g *graph.Graph, request Request) (Respo
 }
 
 func ValidateRequest(request Request) error {
-	if request.Op != "explain" && request.Op != "profile" {
-		return validateRequest(request)
-	}
-	target, err := targetRequest(request)
-	if err != nil {
-		return err
-	}
-	return validateRequest(target)
+	_, err := CompileRequest(request)
+	return err
 }
 
 func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Request, options ExecuteOptions) (Response, error) {
-	if request.Op == "explain" {
-		target, err := targetRequest(request)
-		if err != nil {
-			return Response{}, err
-		}
-		if err := ValidateRequest(request); err != nil {
-			return Response{}, err
-		}
-		plan := measureQueryPlan(ctx, g, target, options.PlannerStats, newProfiler(false))
-		return Response{Version: g.Version, Plan: &plan}, nil
-	}
-	if request.Op == "profile" {
-		target, err := targetRequest(request)
-		if err != nil {
-			return Response{}, err
-		}
-		target.Profile = true
-		return ExecuteContextWithOptions(ctx, g, target, options)
-	}
-	if err := ValidateRequest(request); err != nil {
+	compiled, err := CompileRequest(request)
+	if err != nil {
 		return Response{}, err
 	}
+	if compiled.WrapperOp == "explain" {
+		plan := measureQueryPlan(ctx, g, compiled.Normalized, options.PlannerStats, newProfiler(false))
+		return Response{Version: g.Version, Plan: &plan}, nil
+	}
+	request = compiled.Normalized
 	profiler := newProfiler(request.Profile)
 	plan := measureQueryPlan(ctx, g, request, options.PlannerStats, profiler)
 	budget, cancel := newBudget(
 		ctx, request, profiler, options.IndexLookup, options.EntityLookup,
 		options.PlannerStats,
 	)
+	budget.authoritativeEntities = options.AuthoritativeEntityLookup
+	budget.entityPredicate = options.EntityPredicate
 	defer cancel()
 	if err := budget.measure("admission", "", plan.EstimatedCost, func() (int, error) {
 		return 0, admitQuery(plan, budget)
@@ -140,19 +123,16 @@ func withPlan(response Response, err error, plan Plan, request Request) (Respons
 }
 
 func buildResponse(version int64, results []Result, request Request, cursor cursorState, budget *budget) (Response, error) {
-	aggregates, err := aggregateResults(results, request.Aggregate)
-	if err != nil {
-		return Response{}, err
+	acc, groups := newQueryAggregators(request)
+	for _, result := range results {
+		if err := acc.add(result); err != nil {
+			return Response{}, err
+		}
+		if err := groups.add(result); err != nil {
+			return Response{}, err
+		}
 	}
-	return buildResponseWithAggregates(version, results, request, cursor, budget, aggregates)
-}
-
-func buildResponseWithAggregates(version int64, results []Result, request Request, cursor cursorState, budget *budget, aggregates map[string]any) (Response, error) {
-	groups, err := aggregateGroups(results, request.GroupBy, request.Aggregate, request.Having, request.HavingExpr)
-	if err != nil {
-		return Response{}, err
-	}
-	return buildResponseWithAggregatesAndGroups(version, results, request, cursor, budget, aggregates, groups)
+	return buildResponseWithAggregatesAndGroups(version, results, request, cursor, budget, acc.results(), groups.results(request.Having, request.HavingExpr))
 }
 
 func buildResponseWithAggregatesAndGroups(version int64, results []Result, request Request, cursor cursorState, budget *budget, aggregates map[string]any, groups []AggregateGroup) (Response, error) {

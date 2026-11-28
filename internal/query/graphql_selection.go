@@ -50,10 +50,11 @@ func collectGraphQLResultFields(
 		if _, ok := seen[name]; ok {
 			return nil
 		}
-		if field.Name == "results" {
+		switch field.Name {
+		case "results", "groups", "aggregates", "plan", "profile":
 			resultAliases++
 			if resultAliases > maxGraphQLResultAliases {
-				return fmt.Errorf("%w: graphql query selects results at most %d times", ErrInvalid, maxGraphQLResultAliases)
+				return fmt.Errorf("%w: graphql query selects results, groups, aggregates, plan and profile at most %d times in total", ErrInvalid, maxGraphQLResultAliases)
 			}
 		}
 		seen[name] = struct{}{}

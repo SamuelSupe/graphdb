@@ -63,7 +63,61 @@ func (s *TenantStore) maintenanceToken(ctx context.Context, tenant string) (stri
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal([]any{manifest, metadata, config, policy, schemas, definitions})
+	optionalObjectHash := func(key string) (string, error) {
+		raw, err := s.Objects.Get(ctx, key)
+		if errors.Is(err, ErrNotFound) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return sha256Hex(raw), nil
+	}
+	indexCatalogHash, err := optionalObjectHash(s.indexCatalogKey(tenant))
+	if err != nil {
+		return "", err
+	}
+	reverseCatalogHash, err := optionalObjectHash(s.reverseIndexCatalogKey(tenant))
+	if err != nil {
+		return "", err
+	}
+	backupScheduleHash, err := optionalObjectHash(s.backupScheduleKey(tenant))
+	if err != nil {
+		return "", err
+	}
+	activeSummary := []string{}
+	useTerminalCache := s.localFileStore() != nil
+	if err := s.scanTaskIDs(ctx, tenant, false, func(key taskListKey) error {
+		var epoch uint64
+		if useTerminalCache {
+			s.taskMu.Lock()
+			_, cached := s.terminalTaskHeaders[key]
+			epoch = s.taskHeaderEpoch
+			s.taskMu.Unlock()
+			if cached {
+				return nil
+			}
+		}
+		item, err := s.getTaskObject(ctx, key.tenant, key.id)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if taskTerminal(item.Status) {
+			if useTerminalCache {
+				s.cacheTerminalTaskHeader(key, item, epoch)
+			}
+			return nil
+		}
+		activeSummary = append(activeSummary, fmt.Sprintf("%s:%s:%s:%d", item.ID, item.Type, item.Status, item.UpdatedAt.UnixNano()))
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	sort.Strings(activeSummary)
+	data, err := json.Marshal([]any{manifest, metadata, config, policy, schemas, definitions, indexCatalogHash, reverseCatalogHash, backupScheduleHash, activeSummary})
 	return sha256Hex(data), err
 }
 
@@ -218,7 +272,7 @@ func (s *ReplicatedMaintenanceSource) Build(ctx context.Context, maxBytes int64)
 		headerLimit = 16 << 20
 	}
 	if int64(len(metadata)) > headerLimit {
-		return nil, fmt.Errorf("prepared maintenance metadata exceeds its budget")
+		return nil, fmt.Errorf("%w: prepared maintenance metadata exceeds its budget", ErrReplicationSnapshotTooLarge)
 	}
 	if err := archive.WriteHeader(&tar.Header{Name: "maintenance.json", Size: int64(len(metadata)), Mode: 0600}); err != nil {
 		return nil, err
@@ -300,7 +354,11 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 	if token != prepared.BaseToken {
 		return task, fmt.Errorf("%w: tenant changed during maintenance preparation", ErrConflict)
 	}
-	staging, err := os.MkdirTemp(s.localFileStore().root, ".maintenance-publish-")
+	files := s.localFileStore()
+	if files == nil {
+		return task, fmt.Errorf("prepared maintenance requires local file storage")
+	}
+	staging, err := os.MkdirTemp(files.root, ".maintenance-publish-")
 	if err != nil {
 		return task, err
 	}

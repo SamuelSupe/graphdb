@@ -2,12 +2,20 @@ package ha
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"sort"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+type maintenanceRetry struct {
+	conflicts int
+	delay     time.Duration
+	next      time.Time
+}
 
 func (c *Cluster) RunBackground(ctx context.Context) {
 	interval := c.FlushInterval
@@ -60,6 +68,160 @@ func (c *Cluster) runTaskBackground(ctx context.Context) {
 	}
 }
 
+// runScheduledMaintenance runs leader-scoped scheduled compaction and GC checks
+// in HA mode by submitting idempotent replicated tasks through Raft.
+func (c *Cluster) runScheduledMaintenance(ctx context.Context) {
+	ticker := time.NewTicker(c.MaintenanceInterval)
+	defer ticker.Stop()
+	lastGC := make(map[string]time.Time)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			opCtx, cancel := context.WithTimeout(ctx, min(c.MaintenanceInterval, 2*time.Minute))
+			if c.Node.ReadBarrier(opCtx) == nil {
+				c.scheduleHAMaintenanceOnce(opCtx, time.Now().UTC(), lastGC)
+			}
+			cancel()
+		}
+	}
+}
+
+func (c *Cluster) scheduleHAMaintenanceOnce(ctx context.Context, now time.Time, lastGC map[string]time.Time) {
+	if c.App.Handler == nil {
+		return
+	}
+	c.App.mu.RLock()
+	tenants, err := c.App.Store.ListManagedTenants(ctx)
+	disk, diskErr := c.App.Store.DiskSpace(ctx)
+	c.App.mu.RUnlock()
+	if err != nil {
+		return
+	}
+	inodePressure := diskErr == nil && disk.InodesKnown && disk.MinimumFreeInodes > 0 && disk.AvailableInodes/2 < disk.MinimumFreeInodes
+	for _, tenant := range tenants {
+		if ctx.Err() != nil {
+			return
+		}
+		var (
+			routeEpoch     uint64
+			manifest       storage.Manifest
+			cfg            storage.TenantConfig
+			hasCompactTask bool
+			hasGCTask      bool
+			skip           bool
+		)
+		c.App.mu.RLock()
+		if c.config.ShardID != "" {
+			if _, gErr := c.App.partitionStore().GetGraph(ctx, tenant); gErr == nil {
+				skip = true // Partitioned graphs have their own GC/compaction coordinator.
+			} else if owner, oErr := c.App.ownership(ctx, tenant); oErr != nil || owner.Epoch == 0 || owner.State != "active" {
+				skip = true
+			} else {
+				routeEpoch = owner.Epoch
+			}
+		}
+		if !skip {
+			if wErr := c.App.Store.EnsureTenantWritable(ctx, tenant); wErr != nil {
+				skip = true
+			}
+		}
+		if !skip {
+			m, mErr := c.App.Store.CurrentManifest(ctx, tenant)
+			if mErr != nil || m.Version == 0 {
+				skip = true
+			} else {
+				manifest = m
+			}
+		}
+		if !skip {
+			loadedCfg, configured, cErr := c.App.Store.GetTenantConfig(ctx, tenant)
+			if cErr != nil {
+				skip = true
+			} else if !configured {
+				cfg = storage.DefaultTenantConfig()
+			} else {
+				cfg = storage.TenantConfigWithDefaults(loadedCfg)
+			}
+		}
+		if !skip {
+			if queued, qErr := c.App.Store.QueuedMaintenanceTasks(ctx, tenant); qErr == nil {
+				for _, task := range queued {
+					if task.Type == storage.TaskTypeCompact {
+						hasCompactTask = true
+					}
+					if task.Type == storage.TaskTypeGC {
+						hasGCTask = true
+					}
+				}
+			}
+		}
+		c.App.mu.RUnlock()
+		if skip {
+			continue
+		}
+		autoCompact := cfg.Maintenance.AutoCompact == nil || *cfg.Maintenance.AutoCompact
+		compactTail := 0
+		if cfg.Maintenance.CompactCommitTailThreshold != nil {
+			compactTail = *cfg.Maintenance.CompactCommitTailThreshold
+		}
+		if autoCompact && compactTail > 0 && !hasCompactTask && storage.ManifestCommitTailLength(manifest) >= compactTail {
+			c.proposeScheduledTask(ctx, tenant, routeEpoch, storage.TaskTypeCompact, nil)
+		}
+		gcInterval := int64(0)
+		if cfg.Maintenance.GCIntervalSeconds != nil {
+			gcInterval = *cfg.Maintenance.GCIntervalSeconds
+		}
+		if gcInterval > 0 && !hasGCTask && (inodePressure || now.Sub(lastGC[tenant]) >= time.Duration(gcInterval)*time.Second) {
+			keepSnapshots := 2
+			if cfg.Maintenance.KeepSnapshots != nil && *cfg.Maintenance.KeepSnapshots >= 1 {
+				keepSnapshots = *cfg.Maintenance.KeepSnapshots
+			}
+			if c.proposeScheduledTask(ctx, tenant, routeEpoch, storage.TaskTypeGC, map[string]any{
+				"keep_snapshots":        keepSnapshots,
+				"cleanup_index_orphans": true,
+				"max_deletes":           4096,
+			}) {
+				lastGC[tenant] = now
+			}
+		}
+	}
+}
+
+func (c *Cluster) proposeScheduledTask(ctx context.Context, tenant string, routeEpoch uint64, taskType string, params map[string]any) bool {
+	payload := map[string]any{"type": taskType}
+	if len(params) > 0 {
+		payload["params"] = params
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return false
+	}
+	cmd, err := newCommand("http")
+	if err != nil {
+		return false
+	}
+	cmd.Method = http.MethodPost
+	cmd.URI = "/v1/tasks"
+	cmd.Header = http.Header{
+		"Content-Type": []string{"application/json"},
+		"X-Tenant-ID":  []string{tenant},
+	}
+	cmd.Body = body
+	cmd.Tenant = tenant
+	cmd.RouteEpoch = routeEpoch
+	data, err := c.propose(ctx, cmd)
+	if err != nil {
+		return false
+	}
+	var res httpResult
+	if err := json.Unmarshal(data, &res); err != nil {
+		return false
+	}
+	return res.Status >= 200 && res.Status < 400
+}
+
 func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	c.maintenanceMu.Lock()
 	defer c.maintenanceMu.Unlock()
@@ -91,8 +253,12 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	start := sort.Search(len(candidates), func(i int) bool { return key(candidates[i]) > c.maintenanceCursor })
 	var queued *storage.Task
 	var admissionErr error
+	now := time.Now()
 	for offset := range len(candidates) {
 		candidate := &candidates[(start+offset)%len(candidates)]
+		if now.Before(c.maintenanceRetries[key(*candidate)].next) {
+			continue
+		}
 		if err := c.App.Store.CheckTaskDiskSpace(ctx, *candidate); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -117,7 +283,9 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	}
 	prepared := queued != nil && c.config.Protocol >= 2 && storage.PreparedMaintenanceTask(*queued) && (queued.Type != storage.TaskTypeGC || c.config.Protocol >= 3)
 	if prepared {
-		if c.maintenanceRetries[key(*queued)] >= 3 {
+		id := key(*queued)
+		retry := c.maintenanceRetries[id]
+		if retry.conflicts >= 3 {
 			operation, resume, err := c.pauseMaintenance(ctx, *queued)
 			if err != nil {
 				return err
@@ -126,7 +294,9 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 			ctx = operation
 		}
 		c.App.mu.RLock()
+		snapshotBudget := c.App.MaxSnapshotBytes
 		generation, err := c.App.Store.ReplicationTenantGeneration(ctx, queued.TenantID)
+		generationKnown := err == nil
 		var source *storage.ReplicatedMaintenanceSource
 		if err == nil {
 			finish := c.metrics.Start("maintenance_capture")
@@ -134,27 +304,47 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 			finish(err)
 		}
 		c.App.mu.RUnlock()
-		if err != nil {
-			return err
-		}
-		defer source.Close()
-		finish := c.metrics.Start("maintenance_prepare")
-		input, err := source.Build(ctx, c.App.MaxSnapshotBytes)
-		finish(err)
-		if err != nil {
-			return err
-		}
-		defer input.Close()
-		err = c.replicateMaintenance(ctx, *queued, input, generation)
-		if errors.Is(err, storage.ErrConflict) {
-			if c.maintenanceRetries == nil {
-				c.maintenanceRetries = make(map[string]int)
+		if err == nil {
+			defer source.Close()
+			finish := c.metrics.Start("maintenance_prepare")
+			input, buildErr := source.Build(ctx, snapshotBudget)
+			finish(buildErr)
+			err = buildErr
+			if err == nil {
+				defer input.Close()
+				err = c.replicateMaintenance(ctx, *queued, input, generation)
 			}
-			c.maintenanceRetries[key(*queued)]++
-			c.metrics.Event("maintenance_prepare_conflict")
 		}
+		if generationKnown && permanentTaskPreparationError(err) {
+			cmd, commandErr := newCommand("task")
+			if commandErr != nil {
+				return commandErr
+			}
+			cmd.Tenant, cmd.IDs, cmd.ExpectedGeneration = queued.TenantID, []string{queued.ID}, generation
+			cmd.Error = err.Error()
+			_, err = c.propose(ctx, cmd)
+		}
+		if err == nil {
+			delete(c.maintenanceRetries, id)
+			return nil
+		}
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		if c.maintenanceRetries == nil {
+			c.maintenanceRetries = make(map[string]maintenanceRetry)
+		}
+		if errors.Is(err, storage.ErrConflict) {
+			retry.conflicts++
+			c.metrics.Event("maintenance_prepare_conflict")
+		} else {
+			retry.delay = min(30*time.Second, max(time.Second, 2*retry.delay))
+			retry.next = time.Now().Add(retry.delay)
+		}
+		c.maintenanceRetries[id] = retry
 		return err
 	}
+	var prep *storage.ReplicatedTaskPreparation
 	c.App.mu.RLock()
 	if queued != nil && restoreTask(*queued) {
 		generation, err = c.App.Store.ReplicationTenantGeneration(ctx, queued.TenantID)
@@ -171,11 +361,17 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 		capture = !captured
 	}
 	if queued != nil && !capture && !ready && err == nil {
-		finish := c.metrics.Start("maintenance_prepare")
-		restore, err = c.App.Store.PrepareReplicatedTask(ctx, *queued)
+		finish := c.metrics.Start("maintenance_capture")
+		prep, err = c.App.Store.CaptureReplicatedTaskPreparation(ctx, *queued)
 		finish(err)
 	}
 	c.App.mu.RUnlock()
+	if prep != nil {
+		defer prep.Close()
+		finish := c.metrics.Start("maintenance_prepare")
+		restore, err = prep.Build(ctx)
+		finish(err)
+	}
 	if queued == nil {
 		return admissionErr
 	}
@@ -190,14 +386,7 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	if errors.As(prepareErr, &pressure) {
 		return prepareErr
 	}
-	var responseError interface{ HTTPStatusCode() int }
-	permanent := errors.Is(prepareErr, storage.ErrInvalidArgument) || errors.Is(prepareErr, storage.ErrNotFound) ||
-		errors.Is(prepareErr, storage.ErrTenantDisabled) || errors.Is(prepareErr, storage.ErrTenantDeleted)
-	if errors.As(prepareErr, &responseError) {
-		status := responseError.HTTPStatusCode()
-		permanent = status >= 400 && status < 500 && status != 408 && status != 409 && status != 429
-	}
-	if prepareErr != nil && !permanent {
+	if prepareErr != nil && !permanentTaskPreparationError(prepareErr) {
 		// Preparation has no replicated effects. An opaque transport wrapper
 		// is not evidence of permanent failure; leave it queued for a fair retry.
 		c.metrics.Event("maintenance_prepare_deferred")
@@ -219,4 +408,17 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	}
 	_, err = c.propose(ctx, cmd)
 	return err
+}
+
+func permanentTaskPreparationError(err error) bool {
+	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) || errors.Is(err, storage.ErrInvalidArgument) ||
+		errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrTenantDisabled) || errors.Is(err, storage.ErrTenantDeleted) {
+		return true
+	}
+	var responseError interface{ HTTPStatusCode() int }
+	if errors.As(err, &responseError) {
+		status := responseError.HTTPStatusCode()
+		return status >= 400 && status < 500 && status != 408 && status != 409 && status != 429
+	}
+	return false
 }

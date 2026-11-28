@@ -17,6 +17,10 @@ type taskActionUpdate struct {
 }
 
 func (s *TenantStore) updateTaskActionProgress(ctx context.Context, task Task, phase string, completed int, total int, action taskActionUpdate, extra map[string]any) error {
+	return s.executionEnv(ctx).Progress.UpdateActionProgress(ctx, task, phase, completed, total, action, extra)
+}
+
+func (s *TenantStore) persistTaskActionProgress(ctx context.Context, task Task, phase string, completed int, total int, action taskActionUpdate, extra map[string]any) error {
 	writeCtx, cancel := s.taskPersistenceContext(ctx)
 	defer cancel()
 	current := s.taskStateOrLocal(writeCtx, task)

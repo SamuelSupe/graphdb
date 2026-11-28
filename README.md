@@ -2,7 +2,7 @@
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.5) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.7.0) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,6 +14,8 @@ storage is optional for snapshot backups.
 
 ## Releases
 
+**[2.7.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.7.0)** converges core storage, WAL, backup, and query IR subsystems, adds Raft ReadIndex, inline snapshot transfer, retained Raft log-tail indexing, and sharded copy-on-write adjacency/partition maps, expands Raft protocol support to 1–14 (defaulting to protocol 1), and delivers comprehensive stability, durability, lock-ordering, query, HTTP, and SDK hardening.
+
 **[2.6.5](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.5)** fixes a local-disk GC failure during concurrent writes and preserves completed partition GC work on recovery. It also reports interrupted HTTP streams in Prometheus and detects incomplete reads in the Go and Python SDKs.
 
 **[2.6.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.1)** returns a complete, retryable HTTP 503 when Raft maintenance cancels a read before its response starts. Writes on interrupted streams remain bounded.
@@ -22,16 +24,16 @@ storage is optional for snapshot backups.
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** enables durable asynchronous WAL ingestion in standalone Compose and splits oversized index catch-up into ordered incremental updates. Release binaries use **Go 1.27.3**.
 
-| Area | Capabilities in 2.6.0 |
+| Area | Capabilities in 2.7.0 |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
 | Large tenant registries | Server-side tenant ID search and bounded pages for tenant selection and cluster placements |
-| Bounded indexes | Opt-in adjacency trees, local page merging and pruned range scans; legacy layouts and global edge cursors retained |
-| Reliability | Durable receipt publication, WAL replay, offline receipt checks and automatic inode reclamation |
+| Bounded indexes | Opt-in adjacency trees, local page merging, sharded COW maps and pruned range scans; legacy layouts and global edge cursors retained |
+| Reliability | Durable receipt publication, WAL replay, offline receipt checks, manifest protection, ReadIndex linearizable reads and automatic inode reclamation |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups, with opt-in large-graph partitioning and partitioned WAL |
 
-See [release checks](docs/release-checklist.md#265-qualification) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release checks](docs/release-checklist.md#270-qualification) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -186,7 +188,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.6.5 release checks](docs/release-checklist.md#265-qualification) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.7.0 release checks](docs/release-checklist.md#270-qualification) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 

@@ -39,7 +39,10 @@ func (c *Client) StartImport(ctx context.Context, source io.Reader, options Impo
 	if err != nil {
 		return Task{}, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+	}()
 	err = json.NewDecoder(resp.Body).Decode(&out)
 	return out, err
 }

@@ -160,8 +160,9 @@ type ObjectBackup struct {
 }
 
 type ObjectBackupPage struct {
-	Backups    []ObjectBackup `json:"backups"`
-	NextCursor string         `json:"next_cursor,omitempty"`
+	Backups          []ObjectBackup `json:"backups"`
+	NextCursor       string         `json:"next_cursor,omitempty"`
+	InvalidManifests int            `json:"invalid_manifests,omitempty"`
 }
 
 func (c *Client) ListObjectBackups(ctx context.Context, tenantID, cursor string, limit int) (out ObjectBackupPage, err error) {
@@ -213,13 +214,13 @@ type BackupAutomationStatus struct {
 }
 
 func (c *Client) GetBackupAutomation(ctx context.Context) (out BackupAutomationStatus, err error) {
-	err = c.doJSON(ctx, "GET", "/v1/backup-automation", platformTenant, nil, nil, &out)
+	err = c.doJSON(ctx, "GET", "/v1/backup-automation", "", nil, nil, &out)
 	return out, err
 }
 
 // ResetBackupAutomation abandons the current retry; an enabled policy starts a
 // fresh capture on its next tick. Returns a conflict while a backup is active.
 func (c *Client) ResetBackupAutomation(ctx context.Context) (out BackupAutomationStatus, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/backup-automation/reset", platformTenant, nil, nil, &out)
+	err = c.doJSON(ctx, "POST", "/v1/backup-automation/reset", "", nil, nil, &out)
 	return out, err
 }

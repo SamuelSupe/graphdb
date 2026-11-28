@@ -24,7 +24,9 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 		if definitionErr != nil {
 			return definitionErr
 		}
-		artifacts, err = s.buildAndWriteIndexArtifacts(ctx, tenantID, g, version, definitions)
+		mutator := s.catalogMutator()
+		rebuildCtx := mutator.WithAdjacencyInheritance(ctx, previous, true)
+		artifacts, err = s.buildAndWriteIndexArtifacts(rebuildCtx, tenantID, g, version, definitions)
 		if err != nil {
 			return err
 		}
@@ -50,16 +52,16 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 	if err := s.ensureIncrementalIndexCurrent(ctx, tenantID, version); err != nil {
 		return err
 	}
-	_, err = s.putIndexCatalogWithMetaFast(ctx, tenantID, catalog, previousMeta)
-	if err != nil {
-		s.deleteCachedIndexCatalog(tenantID)
+	mutator := s.catalogMutator()
+	if _, err = mutator.PublishForwardCatalog(ctx, tenantID, catalog, previousMeta, true); err != nil {
 		return err
 	}
 	if err := s.ensureIncrementalIndexCurrent(ctx, tenantID, version); err != nil {
 		return err
 	}
+	reverseCtx := mutator.WithAdjacencyInheritance(ctx, previous, true)
 	if err := s.refreshReverseIndexAfterCommit(
-		ctx,
+		reverseCtx,
 		tenantID,
 		before,
 		g,
@@ -71,7 +73,7 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 			return err
 		}
 		if err := s.rebuildReverseIndex(
-			ctx,
+			reverseCtx,
 			tenantID,
 			g,
 			version,

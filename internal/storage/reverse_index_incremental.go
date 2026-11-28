@@ -76,10 +76,11 @@ func (s *TenantStore) refreshReverseIndexAfterCommit(
 		}
 		return left.Shard < right.Shard
 	})
-	return s.putReverseIndexCatalogWithMeta(
+	return s.catalogMutator().PublishReverseCatalog(
 		ctx,
 		tenantID,
 		catalog,
+		version,
 		meta,
 	)
 }

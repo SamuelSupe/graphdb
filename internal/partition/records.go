@@ -1,9 +1,7 @@
 package partition
 
 import (
-	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -117,36 +115,6 @@ func logicalBucketsForChanges(changes []Row) []int {
 	}
 	sort.Ints(out)
 	return out
-}
-
-func (t Tree) LogicalBuckets(ctx context.Context, root Root, changes []Row) (map[int]string, error) {
-	result := map[int]string{}
-	for _, index := range logicalBucketsForChanges(changes) {
-		h := sha256.New()
-		count := 0
-		err := t.Scan(ctx, root, LogicalPrefix(index/256, index%256), "", func(row Row) (bool, error) {
-			var digest string
-			if err := json.Unmarshal(row.Value, &digest); err != nil {
-				return false, err
-			}
-			b, err := hex.DecodeString(digest)
-			if err != nil || len(b) != sha256.Size {
-				return false, fmt.Errorf("invalid stored logical leaf")
-			}
-			_, _ = h.Write(b)
-			count++
-			return true, nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		if count == 0 {
-			result[index] = ""
-		} else {
-			result[index] = hex.EncodeToString(h.Sum(nil))
-		}
-	}
-	return result, nil
 }
 
 // Scan heads retain only identity and kind; global ordering must not fetch the

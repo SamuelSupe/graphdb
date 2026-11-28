@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,13 +29,24 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		stage := os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE")
-		if stage == "reused" {
-			_, err := files.ApplyReplicated(context.Background(), 2, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		retained := strings.HasPrefix(stage, "retained")
+		reused := stage == "reused" || retained
+		applyCtx := context.Background()
+		if retained {
+			applyCtx = WithCheckpointInReplicationJournal(applyCtx)
+		}
+		if reused {
+			_, err := files.ApplyReplicated(applyCtx, 2, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
 				if err := files.Put(ctx, "graphdb/new-data", []byte("old data")); err != nil {
 					return nil, err
 				}
 				if err := files.Delete(ctx, "graphdb/new-data"); err != nil {
 					return nil, err
+				}
+				if retained {
+					if err := files.SetReplicationIngestQueue(ctx, &ReplicationIngestQueue{Count: 1, Keys: []string{"pending"}}); err != nil {
+						return nil, err
+					}
 				}
 				return []byte("old-response"), files.Put(ctx, "graphdb/manifest", []byte("old-version"))
 			})
@@ -44,18 +56,28 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, replicationDirectory, "pending.db")); err != nil {
 				t.Fatalf("expected a reusable committed journal: %v", err)
 			}
+			if retained {
+				if checkpoint, err := NewFileStore(root).ReplicationCheckpoint(); err != nil || checkpoint.Index != 1 {
+					t.Fatalf("retained checkpoint should leave the JSON file at index 1: %+v, %v", checkpoint, err)
+				}
+				if stage == "retained_committed" {
+					os.Exit(0)
+				}
+			}
 		}
 		index := uint64(2)
-		if stage == "reused" {
+		if reused {
 			index = 3
 		}
-		_, err = files.ApplyReplicated(context.Background(), index, "crashing-command", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		_, err = files.ApplyReplicated(applyCtx, index, "crashing-command", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
 			if stage == "empty" {
 				os.Exit(0)
 			}
-			if stage == "reused" {
-				if err := files.JournalReplicatedObjects(ctx, []string{"graphdb/manifest", "graphdb/new-data"}); err != nil {
-					return nil, err
+			if reused {
+				if stage != "retained_partial" {
+					if err := files.JournalReplicatedObjects(ctx, []string{"graphdb/manifest", "graphdb/new-data"}); err != nil {
+						return nil, err
+					}
 				}
 				for key, data := range map[string]string{"graphdb/manifest": "interrupted", "graphdb/new-data": "first persisted"} {
 					if err := files.Put(ctx, key, []byte(data)); err != nil {
@@ -135,7 +157,7 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		})
 		t.Fatal(err)
 	}
-	for _, stage := range []string{"empty", "partial", "concurrent", "prepared", "reused"} {
+	for _, stage := range []string{"empty", "partial", "concurrent", "prepared", "reused", "retained_committed", "retained_partial", "retained_prepared"} {
 		t.Run(stage, func(t *testing.T) {
 			root := t.TempDir()
 			files, err := OpenFileStore(root)
@@ -221,11 +243,22 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			}
 			checkpoint, err := files.ReplicationCheckpoint()
 			previous := uint64(1)
-			if stage == "reused" {
+			retained := strings.HasPrefix(stage, "retained")
+			if stage == "reused" || retained {
 				previous = 2
 			}
 			if err != nil || checkpoint.Index != previous {
 				t.Fatalf("applied position advanced across crash: %+v, %v", checkpoint, err)
+			}
+			if retained && (checkpoint.IngestQueue == nil || checkpoint.IngestQueue.Count != 1 ||
+				len(checkpoint.IngestQueue.Keys) != 1 || checkpoint.IngestQueue.Keys[0] != "pending" || string(checkpoint.Response) != "old-response") {
+				t.Fatalf("recovered retained checkpoint lost response or queue hint: %+v", checkpoint)
+			}
+			if _, err := files.ApplyReplicated(context.Background(), previous, "duplicate", time.Unix(2, 0), func(context.Context) ([]byte, error) {
+				t.Fatal("durable application ran again after crash")
+				return nil, nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 			for i := 0; i < 2; i++ {
 				_, err = files.ApplyReplicated(context.Background(), previous+1, "replay", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
@@ -382,6 +415,12 @@ func TestReplicationApplicationReclaimsPagesAfterCheckpoint(t *testing.T) {
 }
 
 func TestReplicationRetriesInterruptedLocalPageReclaimBeforeReuse(t *testing.T) {
+	t.Run("materialized", func(t *testing.T) { testInterruptedLocalPageReclaimBeforeReuse(t, false) })
+	t.Run("retained", func(t *testing.T) { testInterruptedLocalPageReclaimBeforeReuse(t, true) })
+}
+
+func testInterruptedLocalPageReclaimBeforeReuse(t *testing.T, retained bool) {
+	t.Helper()
 	root := t.TempDir()
 	open := func() *FileStore {
 		t.Helper()
@@ -393,6 +432,9 @@ func TestReplicationRetriesInterruptedLocalPageReclaimBeforeReuse(t *testing.T) 
 		return f
 	}
 	ctx, at := t.Context(), time.Unix(1, 0)
+	if retained {
+		ctx = WithCheckpointInReplicationJournal(ctx)
+	}
 	files := open()
 	const page = "graphdb/pages/immutable"
 	if _, err := files.ApplyReplicated(ctx, 1, "seed", at, func(ctx context.Context) ([]byte, error) {
@@ -482,6 +524,9 @@ func TestReplicationRecoversDurableMarkerAcrossCheckpointPublication(t *testing.
 		return []byte("first-result"), os.Mkdir(checkpoint, 0o755)
 	}); err == nil {
 		t.Fatal("checkpoint publication failure was acknowledged")
+	}
+	if _, err := files.Get(ctx, "graphdb/pages/a"); err == nil {
+		t.Fatal("replica served reads after checkpoint publication failed")
 	}
 	if err := files.Close(); err != nil {
 		t.Fatal(err)
@@ -833,6 +878,9 @@ func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = target.ApplyReplicated(ctx, 1, "target", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		if err := target.Put(ctx, "graphdb/data", []byte("previous")); err != nil {
+			return nil, err
+		}
 		return nil, target.Put(ctx, "graphdb/old", []byte("old"))
 	})
 	if err != nil {
@@ -845,11 +893,46 @@ func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 	if err := target.InstallReplicationSnapshot(ctx, 2, invalid, 1<<20); err == nil {
 		t.Fatal("archive with a corrupt gzip trailer was installed")
 	}
+	badDigest := bytes.Clone(snapshot)
+	badDigest[0] ^= 1
+	if err := target.InstallReplicationSnapshot(ctx, 2, badDigest, 1<<20); err == nil {
+		t.Fatal("archive with a mismatched digest was installed")
+	}
 	if data, err := target.Get(ctx, "graphdb/old"); err != nil || string(data) != "old" {
 		t.Fatalf("rejected snapshot changed live data: %q, %v", data, err)
 	}
-	if err := target.InstallReplicationSnapshot(ctx, 2, snapshot, 1<<20); err != nil {
+	installCtx, cancel := context.WithCancel(ctx)
+	removeListener := target.OnChange(func(key string) {
+		if key == "graphdb/data" {
+			cancel()
+		}
+	})
+	err = target.InstallReplicationSnapshot(installCtx, 2, snapshot, 1<<20)
+	removeListener()
+	cancel()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted publication: %v", err)
+	}
+	for key, want := range map[string]string{"graphdb/data": "previous", "graphdb/old": "old"} {
+		if data, err := target.Get(ctx, key); err != nil || string(data) != want {
+			t.Fatalf("rollback did not recover %s: %q, %v", key, data, err)
+		}
+	}
+	if checkpoint, err := target.ReplicationCheckpoint(); err != nil || checkpoint.Index != 1 {
+		t.Fatalf("interrupted snapshot changed checkpoint: %+v, %v", checkpoint, err)
+	}
+	var stagedFile os.FileInfo
+	checkStaged := func(ctx context.Context, view ObjectStore) error {
+		var err error
+		stagedFile, err = os.Stat(filepath.Join(view.(*FileStore).root, "graphdb/data"))
+		return err
+	}
+	if err := target.InstallReplicationSnapshotValidated(ctx, 2, bytes.NewReader(snapshot), 1<<20, "", checkStaged); err != nil {
 		t.Fatal(err)
+	}
+	published, err := os.Stat(filepath.Join(root, "graphdb/data"))
+	if err != nil || !os.SameFile(stagedFile, published) {
+		t.Fatalf("snapshot copied the staged file instead of publishing it: %v", err)
 	}
 	if err := target.Close(); err != nil {
 		t.Fatal(err)
@@ -873,6 +956,93 @@ func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 		if data, err := target.Get(ctx, key); err != nil || string(data) != "saved" {
 			t.Fatalf("snapshot omitted %s: %q, %v", key, data, err)
 		}
+	}
+}
+
+func TestReplicationReadOnlyRejectionKeepsCommittedJournal(t *testing.T) {
+	ctx := t.Context()
+	store, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const key = "graphdb/object.json"
+	at := time.Unix(1700000000, 0)
+	publish := func(index uint64, value string) {
+		t.Helper()
+		if _, err := store.ApplyReplicated(ctx, index, "publish", at, func(tx context.Context) ([]byte, error) {
+			return nil, store.Put(tx, key, []byte(value))
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(1, "old")
+	open := store.runtime.replicationDB
+	if open == nil {
+		t.Fatal("small committed journal was closed")
+	}
+	rejection := &ReplicationRejectedError{}
+	_, err = store.ApplyReplicated(ctx, 2, "rejected", at, func(tx context.Context) ([]byte, error) {
+		if _, err := store.Get(tx, key); err != nil {
+			return nil, err
+		}
+		return nil, rejection
+	})
+	checkpoint, readErr := store.ReplicationCheckpoint()
+	if err != rejection || readErr != nil || checkpoint.Index != 1 || store.runtime.replicationDB != open {
+		t.Fatalf("rejected read changed the committed journal: checkpoint=%+v, errors=%v, %v", checkpoint, err, readErr)
+	}
+	publish(2, "replacement")
+	if data, err := store.Get(ctx, key); err != nil || string(data) != "replacement" {
+		t.Fatalf("valid retry did not publish: %s (%v)", data, err)
+	}
+}
+
+func TestRetainedReplicationCheckpointMaterializesWhenJournalGrows(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	const small, large = "graphdb/small", "graphdb/large"
+	at := time.Unix(1, 0)
+	if _, err := files.ApplyReplicated(ctx, 1, "seed", at, func(tx context.Context) ([]byte, error) {
+		return nil, files.Put(tx, large, bytes.Repeat([]byte("a"), 2<<20))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retained := WithCheckpointInReplicationJournal(ctx)
+	if _, err := files.ApplyReplicated(retained, 2, "retain", at, func(tx context.Context) ([]byte, error) {
+		return []byte("retained"), files.Put(tx, small, []byte("original"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rejected := &ReplicationRejectedError{Response: []byte("reject")}
+	if _, err := files.ApplyReplicated(retained, 3, "reject", at, func(context.Context) ([]byte, error) {
+		return nil, rejected
+	}); err != rejected {
+		t.Fatalf("read-only rejection changed: %v", err)
+	}
+	if cp, err := NewFileStore(root).ReplicationCheckpoint(); err != nil || cp.Index != 1 {
+		t.Fatalf("read-only rejection materialized the retained checkpoint: %+v, %v", cp, err)
+	}
+	cp, err := files.ReplicationCheckpoint()
+	if err != nil || cp.Index != 2 || string(cp.Response) != "retained" {
+		t.Fatalf("live retained checkpoint: %+v, %v", cp, err)
+	}
+	if _, err := files.ApplyReplicated(retained, 3, "grow", at, func(tx context.Context) ([]byte, error) {
+		return []byte("materialized"), files.Put(tx, large, []byte("replaced"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if cp, err := NewFileStore(root).ReplicationCheckpoint(); err != nil || cp.Index != 3 || string(cp.Response) != "materialized" {
+		t.Fatalf("oversized journal did not materialize the checkpoint: %+v, %v", cp, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, replicationDirectory, "pending.db")); !os.IsNotExist(err) {
+		t.Fatalf("oversized journal was not removed: %v", err)
 	}
 }
 

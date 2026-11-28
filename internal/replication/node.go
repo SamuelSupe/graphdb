@@ -56,10 +56,13 @@ type Config struct {
 }
 
 type proposal struct {
-	ID       string `json:"id"`
-	Data     []byte `json:"data"`
-	Protocol int    `json:"protocol,omitempty"`
+	ID       string          `json:"id"`
+	Data     []byte          `json:"data,omitempty"`
+	JSON     json.RawMessage `json:"json,omitempty"`
+	Protocol int             `json:"protocol,omitempty"`
 }
+
+const JSONPayloadProtocol = 13
 
 type result struct {
 	data []byte
@@ -71,6 +74,7 @@ type applicationBatch struct {
 	snapshot             raftpb.Snapshot
 	first, last          uint64
 	conf                 raftpb.ConfState
+	confIndex            uint64
 }
 
 type Node struct {
@@ -89,7 +93,8 @@ type Node struct {
 	proposalBytes           atomic.Int64
 	leader                  atomic.Uint64
 	mu                      sync.Mutex
-	changed                 chan struct{}
+	stateChanged            chan struct{}
+	appliedChanged          chan struct{}
 	failure                 error
 	snapshotFailure         error
 	snapshotFailedSince     time.Time
@@ -97,7 +102,10 @@ type Node struct {
 	snapshotHandoffAttempt  time.Time
 	snapshotCleanupFailure  error
 	proposals               map[string]chan result
-	reads                   map[string]chan uint64
+	readWake                chan struct{}
+	queuedReads             *readIndexRound
+	activeReads             map[string]*readIndexRound
+	readWaiters             int
 	peerMu                  sync.RWMutex
 	retired                 atomic.Pointer[map[uint64]uint64]
 	peers                   map[uint64]string
@@ -106,12 +114,17 @@ type Node struct {
 	client                  transportClient
 	controlClient           transportClient
 	receiveSnapshotSlots    chan struct{}
+	receiveLargeMessage     chan struct{}
+	snapshotReceiveMu       sync.Mutex
 	application             chan applicationBatch
 	snapshotRequests        chan snapshotRequest
 	snapshotProbes          chan snapshotProbe
 	snapshotProbeMu         sync.Mutex
-	snapshotCleanupRequests chan uint64
+	snapshotCleanupTarget   atomic.Uint64
+	snapshotCleanupWake     chan struct{}
 	maintenanceMu           sync.Mutex
+	membershipMu            sync.Mutex
+	protocolMu              sync.Mutex
 	handoff                 bool
 	activeProposals         int
 	draining                atomic.Bool
@@ -190,7 +203,8 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 			disk.Close()
 			return nil, decodeErr
 		}
-		if envelope.File != nil {
+		// Pending snapshots are verified by restoreSnapshot before installation.
+		if envelope.File != nil && snapshot.Metadata.Index <= applied {
 			if err := validateSnapshotFile(cfg.Dir, snapshot.Metadata.Index, *envelope.File); err != nil {
 				disk.Close()
 				return nil, err
@@ -217,9 +231,9 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, fmt.Errorf("application checkpoint %d exceeds durable Raft commit %d", applied, hard.Commit)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]peerSender), controlSenders: make(map[uint64]peerSender), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest), snapshotProbes: make(chan snapshotProbe)}
+	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, stateChanged: make(chan struct{}), appliedChanged: make(chan struct{}), proposals: make(map[string]chan result), readWake: make(chan struct{}, 1), peers: make(map[uint64]string), senders: make(map[uint64]peerSender), controlSenders: make(map[uint64]peerSender), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest), snapshotProbes: make(chan snapshotProbe)}
 	n.metrics = observability.NewOperationMetrics()
-	n.snapshotCleanupRequests = make(chan uint64, 1)
+	n.snapshotCleanupWake = make(chan struct{}, 1)
 	n.snapshotCleanupFailure = cleanupErr
 	n.scheduleSnapshotCleanup(snapshot.Metadata.Index)
 	n.observeSnapshot(snapshot)
@@ -262,6 +276,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		CheckRedirect: n.client.CheckRedirect,
 	}}
 	n.receiveSnapshotSlots = make(chan struct{}, 2)
+	n.receiveLargeMessage = make(chan struct{}, 1)
 	rc := &raft.Config{ID: cfg.ID, ElectionTick: cfg.ElectionTicks, HeartbeatTick: 1, Storage: disk, Applied: applied, MaxSizePerMsg: 1 << 20, MaxCommittedSizePerReady: 4 << 20, MaxInflightMsgs: 64, MaxUncommittedEntriesSize: 64 << 20, CheckQuorum: true, PreVote: true, DisableProposalForwarding: true, ReadOnlyOption: raft.ReadOnlySafe, StepDownOnRemoval: true}
 	if existing || !cfg.Bootstrap {
 		n.raft = raft.RestartNode(rc)
@@ -281,8 +296,9 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		n.raft = raft.StartNode(rc, peers)
 	}
 	n.observeDiagnostics()
-	n.workers.Add(6)
+	n.workers.Add(7)
 	go n.run()
+	go n.readIndexLoop()
 	go n.applyLoop()
 	go n.snapshotCleanupLoop(cleanupOrphans)
 	go n.diagnosticsLoop()
@@ -308,6 +324,59 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	return n, nil
 }
 
+func (n *Node) validateClusterProtocol(ctx context.Context) error {
+	n.protocolMu.Lock()
+	defer n.protocolMu.Unlock()
+	if n.protocolValidated.Load() {
+		return nil
+	}
+	minimum, err := n.disk.minimumProtocol()
+	if err != nil {
+		return err
+	}
+	// A durable command already records activation by a checked leader.
+	// Requiring an offline voter again would defeat majority failover.
+	if minimum < n.protocolVersion() {
+		status := n.raft.Status()
+		members := status.Config.Voters.IDs()
+		if n.protocolVersion() >= 6 {
+			// Protocol 6 enables a background writer on every eligible leader.
+			// Each replica must run the protocol before it can take over.
+			for id := range status.Progress {
+				members[id] = struct{}{}
+			}
+		}
+		for id := range members {
+			if id == n.cfg.ID {
+				continue
+			}
+			peer, err := n.peerStatus(ctx, id)
+			if err != nil || max(peer.Protocol, peer.MaxProtocol) < n.protocolVersion() {
+				return fmt.Errorf("%w: upgrade every voter before activating protocol %d (peer %d: %v)", ErrUnavailable, n.protocolVersion(), id, err)
+			}
+			if n.protocolVersion() >= 6 && peer.Protocol < n.protocolVersion() {
+				return fmt.Errorf("%w: configure every replica for protocol %d before activation (peer %d runs protocol %d)", ErrUnavailable, n.protocolVersion(), id, peer.Protocol)
+			}
+		}
+	}
+	n.protocolValidated.Store(true)
+	return nil
+}
+
+func (n *Node) classifyProposalError(err error) error {
+	if !errors.Is(err, raft.ErrProposalDropped) {
+		return err
+	}
+	if availErr := n.available(true); availErr != nil {
+		return availErr
+	}
+	status := n.raft.Status()
+	if status.RaftState != raft.StateLeader || status.Lead != n.cfg.ID || status.LeadTransferee != 0 {
+		return ErrNotLeader
+	}
+	return fmt.Errorf("%w: %v", ErrUnavailable, err)
+}
+
 func randomID() (string, error) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
@@ -316,17 +385,31 @@ func randomID() (string, error) {
 	return hex.EncodeToString(id[:]), nil
 }
 
-func (n *Node) Propose(ctx context.Context, data []byte) (response []byte, err error) {
+func (n *Node) Propose(ctx context.Context, data []byte) ([]byte, error) {
+	return n.submitProposal(ctx, data, false, false)
+}
+
+func (n *Node) ProposeJSON(ctx context.Context, data []byte) ([]byte, error) {
+	return n.submitProposal(ctx, data, true, false)
+}
+
+// ProposeSnapshotCleanup admits reclamation and the recovery steps needed to
+// reach it without accepting new writes while a snapshot is oversized.
+func (n *Node) ProposeSnapshotCleanup(ctx context.Context, data []byte) ([]byte, error) {
+	return n.submitProposal(ctx, data, true, true)
+}
+
+func (n *Node) submitProposal(ctx context.Context, data []byte, jsonPayload, cleanup bool) (response []byte, err error) {
 	finish := n.metrics.Start("proposal")
 	defer func() { finish(err) }()
 	if err := n.beginProposal(ctx); err != nil {
 		return nil, err
 	}
 	defer n.endProposal()
-	return n.propose(ctx, data)
+	return n.propose(ctx, data, jsonPayload, cleanup)
 }
 
-func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
+func (n *Node) propose(ctx context.Context, data []byte, jsonPayload, cleanup bool) ([]byte, error) {
 	if err := n.available(true); err != nil {
 		return nil, err
 	}
@@ -335,45 +418,27 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 	snapshotFailure := n.snapshotFailure
 	n.mu.Unlock()
 	if snapshotFailure != nil {
-		return nil, fmt.Errorf("%w: %v; resolve the snapshot error before resuming mutations", ErrUnavailable, snapshotFailure)
+		if !errors.Is(snapshotFailure, ErrSnapshotTooLarge) {
+			return nil, fmt.Errorf("%w: %v; resolve the snapshot error before resuming mutations", ErrUnavailable, snapshotFailure)
+		}
+		if !cleanup {
+			return nil, fmt.Errorf("%w: %w; resolve the snapshot error before resuming mutations", ErrUnavailable, snapshotFailure)
+		}
 	}
 	if n.protocolVersion() > ProtocolVersion && !n.protocolValidated.Load() {
-		minimum, err := n.disk.minimumProtocol()
-		if err != nil {
+		if err := n.validateClusterProtocol(ctx); err != nil {
 			return nil, err
 		}
-		// A durable command already records activation by a checked leader.
-		// Requiring an offline voter again would defeat majority failover.
-		if minimum < n.protocolVersion() {
-			status := n.raft.Status()
-			members := status.Config.Voters.IDs()
-			if n.protocolVersion() >= 6 {
-				// Protocol 6 enables a background writer on every eligible leader.
-				// Each replica must run the protocol before it can take over.
-				for id := range status.Progress {
-					members[id] = struct{}{}
-				}
-			}
-			for id := range members {
-				if id == n.cfg.ID {
-					continue
-				}
-				peer, err := n.peerStatus(ctx, id)
-				if err != nil || max(peer.Protocol, peer.MaxProtocol) < n.protocolVersion() {
-					return nil, fmt.Errorf("%w: upgrade every voter before activating protocol %d (peer %d: %v)", ErrUnavailable, n.protocolVersion(), id, err)
-				}
-				if n.protocolVersion() >= 6 && peer.Protocol < n.protocolVersion() {
-					return nil, fmt.Errorf("%w: configure every replica for protocol %d before activation (peer %d runs protocol %d)", ErrUnavailable, n.protocolVersion(), id, peer.Protocol)
-				}
-			}
-		}
-		n.protocolValidated.Store(true)
 	}
 	id, err := randomID()
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(proposal{ID: id, Data: data, Protocol: n.protocolVersion()})
+	command := proposal{ID: id, Data: data, Protocol: n.protocolVersion()}
+	if jsonPayload && command.Protocol >= JSONPayloadProtocol {
+		command.Data, command.JSON = nil, json.RawMessage(data)
+	}
+	payload, err := json.Marshal(command)
 	if err != nil {
 		return nil, err
 	}
@@ -392,7 +457,7 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 	n.mu.Unlock()
 	defer func() { n.mu.Lock(); delete(n.proposals, id); n.mu.Unlock() }()
 	if err := n.raft.Propose(ctx, payload); err != nil {
-		return nil, err
+		return nil, n.classifyProposalError(err)
 	}
 	for {
 		select {
@@ -401,9 +466,9 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 		default:
 		}
 		n.mu.Lock()
-		changed := n.changed
+		changed := n.stateChanged
 		n.mu.Unlock()
-		if err := n.available(true); err != nil {
+		if err := n.availableState(true, false); err != nil {
 			select {
 			case result := <-ch:
 				return result.data, result.err
@@ -442,13 +507,18 @@ func (n *Node) ReadBarrier(ctx context.Context) (err error) {
 	}
 	for {
 		n.mu.Lock()
-		changed := n.changed
+		changed := n.stateChanged
+		appliedChanged := n.appliedChanged
 		n.mu.Unlock()
 		if n.applied.Load() >= index {
-			return n.available(true)
+			return n.availableState(true, false)
 		}
 		select {
+		case <-appliedChanged:
 		case <-changed:
+			if err := n.availableState(true, false); err != nil {
+				return err
+			}
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-n.ctx.Done():
@@ -469,42 +539,6 @@ func (n *Node) QuorumBarrier(ctx context.Context) (err error) {
 	return n.available(true)
 }
 
-func (n *Node) readIndex(ctx context.Context) (uint64, error) {
-	if err := n.available(true); err != nil {
-		return 0, err
-	}
-	id, err := randomID()
-	if err != nil {
-		return 0, err
-	}
-	ch := make(chan uint64, 1)
-	n.mu.Lock()
-	n.reads[id] = ch
-	n.mu.Unlock()
-	defer func() { n.mu.Lock(); delete(n.reads, id); n.mu.Unlock() }()
-	if err := n.raft.ReadIndex(ctx, []byte(id)); err != nil {
-		return 0, err
-	}
-	var index uint64
-	for index == 0 {
-		n.mu.Lock()
-		changed := n.changed
-		n.mu.Unlock()
-		if err := n.available(true); err != nil {
-			return 0, err
-		}
-		select {
-		case index = <-ch:
-		case <-changed:
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-n.ctx.Done():
-			return 0, n.available(false)
-		}
-	}
-	return index, nil
-}
-
 func (n *Node) Healthy() error {
 	return n.available(false)
 }
@@ -516,6 +550,10 @@ func (n *Node) Peers() map[uint64]string {
 }
 
 func (n *Node) available(leader bool) error {
+	return n.availableState(leader, true)
+}
+
+func (n *Node) availableState(leader, checkBacklog bool) error {
 	n.mu.Lock()
 	failure := n.failure
 	n.mu.Unlock()
@@ -528,7 +566,7 @@ func (n *Node) available(leader bool) error {
 	// Request deadlines must not wait on Raft's synchronous status channel.
 	// Application can advance between the two atomic progress observations.
 	committed := n.committed.Load()
-	if leader && (committed-min(committed, n.applied.Load()) > 1024 || n.applicationBytes.Load() > 64<<20) {
+	if leader && checkBacklog && (committed-min(committed, n.applied.Load()) > 1024 || n.applicationBytes.Load() > 64<<20) {
 		return fmt.Errorf("%w: application backlog exceeds 1024 entries or 64 MiB", ErrUnavailable)
 	}
 	if leader && (n.leader.Load() != n.cfg.ID || n.draining.Load()) {
@@ -542,8 +580,7 @@ func (n *Node) fail(err error) {
 	if n.failure == nil {
 		n.failure = err
 	}
-	close(n.changed)
-	n.changed = make(chan struct{})
+	n.signalStateChangedLocked()
 	n.mu.Unlock()
 	n.cancel()
 }
@@ -552,6 +589,10 @@ func (n *Node) run() {
 	defer n.workers.Done()
 	defer n.raft.Stop()
 	var pending applicationBatch
+	var lastTerm uint64
+	if hs, _, err := n.disk.InitialState(); err == nil {
+		lastTerm = hs.Term
+	}
 	for {
 		var application chan applicationBatch
 		var next applicationBatch
@@ -568,7 +609,15 @@ func (n *Node) run() {
 			finish := n.metrics.Start("snapshot_persist")
 			snapshot, err := n.disk.CreateSnapshot(request.index, &request.conf, request.data)
 			if err == nil {
-				err = n.disk.saveSnapshot(snapshot, request.index)
+				// Retain a bounded trailing log window behind the snapshot so
+				// slightly lagging followers catch up via MsgApp instead of
+				// triggering repeated full-snapshot transfers.
+				retainTail := min(n.cfg.SnapshotEntries/4, uint64(256))
+				compactThrough := request.index
+				if request.index > retainTail {
+					compactThrough = request.index - retainTail
+				}
+				err = n.disk.saveSnapshot(snapshot, compactThrough)
 			}
 			observed := err
 			if errors.Is(err, raft.ErrSnapOutOfDate) {
@@ -607,6 +656,13 @@ func (n *Node) run() {
 			}
 			if !raft.IsEmptyHardState(ready.HardState) {
 				n.committed.Store(ready.HardState.Commit)
+				if ready.HardState.Term != 0 && ready.HardState.Term != lastTerm {
+					if lastTerm != 0 {
+						n.cancelReadIndexForLeadershipLoss()
+						n.signalChanged()
+					}
+					lastTerm = ready.HardState.Term
+				}
 			}
 			if envelope != nil {
 				if err := n.cacheRetired(envelope.Retired, ready.Snapshot.Metadata.Index); err != nil {
@@ -628,24 +684,23 @@ func (n *Node) run() {
 			if ready.SoftState != nil {
 				if n.leader.Swap(ready.SoftState.Lead) != ready.SoftState.Lead {
 					n.leaderChanges.Add(1)
+					if ready.SoftState.Lead != n.cfg.ID {
+						n.cancelReadIndexForLeadershipLoss()
+					}
 				}
 				n.signalChanged()
 			}
 			for _, state := range ready.ReadStates {
-				n.mu.Lock()
-				ch := n.reads[string(state.RequestCtx)]
-				n.mu.Unlock()
-				if ch != nil {
-					select {
-					case ch <- state.Index:
-					default:
-					}
+				if state.Index != 0 {
+					n.completeReadIndex(string(state.RequestCtx), state.Index, nil)
 				}
 			}
-			conf := n.disk.conf
-			confIndex := n.disk.confIndex
+			conf, confIndex := n.disk.confState()
+			prevConfIndex := confIndex
 			configurationChanged := false
 			var membershipResults []membershipResult
+			var peerChanges []pendingPeerChange
+			pendingRetired := map[uint64]uint64{}
 			for _, entry := range ready.CommittedEntries {
 				switch entry.Type {
 				case raftpb.EntryConfChange:
@@ -660,8 +715,6 @@ func (n *Node) run() {
 					conf = *n.raft.ApplyConfChange(change)
 					confIndex = entry.Index
 				case raftpb.EntryConfChangeV2:
-					configurationChanged = true
-					n.protocolValidated.Store(false)
 					// Membership is durable independently of the graph checkpoint.
 					// Replaying an older add/promote/remove against a later saved
 					// configuration can resurrect a member or demote a voter.
@@ -674,27 +727,47 @@ func (n *Node) run() {
 						return
 					}
 					var outcome membershipResult
+					var peerChange *memberChange
 					var err error
-					conf, outcome, err = n.applyMembership(change, conf, entry.Index)
+					conf, outcome, peerChange, err = n.applyMembership(change, conf, entry.Index, pendingRetired)
 					if err != nil {
 						n.fail(err)
 						return
 					}
+					if outcome.err == nil {
+						configurationChanged = true
+						if minProto, err := n.disk.minimumProtocol(); err != nil || minProto < n.protocolVersion() {
+							n.protocolValidated.Store(false)
+						}
+					}
 					membershipResults = append(membershipResults, outcome)
+					if peerChange != nil {
+						peerChanges = append(peerChanges, pendingPeerChange{change: *peerChange, index: entry.Index})
+					}
 					confIndex = entry.Index
 				}
 			}
-			if confIndex != n.disk.confIndex {
+			if confIndex != prevConfIndex || len(peerChanges) > 0 {
+				var fallbackPeers map[uint64]string
+				if len(peerChanges) > 0 {
+					n.peerMu.RLock()
+					fallbackPeers = maps.Clone(n.peers)
+					n.peerMu.RUnlock()
+				}
 				finish := n.metrics.Start("configuration_persist")
-				err := n.disk.saveConf(conf, confIndex)
+				err := n.disk.saveConfWithMembership(conf, confIndex, fallbackPeers, peerChanges)
 				finish(err)
 				if err != nil {
 					n.fail(err)
 					return
 				}
+				if len(peerChanges) > 0 {
+					if err := n.applyPeerChangesInMemory(peerChanges); err != nil {
+						n.fail(err)
+						return
+					}
+				}
 			}
-			n.disk.conf = conf
-			n.disk.confIndex = confIndex
 			if len(ready.Messages) > 0 {
 				n.send(ready.Messages)
 			}
@@ -711,6 +784,7 @@ func (n *Node) run() {
 					pending.last = ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
 				}
 				pending.conf = conf
+				pending.confIndex = confIndex
 				pending.configurationChanged = pending.configurationChanged || configurationChanged
 			}
 			n.raft.Advance()
@@ -740,8 +814,15 @@ func (n *Node) applyLoop() {
 			probe = nil
 		}
 	}
-	lastConf := lastSnapshot.Metadata.ConfState
+	lastConf, persistedConfIndex := n.disk.confState()
+	if len(lastConf.Voters) == 0 {
+		lastConf = lastSnapshot.Metadata.ConfState
+	}
+	minSnapshotIndex := persistedConfIndex
 	var configurationIndex uint64
+	if persistedConfIndex > snapshotIndex {
+		configurationIndex = persistedConfIndex
+	}
 	retry := time.NewTicker(5 * time.Second)
 	defer retry.Stop()
 	for {
@@ -769,6 +850,9 @@ func (n *Node) applyLoop() {
 		case built := <-building:
 			building = nil
 			if built.request.index <= snapshotIndex {
+				if built.err == nil {
+					n.scheduleSnapshotCleanup(snapshotIndex)
+				}
 				finishProbe(nil)
 				break
 			}
@@ -794,6 +878,19 @@ func (n *Node) applyLoop() {
 				if err == nil {
 					snapshotIndex = built.request.index
 					n.recordSnapshotFailure(nil, 0)
+				} else {
+					if latest, snapErr := n.disk.Snapshot(); snapErr == nil && latest.Metadata.Index > snapshotIndex {
+						snapshotIndex = latest.Metadata.Index
+					}
+					if latestConf, confIdx := n.disk.confState(); confIdx > minSnapshotIndex {
+						minSnapshotIndex = confIdx
+						if len(latestConf.Voters) > 0 {
+							lastConf = latestConf
+						}
+					}
+					if snapshotIndex >= built.request.index {
+						n.scheduleSnapshotCleanup(snapshotIndex)
+					}
 				}
 				finishProbe(nil)
 			case <-n.ctx.Done():
@@ -803,16 +900,21 @@ func (n *Node) applyLoop() {
 			n.mu.Lock()
 			failed := n.snapshotFailure != nil
 			n.mu.Unlock()
-			if failed && building == nil && n.applied.Load() > snapshotIndex {
+			if applied := n.applied.Load(); failed && building == nil && applied > snapshotIndex && applied >= minSnapshotIndex {
 				var err error
 				building, err = n.startSnapshot(lastConf)
 				if err != nil {
-					n.recordSnapshotFailure(err, n.applied.Load())
+					n.recordSnapshotFailure(err, applied)
 				}
 			}
 			continue
 		case batch := <-n.application:
-			lastConf = batch.conf
+			if len(batch.conf.Voters) > 0 {
+				lastConf = batch.conf
+			}
+			if batch.confIndex > minSnapshotIndex {
+				minSnapshotIndex = batch.confIndex
+			}
 			if !raft.IsEmptySnap(batch.snapshot) && batch.snapshot.Metadata.Index > n.applied.Load() {
 				finish := n.metrics.Start("snapshot_restore")
 				err := restoreSnapshot(n.ctx, n.machine, n.cfg.Dir, batch.snapshot)
@@ -823,6 +925,9 @@ func (n *Node) applyLoop() {
 				}
 				n.progress(batch.snapshot.Metadata.Index)
 				snapshotIndex = batch.snapshot.Metadata.Index
+				if snapshotIndex > minSnapshotIndex {
+					minSnapshotIndex = snapshotIndex
+				}
 				n.recordSnapshotFailure(nil, 0)
 				finishProbe(nil)
 			}
@@ -855,11 +960,16 @@ func (n *Node) applyLoop() {
 		if probe != nil && probe.ctx.Err() != nil {
 			finishProbe(probe.ctx.Err())
 		}
-		if building == nil && (probe != nil || n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || configurationIndex > snapshotIndex) {
+		n.mu.Lock()
+		snapshotFailed := n.snapshotFailure != nil
+		n.mu.Unlock()
+		applied := n.applied.Load()
+		if building == nil && applied >= minSnapshotIndex && applied >= snapshotIndex &&
+			(probe != nil || (!snapshotFailed && (applied-snapshotIndex >= n.cfg.SnapshotEntries || configurationIndex > snapshotIndex))) {
 			var err error
 			building, err = n.startSnapshot(lastConf)
 			if err != nil {
-				n.recordSnapshotFailure(err, n.applied.Load())
+				n.recordSnapshotFailure(err, applied)
 				finishProbe(err)
 			}
 		}
@@ -868,13 +978,28 @@ func (n *Node) applyLoop() {
 
 func (n *Node) progress(index uint64) {
 	n.applied.Store(index)
-	n.signalChanged()
+	n.signalAppliedChanged()
+}
+
+func (n *Node) signalAppliedChanged() {
+	n.mu.Lock()
+	if n.appliedChanged != nil {
+		close(n.appliedChanged)
+		n.appliedChanged = make(chan struct{})
+	}
+	n.mu.Unlock()
+}
+
+func (n *Node) signalStateChangedLocked() {
+	if n.stateChanged != nil {
+		close(n.stateChanged)
+		n.stateChanged = make(chan struct{})
+	}
 }
 
 func (n *Node) signalChanged() {
 	n.mu.Lock()
-	close(n.changed)
-	n.changed = make(chan struct{})
+	n.signalStateChangedLocked()
 	n.mu.Unlock()
 }
 

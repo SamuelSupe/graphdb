@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"sync"
@@ -15,6 +16,8 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+var errPartitionSourceValueBudget = errors.New("partition_source_value_too_large")
 
 func (c *Cluster) graphHome() partition.Group {
 	peers := c.config.Peers
@@ -29,6 +32,9 @@ func (c *Cluster) graphHome() partition.Group {
 func (c *Cluster) enablePartitionedGraph(ctx context.Context, input partition.EnableRequest) (partition.Graph, error) {
 	if c.config.Protocol < 5 || c.App.Catalog || c.App.ShardID == "" || storage.ValidateTenantID(input.Tenant) != nil || input.Epoch == 0 || (len(input.Groups) < 2 || len(input.Groups) > 256) {
 		return partition.Graph{}, fmt.Errorf("%w: partitioning requires a tenant, epoch and 2 to 256 protocol-5 data groups", storage.ErrInvalidArgument)
+	}
+	if input.GenerationFloor < 0 || (input.Attempt != 0 && c.config.Protocol < partition.ConversionCancellationProtocol) || (input.GenerationFloor > 0 && input.Attempt == 0) {
+		return partition.Graph{}, fmt.Errorf("%w: managed conversion requires Raft protocol %d", storage.ErrConflict, partition.ConversionCancellationProtocol)
 	}
 	ids := make([]string, 0, len(input.Groups))
 	for id, g := range input.Groups {
@@ -52,19 +58,46 @@ func (c *Cluster) enablePartitionedGraph(ctx context.Context, input partition.En
 	}
 	sort.Strings(ids)
 	c.maintenanceMu.Lock()
-	defer c.maintenanceMu.Unlock()
+	maintLocked := true
+	unlockMaint := func() {
+		if maintLocked {
+			maintLocked = false
+			c.maintenanceMu.Unlock()
+		}
+	}
+	defer unlockMaint()
 	resume, err := c.pauseTenantWrites(ctx, input.Tenant)
 	if err != nil {
 		return partition.Graph{}, err
 	}
 	defer resume()
 	c.App.mu.RLock()
-	existing, existingErr := c.App.partitionStore().GetGraph(ctx, input.Tenant)
+	store := c.App.partitionStore()
+	existing, existingErr := store.GetGraph(ctx, input.Tenant)
+	last, markerErr := store.LastConversionCancellation(ctx, input.Tenant)
 	c.App.mu.RUnlock()
+	if markerErr != nil {
+		return partition.Graph{}, markerErr
+	}
+	if last.Generation != 0 && input.Attempt <= last.Attempt {
+		return partition.Graph{}, fmt.Errorf("%w: graph conversion attempt was cancelled", storage.ErrConflict)
+	}
 	if existingErr == nil {
+		if existing.ConversionAttempt != 0 && existing.ConversionAttempt != input.Attempt {
+			return partition.Graph{}, fmt.Errorf("%w: graph conversion attempt changed", storage.ErrConflict)
+		}
 		if existing.State == "active" && existing.SourceRetired {
 			return existing, nil
 		}
+		if existing.State == "initializing" && existing.ConversionAttempt != 0 && existing.Copy != nil && existing.Copy.Phase == "schema" {
+			if err := c.reserveConversionPartitions(ctx, input, ids, existing); err != nil {
+				return existing, err
+			}
+		}
+		// Release shard-global maintenanceMu and local write pause before network copy;
+		// the persisted initializing descriptor already fences writes and tasks on this tenant.
+		resume()
+		unlockMaint()
 		return c.copyPartitionedGraph(ctx, existing)
 	}
 	if !errors.Is(existingErr, storage.ErrNotFound) {
@@ -76,6 +109,11 @@ func (c *Cluster) enablePartitionedGraph(ctx context.Context, input partition.En
 	schema, manifest, err := c.App.Store.ReadCurrentSchema(ctx, input.Tenant)
 	if err != nil {
 		return partition.Graph{}, err
+	}
+	if c.config.Protocol >= partition.ConversionPreflightProtocol {
+		if err := c.checkPartitionSourceValues(ctx, input.Tenant, manifest.Version); err != nil {
+			return partition.Graph{}, err
+		}
 	}
 	sourceHash := manifest.DataHash
 	if sourceHash == "" && manifest.Version == 0 {
@@ -123,10 +161,42 @@ func (c *Cluster) enablePartitionedGraph(ctx context.Context, input partition.En
 	if err != nil {
 		return partition.Graph{}, err
 	}
-	g := partition.Graph{Format: partition.FormatVersion, Tenant: input.Tenant, Generation: generation + 1, Version: manifest.Version, Groups: input.Groups, SourcePolicy: policy, SourcePolicyConfigured: policyConfigured, LayoutRevision: 1, CITypes: schema.ListCITypes(), RelationTypes: schema.ListRelationTypes(), Config: storage.TenantConfigWithDefaults(config), RelationSchemas: relationSchemas, Copy: &partition.CopyProgress{Phase: "schema", DataHash: sourceHash}}
+	floor := max(generation, input.GenerationFloor, last.Generation)
+	if floor == math.MaxInt64 {
+		return partition.Graph{}, fmt.Errorf("%w: graph generations exhausted", storage.ErrConflict)
+	}
+	g := partition.Graph{Format: partition.FormatVersion, Tenant: input.Tenant, Generation: floor + 1, Version: manifest.Version, Groups: input.Groups, SourcePolicy: policy, SourcePolicyConfigured: policyConfigured, LayoutRevision: 1, CITypes: schema.ListCITypes(), RelationTypes: schema.ListRelationTypes(), Config: storage.TenantConfigWithDefaults(config), RelationSchemas: relationSchemas, Copy: &partition.CopyProgress{Phase: "schema", DataHash: sourceHash}}
+	if input.Attempt != 0 {
+		g.ConversionAttempt, g.ConversionSource = input.Attempt, generation
+	}
 	for i := range g.Partitions {
 		g.Partitions[i] = partition.Placement{Group: ids[i%len(ids)], Epoch: 1}
 	}
+	remote := sharding.GraphRemote{Client: c.shards}
+	initialize := func() error {
+		return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "initialize", Tenant: input.Tenant, Generation: g.Generation, Epoch: input.Epoch, Graph: &g}, nil)
+	}
+	// Record the destination before reserving its partitions so cancellation
+	// and restart can find every reservation, including a partial first wave.
+	if input.Attempt != 0 {
+		if err := initialize(); err != nil {
+			return partition.Graph{}, err
+		}
+	}
+	if err := c.reserveConversionPartitions(ctx, input, ids, g); err != nil {
+		return g, err
+	}
+	if input.Attempt == 0 {
+		if err := initialize(); err != nil {
+			return partition.Graph{}, err
+		}
+	}
+	resume()
+	unlockMaint()
+	return c.copyPartitionedGraph(ctx, g)
+}
+
+func (c *Cluster) reserveConversionPartitions(ctx context.Context, input partition.EnableRequest, ids []string, g partition.Graph) error {
 	remote := sharding.GraphRemote{Client: c.shards}
 	for _, id := range ids {
 		var buckets []uint8
@@ -136,13 +206,10 @@ func (c *Cluster) enablePartitionedGraph(ctx context.Context, input partition.En
 			}
 		}
 		if err := remote.Action(ctx, input.Groups[id], partition.Action{Operation: "reserve_partitions", Tenant: input.Tenant, Generation: g.Generation, Epoch: 1, Participants: buckets}, nil); err != nil {
-			return partition.Graph{}, err
+			return err
 		}
 	}
-	if err := remote.Action(ctx, c.graphHome(), partition.Action{Operation: "initialize", Tenant: input.Tenant, Generation: g.Generation, Epoch: input.Epoch, Graph: &g}, nil); err != nil {
-		return partition.Graph{}, err
-	}
-	return c.copyPartitionedGraph(ctx, g)
+	return nil
 }
 
 func (c *Cluster) runPartitionBackground(ctx context.Context) {
@@ -249,14 +316,22 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 		return err
 	}
 	remote := sharding.GraphRemote{Client: c.shards}
+	if g.GC != nil && g.GC.RecoverySequence != 0 {
+		_, err := c.drivePartitionGC(ctx, g)
+		return err
+	}
 	if g.Active != nil {
 		if g.Active.Purpose == "ingest" && c.config.Protocol < partition.IngestProtocol {
 			return nil
 		}
 		recovery, cancel := context.WithTimeout(ctx, 8*time.Second)
-		_, err := c.partitionEngine(tenant, g.Generation, g.Active.Purpose == "ingest" && c.config.Protocol >= partition.BatchProtocol).Resume(recovery)
+		batch := c.config.Protocol >= partition.BatchProtocol && (g.Active.State != "preparing" || g.Active.Purpose != "commit")
+		_, err := c.partitionEngine(tenant, g.Generation, batch).Resume(recovery)
 		cancel()
 		if err != nil {
+			if errors.Is(err, partition.ErrPrepareSnapshotBudget) {
+				return c.recoverPartitionSnapshotBudget(ctx, g, err)
+			}
 			return err
 		}
 		g, err = c.App.graphDescriptor(ctx, tenant)
@@ -292,19 +367,7 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 		return errors.Join(writeErr, <-done)
 	}
 	if g.GC != nil {
-		maintenance, cancel := context.WithTimeout(ctx, 5*time.Second)
-		for {
-			err = c.advancePartitionGC(maintenance, g)
-			if err == nil {
-				g, err = c.App.graphDescriptor(maintenance, tenant)
-			}
-			// The startup fence already blocks this graph's writes. Keep
-			// installing its bounded waves without waiting for scheduler ticks.
-			if err != nil || c.config.Protocol < partition.BufferedGCProtocol || g.GC == nil || g.GC.Phase != "starting" {
-				break
-			}
-		}
-		cancel()
+		g, err = c.drivePartitionGC(ctx, g)
 		if err != nil {
 			return err
 		}
@@ -351,6 +414,11 @@ func (c *Cluster) registerPartitionEnable(mux *http.ServeMux) {
 		}
 		g, err := c.enablePartitionedGraph(r.Context(), input)
 		if err != nil {
+			if errors.Is(err, errPartitionSourceValueBudget) {
+				data, _ := resultJSON(http.StatusBadRequest, map[string]any{"code": errPartitionSourceValueBudget.Error(), "error": err.Error()})
+				writeResult(w, data)
+				return
+			}
 			c.partitionError(w, err)
 			return
 		}

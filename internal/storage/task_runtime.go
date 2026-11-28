@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -62,7 +63,72 @@ func taskProgressTotal(taskType string) int {
 	}
 }
 
+var (
+	sharedStoreTaskHeartbeatInterval = time.Minute
+	errTaskHeartbeatStop             = errors.New("task heartbeat stopped")
+)
+
+func (s *TenantStore) startTaskHeartbeat(ctx context.Context, task Task) func() {
+	if s.localFileStore() != nil || s.ReplicationMode || task.OwnerID == "" {
+		return func() {}
+	}
+	interval := sharedStoreTaskHeartbeatInterval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	hbCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				writeCtx, writeCancel := s.taskPersistenceContext(hbCtx)
+				_, err := s.mutateTask(writeCtx, task.TenantID, task.ID, func(current *Task) error {
+					if taskTerminal(current.Status) || current.OwnerID != task.OwnerID {
+						return errTaskHeartbeatStop
+					}
+					current.UpdatedAt = time.Now().UTC()
+					return nil
+				})
+				if errors.Is(err, ErrLeaseHeld) && task.Type == TaskTypeTenantRestore {
+					if lease, _, ok := s.getCachedWriterLeaseAny(task.TenantID); ok && lease.OwnerID == task.OwnerID {
+						if rebound, bindErr := s.rebindCurrentWriterFence(writeCtx, task.TenantID); bindErr == nil {
+							_, err = s.mutateTask(rebound, task.TenantID, task.ID, func(current *Task) error {
+								if taskTerminal(current.Status) || current.OwnerID != task.OwnerID {
+									return errTaskHeartbeatStop
+								}
+								current.UpdatedAt = time.Now().UTC()
+								return nil
+							})
+						}
+					}
+				}
+				writeCancel()
+				if errors.Is(err, errTaskHeartbeatStop) {
+					return
+				}
+				if errors.Is(err, ErrNotFound) && !(task.Type == TaskTypeTenantRestore && boolTaskParam(task.Params, "overwrite")) {
+					return
+				}
+			}
+		}
+	}()
+	return sync.OnceFunc(func() {
+		cancel()
+		<-done
+	})
+}
+
 func (s *TenantStore) updateTaskProgress(ctx context.Context, task Task, phase string, completed int, total int, checkpoint map[string]any) error {
+	return s.executionEnv(ctx).Progress.UpdateProgress(ctx, task, phase, completed, total, checkpoint)
+}
+
+func (s *TenantStore) persistTaskProgress(ctx context.Context, task Task, phase string, completed int, total int, checkpoint map[string]any) error {
 	writeCtx, cancel := s.taskPersistenceContext(ctx)
 	defer cancel()
 	if _, err := s.prepareTenantWrite(writeCtx, task.TenantID); err != nil {

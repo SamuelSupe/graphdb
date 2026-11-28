@@ -378,13 +378,15 @@ func TestApplicationBatchRejectsOnlyFailedMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer files.Close()
-	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
+	protected := storage.NewReadProtectedObjectStore(files, storage.ReadProtectionConfig{Singleflight: true})
+	objects := storage.NewWriterObjectCache(protected, storage.WriterObjectCacheConfig{MaxKeys: 128, NegativeTTL: time.Minute})
+	app := &Application{Files: files, Store: storage.NewTenantStore(objects, "test")}
 	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := files.Put(r.Context(), "test/"+string(name), name); err != nil {
+		if _, err := objects.PutConditional(r.Context(), "test/"+string(name), name, storage.PutCondition{IfNoneMatch: true}); err != nil {
 			t.Fatal(err)
 		}
 		if string(name) == "bad" {
@@ -426,7 +428,7 @@ func TestApplicationBatchRejectsOnlyFailedMutation(t *testing.T) {
 		if result.Status != want {
 			t.Fatalf("response %s: %+v", name, result)
 		}
-		data, err := files.Get(ctx, "test/"+name)
+		data, err := objects.Get(ctx, "test/"+name)
 		if name == "bad" {
 			if !errors.Is(err, storage.ErrNotFound) {
 				t.Fatalf("failed command retained data: %s, %v", data, err)

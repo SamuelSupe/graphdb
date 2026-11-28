@@ -63,7 +63,7 @@ func pathStepsMatch(path graph.Path, filter PathFilter, final bool) bool {
 	}
 	for i, edge := range path.Edges {
 		if i >= len(filter.Steps) {
-			return !final
+			return false
 		}
 		step := filter.Steps[i]
 		if !stringSliceAllows(edge.Type, step.RelationTypes) {
@@ -138,8 +138,12 @@ func pathResult(path graph.Path, projection []string) Result {
 
 func maxPathResults(request Request) int {
 	if request.Path.MaxPaths > 0 {
-		if request.Path.MaxPaths > maxQueryLimit+1 {
-			return maxQueryLimit + 1
+		capLimit := maxQueryLimit + 1
+		if request.Cursor != "" {
+			capLimit = max(capLimit, pathPageResultLimit(request))
+		}
+		if request.Path.MaxPaths > capLimit {
+			return capLimit
 		}
 		return request.Path.MaxPaths
 	}

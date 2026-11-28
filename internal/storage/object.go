@@ -2,67 +2,31 @@ package storage
 
 import (
 	"context"
-	"errors"
-	"fmt"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/backend"
 )
 
-var ErrNotFound = errors.New("object not found")
+var (
+	ErrNotFound                     = backend.ErrNotFound
+	ErrConflict                     = backend.ErrConflict
+	ErrLeaseHeld                    = backend.ErrLeaseHeld
+	ErrConditionalWriteUnsupported  = backend.ErrConditionalWriteUnsupported
+	ErrConditionalDeleteUnsupported = backend.ErrConditionalDeleteUnsupported
+	ErrTenantDisabled               = backend.ErrTenantDisabled
+	ErrTenantDeleted                = backend.ErrTenantDeleted
+)
 
-var ErrConflict = errors.New("object write conflict")
-
-var ErrLeaseHeld = errors.New("writer lease is held")
-
-var ErrConditionalWriteUnsupported = errors.New("conditional write unsupported")
-
-var ErrConditionalDeleteUnsupported = errors.New("conditional delete unsupported")
-
-var ErrTenantDisabled = errors.New("tenant disabled")
-
-var ErrTenantDeleted = errors.New("tenant deleted")
-
-type ObjectInfo struct {
-	Key  string
-	Size int64
-	ETag string
-}
-
-type ObjectMeta struct {
-	Key    string
-	ETag   string
-	Exists bool
-}
-
-type objectBeforeImage struct {
-	data []byte
-	meta ObjectMeta
-}
-
-type PutCondition struct {
-	previous    *objectBeforeImage
-	IfMatch     string
-	IfNoneMatch bool
-}
-
-type ObjectStore interface {
-	Get(ctx context.Context, key string) ([]byte, error)
-	GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error)
-	Put(ctx context.Context, key string, data []byte) error
-	PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error)
-	Delete(ctx context.Context, key string) error
-	DeleteConditional(ctx context.Context, key string, condition PutCondition) error
-	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
-}
+type (
+	ObjectInfo   = backend.ObjectInfo
+	ObjectMeta   = backend.ObjectMeta
+	PutCondition = backend.PutCondition
+	ObjectStore  = backend.ObjectStore
+)
 
 func objectContextErr(ctx context.Context) error {
-	if ctx == nil {
-		return nil
-	}
-	return ctx.Err()
+	return backend.ContextErr(ctx)
 }
 
 func validateObjectKey(key string) error {
-	if key == "" {
-		return fmt.Errorf("object key is required")
-	}
-	return nil
+	return backend.ValidateKey(key)
 }

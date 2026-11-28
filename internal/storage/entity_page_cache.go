@@ -45,7 +45,7 @@ func newEntityPageCacheWithRevalidation(max int, revalidateAfter time.Duration) 
 }
 
 func entityPageCacheKey(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) string {
-	return tenantID + "\x00" + strconv.FormatInt(version, 10) + "\x00" + objectKey + "\x00" + contentHash + "\x00" + schemaHash
+	return tenantID + "\x00" + strconv.FormatInt(indexObjectVersion(version, objectKey), 10) + "\x00" + objectKey + "\x00" + contentHash + "\x00" + schemaHash
 }
 
 func (s *TenantStore) cachedEntityPage(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) (EntityPageData, string, bool) {

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -15,7 +16,13 @@ func (s *TenantStore) deleteTenantPurgePage(
 	if len(objects) == 0 {
 		return nil, nil
 	}
-	deleteCtx, cancel := context.WithCancel(ctx)
+	localFiles := s.localFileStore()
+	batchedLocal := localFiles != nil && !IsReplicatedContext(ctx)
+	baseCtx := ctx
+	if batchedLocal {
+		baseCtx = context.WithValue(ctx, gcDeleteBatchKey{}, localFiles)
+	}
+	deleteCtx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
 	jobs := make(chan int)
 	deleted := make([]bool, len(objects))
@@ -55,6 +62,17 @@ sendLoop:
 	for index, ok := range deleted {
 		if ok {
 			keys = append(keys, objects[index].Key)
+		}
+	}
+	if firstErr == nil {
+		firstErr = ctx.Err()
+	}
+	if batchedLocal {
+		syncErr := localFiles.syncPendingDeleteDirectories()
+		if syncErr != nil {
+			firstErr = errors.Join(firstErr, syncErr)
+		} else if len(keys) > 0 && ctx.Err() == nil {
+			_ = localFiles.pruneEmptyObjectParents(ctx, keys)
 		}
 	}
 	return keys, firstErr

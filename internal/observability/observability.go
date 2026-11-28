@@ -47,6 +47,7 @@ func (o *Observability) UnregisterTenant(tenantID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.tenants, tenantID)
+	o.Metrics.forgetTenant(tenantID)
 }
 
 func (o *Observability) HasTenant(tenantID string) bool {
@@ -97,18 +98,20 @@ func (o *Observability) RunIndexHealthMonitor(ctx context.Context, interval time
 
 func (o *Observability) checkKnownTenantIndexes(ctx context.Context, check func(context.Context, string) (string, int, error)) {
 	for _, tenantID := range o.Tenants() {
+		if ctx.Err() != nil {
+			return
+		}
 		status, issues, err := check(ctx, tenantID)
 		if err != nil {
 			if o.Logger != nil {
 				o.Logger.Error("index_health_check_failed", map[string]any{"tenant": tenantID, "error": err.Error()})
 			}
-			if o.Metrics != nil {
-				o.Metrics.RecordIndexHealth(tenantID, "error", 1)
-			}
-			continue
+			status, issues = "error", 1
 		}
-		if o.Metrics != nil {
+		o.mu.Lock()
+		if _, present := o.tenants[tenantID]; present && o.Metrics != nil {
 			o.Metrics.RecordIndexHealth(tenantID, status, issues)
 		}
+		o.mu.Unlock()
 	}
 }

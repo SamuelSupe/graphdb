@@ -19,6 +19,9 @@ type Config struct {
 	Backup                            backupstore.Config
 	Addr                              string
 	AdminAddr                         string
+	AuthToken                         string
+	AdminToken                        string
+	RequireTenantScope                bool
 	PprofEnabled                      bool
 	Mode                              string
 	Prefix                            string
@@ -74,6 +77,7 @@ type Config struct {
 	IngestWALSegmentBytes             int64
 	IngestWALAppendQueue              int
 	IngestQueueMemoryBytes            int64
+	HAIngestReceiptRetention          time.Duration
 	PartitionIngestReceiptRetention   time.Duration
 	IngestFlushInterval               time.Duration
 	IngestFlushMaxRequests            int
@@ -120,6 +124,8 @@ func Load() (Config, error) {
 		Backup:                            backup,
 		Addr:                              getenv("GRAPHDB_ADDR", ":8080"),
 		AdminAddr:                         strings.TrimSpace(os.Getenv("GRAPHDB_ADMIN_ADDR")),
+		AuthToken:                         strings.TrimSpace(os.Getenv("GRAPHDB_AUTH_TOKEN")),
+		AdminToken:                        strings.TrimSpace(os.Getenv("GRAPHDB_ADMIN_TOKEN")),
 		Mode:                              getenv("GRAPHDB_MODE", "all"),
 		Prefix:                            getenv("GRAPHDB_PREFIX", "graphdb"),
 		PollInterval:                      2 * time.Second,
@@ -194,6 +200,9 @@ func Load() (Config, error) {
 		CoordinatorNamespace:              strings.TrimSpace(os.Getenv("GRAPHDB_COORDINATOR_NAMESPACE")),
 	}
 	if err := loadBoolEnv("GRAPHDB_PPROF_ENABLED", &cfg.PprofEnabled); err != nil {
+		return Config{}, err
+	}
+	if err := loadBoolEnv("GRAPHDB_REQUIRE_TENANT_SCOPE", &cfg.RequireTenantScope); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_POLL_INTERVAL", &cfg.PollInterval); err != nil {
@@ -339,6 +348,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadBytesEnv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", &cfg.IngestQueueMemoryBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_HA_INGEST_RECEIPT_RETENTION", &cfg.HAIngestReceiptRetention); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_PARTITION_INGEST_RECEIPT_RETENTION", &cfg.PartitionIngestReceiptRetention); err != nil {

@@ -39,29 +39,59 @@ func (s Store) applyData(ctx context.Context, a Action) (any, error) {
 	return s.applyDataState(ctx, a, state)
 }
 
-func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (any, error) {
+func (state DataState) validateTransaction(a Action) error {
 	if state.Epoch != a.Epoch || state.State != "active" {
-		return nil, conflict("partition ownership changed")
+		return conflict("partition ownership changed")
 	}
 	if a.Txn == "" || a.Sequence == 0 {
-		return nil, invalid("transaction identity is required")
+		return invalid("transaction identity is required")
+	}
+	return nil
+}
+
+func (state DataState) prepareReceipt(a Action) (*Prepared, error) {
+	encoded, err := json.Marshal(a.Changes)
+	if err != nil {
+		return nil, err
+	}
+	if a.Digest != fmt.Sprintf("%x", sha256.Sum256(encoded)) {
+		return nil, invalid("prepare digest does not match changes")
+	}
+	p := state.Prepared
+	if p != nil && (p.Txn != a.Txn || p.Sequence != a.Sequence || p.Base != a.Base || p.Digest != a.Digest) {
+		return nil, conflict("partition has an unresolved transaction")
+	}
+	return p, nil
+}
+
+// ReplayPrepare returns an existing durable prepare receipt without creating pages.
+// A nil receipt means the request would still need preparation.
+func (s Store) ReplayPrepare(ctx context.Context, a Action) (*Prepared, error) {
+	state, err := s.Data(ctx, a.Tenant, a.Generation, a.Partition)
+	if err != nil {
+		return nil, err
+	}
+	if err := state.validateTransaction(a); err != nil {
+		return nil, err
+	}
+	return state.prepareReceipt(a)
+}
+
+func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (any, error) {
+	if err := state.validateTransaction(a); err != nil {
+		return nil, err
 	}
 	switch a.Operation {
 	case "prepare":
-		encoded, err := json.Marshal(a.Changes)
+		p, err := state.prepareReceipt(a)
 		if err != nil {
 			return nil, err
 		}
-		digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
-		if a.Digest != digest {
-			return nil, invalid("prepare digest does not match changes")
+		if p != nil {
+			return *p, nil
 		}
-		if state.Prepared != nil {
-			p := state.Prepared
-			if p.Txn == a.Txn && p.Sequence == a.Sequence && p.Base == a.Base && p.Digest == a.Digest {
-				return *p, nil
-			}
-			return nil, conflict("partition has an unresolved transaction")
+		if state.GC != nil && state.GC.RecoverySequence != 0 {
+			return nil, ErrGraphBusy
 		}
 		if a.Sequence <= state.Sequence || state.Root != a.Base {
 			return nil, conflict("partition base or transaction sequence changed")
@@ -70,6 +100,7 @@ func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (a
 		tree := s.Tree(a.Tenant, a.Generation, a.Partition)
 		tree.cache = cache
 		tree.balanceLeaves = a.Revision >= BalancedLeafRevision
+		tree.balanceBranches = a.Revision >= BalancedBranchRevision
 		var captured []Row
 		if state.Capture != "" || state.GC != nil && state.GC.Phase != "cleanup" {
 			tree.saved = func(_ context.Context, hash string) error {
@@ -77,7 +108,11 @@ func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (a
 				return nil
 			}
 		}
-		root, err := tree.Update(ctx, a.Base, a.Changes)
+		maxChanges := MaxChanges
+		if a.Revision >= LargeFragmentRevision {
+			maxChanges = maxFragmentChanges
+		}
+		root, err := tree.updateRows(ctx, a.Base, a.Changes, maxChanges)
 		if err != nil {
 			return nil, err
 		}

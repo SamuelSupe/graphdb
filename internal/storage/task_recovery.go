@@ -45,12 +45,22 @@ func (s *TenantStore) reconcileInactiveTask(
 	return task
 }
 
+const sharedStoreRemoteTaskStaleAfter = 5 * time.Minute
+
 func (s *TenantStore) taskOwnerStopped(task Task) bool {
+	if !taskStillActive(task) || task.OwnerID == "" {
+		return false
+	}
+	if s.localFileStore() == nil && s.InstanceID != "" && task.OwnerID != s.InstanceID {
+		if !task.UpdatedAt.IsZero() && time.Since(task.UpdatedAt) < sharedStoreRemoteTaskStaleAfter {
+			return false
+		}
+	}
 	s.taskMu.Lock()
 	_, running := s.taskCancels[taskRuntimeKey(task.TenantID, task.ID)]
 	pending := s.taskActive[taskActiveKey(task.TenantID, task.Type)].ID == task.ID
 	s.taskMu.Unlock()
-	return taskStillActive(task) && task.OwnerID != "" && !running && !pending
+	return !running && !pending
 }
 
 func (s *TenantStore) taskRuntimeActive(tenantID string, taskID string) bool {

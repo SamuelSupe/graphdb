@@ -3,18 +3,25 @@ package ha
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
+	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
@@ -191,6 +198,188 @@ func newTestPartitionedGraph(t *testing.T, wal bool, homeProtocol int) (a, b, ca
 	return a, b, catalog, router, call
 }
 
+func TestHAPartitionTopologyFollowsCatalogPeerUpdate(t *testing.T) {
+	_, data, _, _, call := newTestPartitionedGraph(t, false, partition.GroupTopologyProtocol)
+	var reads atomic.Int64
+	cfg := data.nodes[0].cfg.Raft
+	updated := sharding.Shard{ID: "b", ClusterID: cfg.ClusterID, Peers: make(map[uint64]string, len(cfg.Peers))}
+	for id, address := range cfg.Peers {
+		original, err := url.Parse(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		forward := httputil.NewSingleHostReverseProxy(original)
+		peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/cluster/graph/read" || r.URL.Path == "/cluster/graph/read-batch" {
+				reads.Add(1)
+			}
+			forward.ServeHTTP(w, r)
+		}))
+		t.Cleanup(peer.Close)
+		updated.Peers[id] = peer.URL
+	}
+	call(http.MethodPost, "/v1/cluster/shards", "", updated, http.StatusAccepted)
+	var g partition.Graph
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		response := call(http.MethodGet, "/v1/cluster/graphs/big", "", nil, http.StatusOK)
+		g = partition.Graph{}
+		if err := json.Unmarshal(response.Body.Bytes(), &g); err != nil {
+			t.Fatal(err)
+		}
+		if g.CatalogVersion > 0 && maps.Equal(g.Groups["b"].Peers, updated.Peers) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("graph still reports old peers at catalog version %d: %v", g.CatalogVersion, g.Groups["b"].Peers)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	id := "remote"
+	for g.Partitions[partition.Bucket(id)].Group != "b" {
+		id += "x"
+	}
+	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{IdempotencyKey: "catalog-peers", Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host"}}, UpsertEntities: []graph.Entity{{ID: id, Kind: "host"}},
+	}}, http.StatusOK)
+	before := reads.Load()
+	call(http.MethodGet, "/v1/entities/"+id, "big", nil, http.StatusOK)
+	if reads.Load() == before {
+		t.Fatal("graph read used the old fragment addresses")
+	}
+}
+
+func TestHACancelCopiedConversionRestoresSourceAndAllowsRetry(t *testing.T) {
+	a, b, catalog, router, call := newTestPartitionedGraph(t, false, partition.ConversionCancellationProtocol)
+	for i := range catalog.nodes {
+		catalog.stop(i)
+	}
+	for i, node := range catalog.nodes {
+		node.cfg.Raft.Protocol = partition.ConversionCancellationProtocol
+		catalog.start(i)
+	}
+	catalog.leader(-1)
+	const tenant = "cancel-copy"
+	const graphPath = "/v1/cluster/graphs/" + tenant
+	const entityPath = "/v1/entities/retained"
+	call(http.MethodPost, "/v1/tenants", "", map[string]any{"tenant_id": tenant}, http.StatusOK)
+	call(http.MethodPost, "/v1/commits", tenant, partition.CommitRequest{IdempotencyKey: "source", Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host"}}, UpsertEntities: []graph.Entity{{ID: "retained", Kind: "host"}},
+	}}, http.StatusOK)
+	call(http.MethodPost, "/v1/indexes/rebuild", tenant, nil, http.StatusOK)
+
+	var seen atomic.Int64
+	var pause atomic.Bool
+	pause.Store(true)
+	hold := func(w http.ResponseWriter, _ *http.Request, _ *Cluster, action partition.Action) bool {
+		if action.Operation != "activate" || action.Tenant != tenant || !pause.Load() {
+			return false
+		}
+		seen.Store(action.Generation)
+		http.Error(w, "hold graph activation", http.StatusServiceUnavailable)
+		return true
+	}
+	for _, group := range []*testCluster{a, b} {
+		for _, node := range group.nodes {
+			node.graphAction.Store(&hold)
+		}
+	}
+	enable := map[string]any{"tenant_id": tenant, "data_groups": []string{"a", "b"}}
+	call(http.MethodPost, "/v1/cluster/graphs", "", enable, http.StatusAccepted)
+	deadline := time.Now().Add(20 * time.Second)
+	for seen.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	abandoned := seen.Load()
+	if abandoned == 0 {
+		t.Fatal("copy did not reach the activation boundary")
+	}
+	for _, node := range a.nodes {
+		node.blockConversionReclaim.Store(true)
+	}
+	call(http.MethodPost, graphPath+"/cancel", "", nil, http.StatusAccepted)
+	var restored sharding.Placement
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		response := call(http.MethodGet, graphPath, "", nil, http.StatusOK)
+		restored = sharding.Placement{}
+		if err := json.Unmarshal(response.Body.Bytes(), &restored); err != nil {
+			t.Fatal(err)
+		}
+		if restored.State == "active" && restored.Mode != "partitioned" && restored.ConversionCleanup != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cancelled conversion did not restore source routing: %s", response.Body.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if restored.GraphGenerationFloor != abandoned {
+		t.Fatalf("abandoned generation fence = %d, want %d", restored.GraphGenerationFloor, abandoned)
+	}
+	call(http.MethodGet, entityPath, tenant, nil, http.StatusOK)
+	call(http.MethodPost, "/v1/commits", tenant, partition.CommitRequest{IdempotencyKey: "source-while-cleaning", Mutations: graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "retained", Kind: "host", Fields: graph.Fields{"state": "during-cleanup"}}},
+	}}, http.StatusOK)
+	call(http.MethodPost, "/v1/indexes/rebuild", tenant, nil, http.StatusOK)
+	old := catalog.leader(-1)
+	catalog.stop(old)
+	catalog.leader(old)
+	for _, node := range a.nodes {
+		node.blockConversionReclaim.Store(false)
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		response := call(http.MethodGet, graphPath, "", nil, http.StatusOK)
+		restored = sharding.Placement{}
+		if err := json.Unmarshal(response.Body.Bytes(), &restored); err != nil {
+			t.Fatal(err)
+		}
+		if restored.State == "active" && restored.Mode != "partitioned" && restored.ConversionCleanup == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("new catalog leader did not finish reclamation: %s", response.Body.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	remote := sharding.GraphRemote{Client: router.Client}
+	for _, group := range []*testCluster{a, b} {
+		node := group.nodes[group.leader(-1)]
+		prefix := fmt.Sprintf("graphdb/control/graphs/%s/%d/", tenant, abandoned)
+		if objects, err := node.files.List(t.Context(), prefix); err != nil || len(objects) != 0 {
+			t.Fatalf("abandoned group %s objects=%d err=%v", node.cfg.Raft.ShardID, len(objects), err)
+		}
+		address := partition.Group{ID: node.cfg.Raft.ShardID, ClusterID: node.cfg.Raft.ClusterID, Peers: node.cfg.Raft.Peers}
+		if err := remote.Action(t.Context(), address, partition.Action{Operation: "reserve_partitions", Tenant: tenant, Generation: abandoned, Epoch: 1, Participants: []uint8{0}}, nil); !errors.Is(err, storage.ErrConflict) {
+			t.Fatalf("late reservation for cancelled generation: %v", err)
+		}
+	}
+
+	pause.Store(false)
+	call(http.MethodPost, "/v1/cluster/graphs", "", enable, http.StatusAccepted)
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		response := call(http.MethodGet, graphPath, "", nil, http.StatusOK)
+		var g partition.Graph
+		if err := json.Unmarshal(response.Body.Bytes(), &g); err != nil {
+			t.Fatal(err)
+		}
+		if g.Format == partition.FormatVersion && g.State == "active" {
+			if g.Generation <= abandoned || g.Version != 2 {
+				t.Fatalf("unexpected graph after retry: generation=%d version=%d", g.Generation, g.Version)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("conversion retry did not finish: %s", response.Body.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	call(http.MethodGet, entityPath, tenant, nil, http.StatusOK)
+	call(http.MethodPost, graphPath+"/cancel", "", nil, http.StatusConflict)
+}
+
 func TestHAPartitionGCRecoversUnacknowledgedFragments(t *testing.T) {
 	a, b, _, _, call := newTestPartitionedGraph(t, false, partition.GCSchedulingProtocol)
 	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{IdempotencyKey: "schema",
@@ -267,6 +456,221 @@ func TestHAPartitionGCRecoversUnacknowledgedFragments(t *testing.T) {
 	}
 }
 
+func TestHAPartitionSnapshotBudgetAllowsFinalizationAndGC(t *testing.T) {
+	t.Run("after_publication", func(t *testing.T) { testHAPartitionSnapshotBudgetRecovery(t, false) })
+	t.Run("durable_prepare", func(t *testing.T) { testHAPartitionSnapshotBudgetRecovery(t, true) })
+}
+
+func testHAPartitionSnapshotBudgetRecovery(t *testing.T, beforePublication bool) {
+	t.Helper()
+	a, b, _, router, call := newTestPartitionedGraph(t, false, partition.MutationBudgetRestartProtocol)
+	for i := range a.nodes {
+		a.stop(i)
+	}
+	for i, replica := range a.nodes {
+		replica.cfg.Raft.SnapshotEntries = 4
+		replica.cfg.Raft.ElectionTicks = 30
+		a.start(i)
+	}
+	leader := a.nodes[a.leader(-1)]
+	cluster := leader.cluster
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	remote := sharding.GraphRemote{Client: router.Client}
+	home := cluster.graphHome()
+	describe := func() partition.Graph {
+		t.Helper()
+		g, err := remote.Describe(ctx, home, "big")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	initial := describe()
+	id := "large-old-page"
+	for initial.Partitions[partition.Bucket(id)].Group != home.ID {
+		id += "x"
+	}
+	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{Mutations: graph.Mutations{
+		UpsertCITypes:  []graph.CIType{{Name: "host"}},
+		UpsertEntities: []graph.Entity{{ID: id, Kind: "host", Fields: graph.Fields{"payload": strings.Repeat("x", 640<<10)}}},
+	}}, http.StatusOK)
+	base := describe()
+	bucket := partition.Bucket(id)
+	old := base.Roots[bucket]
+	tree := cluster.App.partitionStore().Tree("big", base.Generation, bucket)
+	oldPage := tree.Prefix + "/" + old.Hash[:2] + "/" + old.Hash
+
+	groups := []*testCluster{a, b}
+	blockFinalization := func(block bool) {
+		for _, group := range groups {
+			for _, replica := range group.nodes {
+				replica.blockGraphFinalize.Store(block)
+			}
+		}
+	}
+	blockFinalization(true)
+	defer blockFinalization(false)
+	var prepare atomic.Pointer[partition.Action]
+	if beforePublication {
+		hook := func(w http.ResponseWriter, r *http.Request, cluster *Cluster, action partition.Action) bool {
+			if action.Partition == bucket {
+				switch action.Operation {
+				case "prepare":
+					prepare.Store(&action)
+				case "prepared":
+					http.Error(w, "home prepare registration paused", http.StatusServiceUnavailable)
+					return true
+				}
+			}
+			return false
+		}
+		for _, replica := range a.nodes {
+			replica.graphAction.Store(&hook)
+			defer replica.graphAction.Store(nil)
+		}
+	}
+	request := partition.CommitRequest{IdempotencyKey: "replace-large-page", Mutations: graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: id, Kind: "host", Fields: graph.Fields{"payload": "small"}}},
+	}}
+	engine := cluster.partitionEngine("big", base.Generation, !beforePublication)
+	attempt, stop := context.WithTimeout(ctx, 5*time.Second)
+	_, err := engine.Submit(attempt, request)
+	stop()
+	var unknown *partition.OutcomeUnknownError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("expected the paused transaction to report an unknown outcome: %v", err)
+	}
+	paused := describe()
+	if beforePublication {
+		if paused.Version != base.Version || paused.Active == nil || paused.Active.State != "preparing" || paused.Active.Prepared[bucket].Txn != "" {
+			t.Fatalf("transaction did not stop before home prepare registration: version=%d transaction=%+v", paused.Version, paused.Active)
+		}
+	} else if paused.Version != base.Version+1 || paused.Active == nil || paused.Active.State != "committed" {
+		t.Fatalf("transaction did not stop after publication: version=%d transaction=%+v", paused.Version, paused.Active)
+	}
+
+	probe := partition.Action{Operation: "reserve", Tenant: "big", Generation: base.Generation, Partition: bucket, Epoch: base.Partitions[bucket].Epoch}
+	if err := exceedPartitionSnapshotBudget(ctx, a, cluster, probe, 512<<10); err != nil {
+		t.Fatal(err)
+	}
+	blockFinalization(false)
+	if beforePublication {
+		original := prepare.Load()
+		if original == nil || original.Txn != paused.Active.ID {
+			t.Fatal("original prepare request not captured")
+		}
+		var receipt partition.Prepared
+		if err := remote.Action(ctx, home, *original, &receipt); err != nil || receipt.Txn != original.Txn || receipt.Digest != original.Digest {
+			t.Fatalf("single replay did not return the durable prepare: %+v (%v)", receipt, err)
+		}
+		batch, err := remote.FragmentBatch(ctx, home, []partition.Action{*original})
+		var batched partition.Prepared
+		if err != nil || len(batch) != 1 || json.Unmarshal(batch[0], &batched) != nil || batched.Txn != receipt.Txn || batched.Root != receipt.Root {
+			t.Fatalf("batch replay did not return the durable prepare: %+v (%v)", batched, err)
+		}
+		missing := *original
+		for id, pos := range base.Partitions {
+			if uint8(id) != bucket && pos.Group == home.ID && base.Roots[id].Hash == "" && !slices.Contains(paused.Active.Participants, uint8(id)) {
+				missing.Partition, missing.Epoch, missing.Base = uint8(id), pos.Epoch, base.Roots[id]
+				break
+			}
+		}
+		if missing.Partition == bucket {
+			t.Fatal("no unprepared partition in the local group")
+		}
+		missing.Changes, missing.Digest = nil, fmt.Sprintf("%x", sha256.Sum256([]byte("null")))
+		if _, err := remote.FragmentBatch(ctx, home, []partition.Action{*original, missing}); !errors.Is(err, partition.ErrShardUnavailable) {
+			t.Fatalf("snapshot gate accepted a batch requiring new preparation: %v", err)
+		}
+		mismatch := *original
+		mismatch.Digest = missing.Digest
+		if err := remote.Action(ctx, home, mismatch, nil); !errors.Is(err, storage.ErrInvalidArgument) {
+			t.Fatalf("prepare replay accepted changed data digest: %v", err)
+		}
+		incomplete := partition.Action{Operation: "commit", Tenant: "big", Generation: base.Generation, Txn: paused.Active.ID,
+			Sequence: paused.Active.Sequence, Result: &storage.CommitResult{Manifest: storage.Manifest{Version: base.Version + 1}}}
+		if err := remote.Action(ctx, home, incomplete, nil); !errors.Is(err, storage.ErrConflict) {
+			t.Fatalf("publication bypassed the missing prepare receipt: %v", err)
+		}
+		for _, replica := range a.nodes {
+			replica.graphAction.Store(nil)
+		}
+	} else {
+		prepared, ok := paused.Active.Prepared[bucket]
+		if !ok {
+			t.Fatal("published transaction has no receipt for the local partition")
+		}
+		finalize := partition.Action{Operation: "finalize", Tenant: "big", Generation: base.Generation, Partition: bucket,
+			Epoch: probe.Epoch, Txn: paused.Active.ID, Sequence: paused.Active.Sequence, Prepared: &prepared}
+		if _, err := remote.FragmentBatch(ctx, home, []partition.Action{finalize}); err != nil {
+			t.Fatalf("snapshot budget blocked batched finalization: %v", err)
+		}
+	}
+	response := call(http.MethodPost, "/v1/commits", "big", request, http.StatusOK)
+	var replay storage.CommitResult
+	if err := json.Unmarshal(response.Body.Bytes(), &replay); err != nil || !replay.IdempotentReplay || replay.Version != base.Version+1 {
+		t.Fatalf("published result after cleanup: %+v (%v)", replay, err)
+	}
+	if !beforePublication && paused.DataHash != replay.DataHash {
+		t.Fatal("finalization changed the published digest")
+	}
+	if g := describe(); g.Active != nil || g.Version != replay.Version || g.DataHash != replay.DataHash {
+		t.Fatalf("recovered result does not match the graph at version %d, active=%t", g.Version, g.Active != nil)
+	}
+	newWrite := partition.CommitRequest{IdempotencyKey: "after-gc", Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "after-gc", Kind: "host"}}}}
+	call(http.MethodPost, "/v1/commits", "big", newWrite, http.StatusServiceUnavailable)
+	call(http.MethodPost, "/v1/cluster/graphs/big/gc", "", nil, http.StatusAccepted)
+	for {
+		g, err := remote.Describe(ctx, home, "big")
+		if err == nil && g.GC == nil && cluster.Node.Status()["snapshot_error"] == nil {
+			break
+		}
+		if err != nil && !errors.Is(err, partition.ErrShardUnavailable) && ctx.Err() == nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("GC did not restore writes: phase=%+v snapshot=%v error=%v", g.GC, cluster.Node.Status()["snapshot_error"], err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if _, err := leader.files.Get(ctx, oldPage); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("obsolete immutable page was retained: %v", err)
+	}
+	entity := call(http.MethodGet, "/v1/entities/"+id, "big", nil, http.StatusOK)
+	if !bytes.Contains(entity.Body.Bytes(), []byte(`"payload":"small"`)) {
+		t.Fatalf("GC removed the current entity: %s", entity.Body.String())
+	}
+	call(http.MethodPost, "/v1/commits", "big", newWrite, http.StatusOK)
+}
+
+func exceedPartitionSnapshotBudget(ctx context.Context, group *testCluster, leader *Cluster, probe partition.Action, budget int64) error {
+	for _, replica := range group.nodes {
+		app := replica.cluster.App
+		app.mu.Lock()
+		app.MaxSnapshotBytes = budget
+		app.mu.Unlock()
+	}
+	// Re-reserve the same partition and epoch to advance the Raft index
+	// without changing the graph or making any page obsolete.
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		if _, err := leader.partitionAction(probeCtx, probe); err != nil {
+			if errors.Is(err, replication.ErrSnapshotTooLarge) {
+				return nil
+			}
+			return err
+		}
+		select {
+		case <-probeCtx.Done():
+			return fmt.Errorf("did not reach the snapshot budget: %v", leader.Node.Status()["snapshot_error"])
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+}
+
 func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 	a, b, catalog, router, call := newTestPartitionedGraph(t, false, 5)
 	definition := func(group *testCluster, id string) sharding.Shard {
@@ -283,6 +687,61 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 
 	request := partition.CommitRequest{IdempotencyKey: "schema", Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}, UpsertRelationTypes: []graph.RelationType{{Name: "calls", FromKind: "host", ToKind: "host", Directed: true}}}}
 	call(http.MethodPost, "/v1/commits", "big", request, http.StatusOK)
+	// Keep an ordinary tenant's read view open on the same home leader while
+	// the partitioned tenant publishes, acquires a pin, and aborts a write.
+	readLeader := a.nodes[a.leader(-1)].cluster
+	if _, err := readLeader.shardAction(ctx, sharding.Action{Operation: "own", Tenant: "reporting", Epoch: 1}); err != nil {
+		t.Fatal(err)
+	}
+	seed := httptest.NewRequest(http.MethodPost, "/v1/commits", bytes.NewBufferString(`{"mutations":{"upsert_entities":[{"id":"report","kind":"host"}]}}`)).WithContext(ctx)
+	seed.Header.Set("Content-Type", "application/json")
+	seed.Header.Set("X-Tenant-ID", "reporting")
+	seed.Header.Set(sharding.EpochHeader, "1")
+	seedResponse := httptest.NewRecorder()
+	readLeader.App.Handler.ServeHTTP(seedResponse, seed)
+	if seedResponse.Code != http.StatusOK {
+		t.Fatalf("seed reporting tenant: %d %s", seedResponse.Code, seedResponse.Body.String())
+	}
+	readCtx, stopRead := context.WithCancel(ctx)
+	read := httptest.NewRequest(http.MethodGet, "/v1/entities", nil).WithContext(readCtx)
+	read.Header.Set("X-Tenant-ID", "reporting")
+	read.Header.Set(sharding.EpochHeader, "1")
+	readResponse := httptest.NewRecorder()
+	readEntered, finishRead, readDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(readDone)
+		readLeader.ServeRoute(readResponse, read, false, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(readEntered)
+			select {
+			case <-r.Context().Done():
+			case <-finishRead:
+				g, manifest, err := readLeader.App.Store.Load(r.Context(), "reporting")
+				if err != nil || manifest.Version != 1 || g.Entities.Len() != 1 {
+					http.Error(w, fmt.Sprintf("reporting view changed: version=%d error=%v", manifest.Version, err), http.StatusInternalServerError)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}
+		}))
+	}()
+	defer func() { stopRead(); <-readDone }()
+	select {
+	case <-readEntered:
+	case <-readDone:
+		t.Fatalf("materialized read never acquired its view: %d %s", readResponse.Code, readResponse.Body.String())
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	remote := sharding.GraphRemote{Client: router.Client}
+	home := partition.Group{ID: "a", ClusterID: a.nodes[0].cfg.Raft.ClusterID, Peers: a.nodes[0].cfg.Raft.Peers}
+	schema, err := remote.Describe(ctx, home, "big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := partition.AcquireReadView(ctx, remote, home, schema)
+	if err != nil || pinned.Graph.Version != 1 {
+		t.Fatalf("pin before partition commit: version=%d error=%v", pinned.Graph.Version, err)
+	}
 	left, right := "left", "right"
 	for partition.Bucket(left)%2 == partition.Bucket(right)%2 {
 		right += "x"
@@ -305,12 +764,28 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &committed); err != nil || committed.Version != 2 {
 		t.Fatalf("commit: %s (%v)", first.Body.String(), err)
 	}
+	history, err := remote.Pin(ctx, home, "big", schema.Generation, pinned.Pin.Version, pinned.Pin.Query, pinned.Pin.ID)
+	if err != nil || history.Graph.Version != pinned.Graph.Version || history.Graph.DataHash != pinned.Graph.DataHash || history.Graph.Roots != pinned.Graph.Roots {
+		t.Fatalf("partition commit changed the pinned graph: version=%d error=%v", history.Graph.Version, err)
+	}
 	for _, q := range []query.Request{{Op: "neighbors", ID: left, Direction: "out", Limit: 10}, {Op: "neighbors", ID: right, Direction: "in", Limit: 10}, {Op: "shortest_path", ID: left, TargetID: right, Direction: "out", Depth: 3}} {
 		response := call(http.MethodPost, "/v1/query", "big", q, http.StatusOK)
 		var result query.Response
 		if json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Results) != 1 || result.Version != 2 {
 			t.Fatalf("query: %s", response.Body.String())
 		}
+	}
+	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{IdempotencyKey: "missing-endpoint", Mutations: graph.Mutations{
+		UpsertEdges: []graph.Edge{{From: left, To: "absent", Type: "calls"}},
+	}}, http.StatusBadRequest)
+	close(finishRead)
+	select {
+	case <-readDone:
+		if readResponse.Code != http.StatusNoContent {
+			t.Fatalf("partition transaction interrupted the other tenant's read: %d %s", readResponse.Code, readResponse.Body.String())
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 	// The second page may exhaust some partitions before reaching the cursor.
 	// Both public entry points must continue the same immutable view.
@@ -344,10 +819,23 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 		t.Fatalf("match second page: %s", page.Body.String())
 	}
 	// Exercise the real private multi-key path under a fixed published root.
-	remote := sharding.GraphRemote{Client: router.Client}
-	descriptor, err := remote.Describe(ctx, partition.Group{ID: "a", ClusterID: a.nodes[0].cfg.Raft.ClusterID, Peers: a.nodes[0].cfg.Raft.Peers}, "big")
+	descriptor, err := remote.Describe(ctx, home, "big")
 	if err != nil {
 		t.Fatal(err)
+	}
+	missing := partition.Action{Operation: "begin", Tenant: "missing-graph", Generation: 1}
+	if err := remote.Action(ctx, home, missing, nil); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("missing graph scope: %v", err)
+	}
+	leftBucket := partition.Bucket(left)
+	owner, err := descriptor.GroupFor(leftBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := partition.Action{Operation: "prepare", Tenant: "big", Generation: descriptor.Generation, Partition: leftBucket,
+		Epoch: descriptor.Partitions[leftBucket].Epoch + 1, Txn: "obsolete", Sequence: descriptor.Sequence + 1}
+	if err := remote.Action(ctx, owner, stale, nil); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("stale partition epoch: %v", err)
 	}
 	keys := []string{partition.EntityKey(left), partition.EdgeKey(graph.CanonicalEdgeID(graph.Edge{From: left, To: right, Type: "calls"}))}
 	batch, err := (partition.View{Graph: descriptor, Remote: remote}).Read(ctx, partition.Bucket(left), partition.ReadRequest{Keys: keys})
@@ -493,7 +981,7 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 	gcLeader := b.leader(-1)
 	b.stop(gcLeader)
 	b.leader(gcLeader)
-	gcCtx, gcCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	gcCtx, gcCancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer gcCancel()
 	for {
 		response := call(http.MethodGet, "/v1/cluster/graphs/legacy", "", nil, http.StatusOK)

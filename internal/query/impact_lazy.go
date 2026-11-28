@@ -8,18 +8,11 @@ func lazyImpactSupported(request Request, stats PlannerStats) bool {
 	if depth <= 0 {
 		depth = 4
 	}
-	for level := 0; level < normalizedDepth(depth); level++ {
-		levelRequest := requestForPathLevel(request, level)
-		directions, ok := impactDirectionsForRequest(levelRequest, stats)
-		if !ok || !impactIndexesAvailable(directions, stats) {
-			return false
-		}
-	}
-	return true
+	return lazyImpactSupportedForDepth(request, normalizedDepth(depth), stats)
 }
 
 func impactDirectionsForRequest(request Request, stats PlannerStats) (map[string]string, bool) {
-	if stats.Version <= 0 {
+	if stats.Version < 0 || (stats.Version == 0 && (!stats.ForwardEdgeIndexAvailable || !stats.ReverseEdgeIndexAvailable)) {
 		return nil, false
 	}
 	seen := map[string]struct{}{}

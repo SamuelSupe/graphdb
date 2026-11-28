@@ -26,39 +26,43 @@ func (d *directoryReads) get(key string) ([]string, error) {
 }
 
 func (d *directoryReads) prefetch(keys []string) error {
-	var requests []ReadRequest
-	seen := make(map[string]bool)
+	byPartition := make(map[uint8][]string)
+	missing := make(map[string]bool)
+	count := 0
+	var single string
 	for _, key := range keys {
-		if _, ok := d.owners[key]; ok || seen[key] {
+		if _, ok := d.owners[key]; ok || missing[key] {
 			continue
 		}
-		seen[key] = true
-		// Each started batch request has enough response budget for one value.
-		requests = append(requests, ReadRequest{Partition: Bucket(key), Keys: []string{key}})
+		missing[key] = true
+		single = key
+		count++
+		bucket := Bucket(key)
+		byPartition[bucket] = append(byPartition[bucket], key)
 	}
-	if len(requests) == 0 {
+	if count == 0 {
 		return nil
 	}
-	if len(requests) == 1 {
-		_, err := d.get(requests[0].Keys[0])
+	if count == 1 {
+		_, err := d.get(single)
 		return err
 	}
-	results, err := d.view.readBatch(d.ctx, requests)
-	if err != nil {
-		return err
-	}
-	for i, result := range results {
-		key := requests[i].Keys[0]
-		if len(result.Remaining) > 0 || len(result.Rows) > 1 || len(result.Rows) == 1 && result.Rows[0].Key != key {
+	if err := d.view.visitKeys(d.ctx, byPartition, func(bucket uint8, row Row) error {
+		if !missing[row.Key] || Bucket(row.Key) != bucket {
 			return fmt.Errorf("%w: unexpected directory batch result", ErrPartitionCorrupt)
 		}
 		var owners []string
-		if len(result.Rows) == 1 {
-			if err := decodeRecord(result.Rows[0], &owners); err != nil {
-				return err
-			}
+		if err := decodeRecord(row, &owners); err != nil {
+			return err
 		}
-		d.owners[key] = owners
+		d.owners[row.Key] = owners
+		delete(missing, row.Key)
+		return nil
+	}); err != nil {
+		return err
+	}
+	for key := range missing {
+		d.owners[key] = nil
 	}
 	return nil
 }

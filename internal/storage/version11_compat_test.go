@@ -22,7 +22,7 @@ func TestLabelsUseExistingEntityPageFieldRows(t *testing.T) {
 		t.Fatalf("labels changed entity page layout: %#v", rows)
 	}
 	decoded := graph.Entity{ID: entity.ID, Kind: entity.Kind}
-	if err := codec.ApplyEntityRow(&decoded, rows[0]); err != nil {
+	if err := codec.ApplyEntityRow(&decoded, rows[0], nil); err != nil {
 		t.Fatal(err)
 	}
 	labels := graph.EntityLabels(decoded)

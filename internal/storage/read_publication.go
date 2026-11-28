@@ -17,7 +17,7 @@ func (s *TenantStore) publishCommittedGraph(ctx context.Context, tenantID string
 		return err
 	}
 	after.Meta = meta
-	s.setWriteCache(tenantID, after)
+	s.setWriteCacheContext(ctx, tenantID, after)
 	return nil
 }
 
@@ -36,6 +36,34 @@ func (s *TenantStore) publishGraph(tenantID string, loaded loadedGraph) {
 // Direct file replacement (including restore) invalidates readers before a
 // newly published graph can be installed. This also fences in-flight cache loads.
 func (s *TenantStore) localFileChanged(key string) {
+	s.localFileChangedContext(context.Background(), key)
+}
+
+func (s *TenantStore) invalidateDirectObjectChange(key string) {
+	s.clearWriterObjectKey(key)
+	s.deleteObjectKeyCached(key)
+	for objects := s.Objects; objects != nil; {
+		if protected, ok := objects.(*ReadProtectedObjectStore); ok {
+			protected.invalidateRead(key)
+		}
+		unwrapper, ok := objects.(objectStoreUnwrapper)
+		if !ok {
+			break
+		}
+		next := unwrapper.UnwrapObjectStore()
+		if next == objects {
+			break
+		}
+		objects = next
+	}
+}
+
+func (s *TenantStore) localFileChangedContext(ctx context.Context, key string) {
+	cache := FindWriterObjectCache(s.Objects)
+	viaWriterCache := cache != nil && ctx != nil && ctx.Value(writerObjectCacheMutationKey{}) == cache
+	if !viaWriterCache && s.localFileStore() != nil {
+		s.invalidateDirectObjectChange(key)
+	}
 	if key == s.tenantRegistryKey() {
 		s.clearRegisteredTenantCache()
 		return
@@ -60,10 +88,25 @@ func (s *TenantStore) localFileChanged(key string) {
 		return
 	}
 	taskName := strings.TrimPrefix(name, "indexes/")
-	if strings.HasPrefix(taskName, "tasks/") && !strings.Contains(strings.TrimPrefix(taskName, "tasks/"), "/") {
+	taskObject := strings.HasPrefix(taskName, "tasks/") && !strings.Contains(strings.TrimPrefix(taskName, "tasks/"), "/")
+	lease := name == "control/writer-lease.parquet"
+	metadata := name == "metadata.parquet" || name == "control/tenant-metadata-backup.parquet" || name == "control/tenant-metadata-pending.parquet"
+	if taskObject {
 		s.taskObjectChanged(tenant, name)
 	}
-	if name == "control/writer-lease.parquet" {
+	if strings.HasPrefix(name, "ingest/") {
+		if strings.Contains(name, "/collectors/") {
+			s.deleteCachedCollectorStatus(key)
+		} else if !s.MaterializeCollectorStatus && strings.Contains(name, "/batches/") {
+			s.deleteCachedTenantCollectorStatuses(tenant)
+		}
+	}
+	if strings.HasPrefix(name, "control/readers/") {
+		s.lockMu.Lock()
+		clear(s.readerHeartbeatCache)
+		s.lockMu.Unlock()
+	}
+	if lease {
 		s.deleteCachedWriterLease(tenant)
 		// A fence update does not change the graph. Retain the immutable view
 		// for manifest revalidation while still discarding all writer state.
@@ -71,9 +114,9 @@ func (s *TenantStore) localFileChanged(key string) {
 		s.invalidateTenantObjectCaches(tenant)
 		return
 	}
-	metadata := name == "metadata.parquet" || name == "control/tenant-metadata-backup.parquet" || name == "control/tenant-metadata-pending.parquet"
 	if metadata {
 		s.deleteCachedTenantMetadata(tenant)
+		s.invalidateTenantTaskHeaders(tenant)
 		s.taskMu.Lock()
 		delete(s.queuedTaskCatalogs, tenant)
 		s.taskMu.Unlock()
@@ -85,14 +128,22 @@ func (s *TenantStore) localFileChanged(key string) {
 		s.deleteCachedSourcePolicy(tenant)
 	case "indexes/catalog.parquet":
 		s.deleteCachedIndexCatalog(tenant)
-	case "indexes/reverse/catalog.parquet":
+		prefix := tenant + "\x00"
+		s.lockMu.Lock()
+		for key := range s.compiledScanCatalogCache {
+			if strings.HasPrefix(key, prefix) {
+				delete(s.compiledScanCatalogCache, key)
+			}
+		}
+		s.lockMu.Unlock()
+	case "extensions/v1.1/reverse-index/catalog.json":
 		s.deleteCachedReverseIndexCatalog(tenant)
 	case "manifest.parquet":
 		s.deleteWriteCache(tenant)
 	}
 	manifest := name == "manifest.parquet"
 	invalidate := metadata || (strings.HasPrefix(name, "config/") && name != "config/backup-schedule.parquet")
-	if manifest || invalidate || name == "indexes/catalog.parquet" {
+	if manifest || invalidate || name == "indexes/catalog.parquet" || name == "extensions/v1.1/reverse-index/catalog.json" {
 		s.queryMu.Lock()
 		delete(s.queryUnavailable, tenant)
 		s.queryMu.Unlock()
@@ -139,12 +190,30 @@ func (s *TenantStore) ResetCaches() {
 
 	s.taskMu.Lock()
 	clear(s.queuedTaskCatalogs)
+	clear(s.terminalTaskHeaders)
+	s.taskHeaderEpoch++
 	s.taskMu.Unlock()
 
 	s.queryMu.Lock()
 	clear(s.queryUnavailable)
 	s.queryMu.Unlock()
 
+	for objects := s.Objects; objects != nil; {
+		if protected, ok := objects.(*ReadProtectedObjectStore); ok {
+			protected.mu.Lock()
+			clear(protected.reads)
+			protected.mu.Unlock()
+		}
+		unwrapper, ok := objects.(objectStoreUnwrapper)
+		if !ok {
+			break
+		}
+		next := unwrapper.UnwrapObjectStore()
+		if next == objects {
+			break
+		}
+		objects = next
+	}
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {
 		cache.ClearPrefix("")
 	}

@@ -16,14 +16,25 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 		plan.Strategy != "entity-id"
 	collectionLimit := patternCollectionLimit(request)
 	if complete {
-		collectionLimit = completePathScanLimit(request)
+		if plan.Strategy != "entity-id" && request.Path.MaxPaths > 0 {
+			// When scanning multiple start entities (possibly in non-canonical
+			// shard order), do not short-circuit before scanning all starts;
+			// pathResultCollector keeps the deterministic top-MaxPaths results.
+			collectionLimit = 0
+		} else {
+			collectionLimit = completePathScanLimit(request)
+		}
 	}
 	paths := make([]graph.Path, 0, min(collectionLimit, maxQueryLimit+1))
 	var collector *pathResultCollector
 	if complete {
 		collector = newPathResultCollector(request)
 	}
+	borrowStart := plan.Strategy == "kind-scan" && !lazyExecution(g, budget)
 	emit := func(path graph.Path) error {
+		if borrowStart {
+			path.Entities[0] = graph.CopyEntity(path.Entities[0])
+		}
 		if collector != nil {
 			return collector.add(path)
 		}
@@ -32,13 +43,6 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 	}
 	matchedTotal := 0
 	processStart := func(entity graph.Entity) (bool, error) {
-		if err := budget.add(1); err != nil {
-			return false, err
-		}
-		budget.scanned++
-		if !requestEntityMatches(&request, &entity) {
-			return true, nil
-		}
 		remaining := 0
 		if collectionLimit > 0 {
 			remaining = collectionLimit - matchedTotal
@@ -56,28 +60,8 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 		return collectionLimit == 0 || matchedTotal < collectionLimit, nil
 	}
 
-	if lazyKindScanAvailable(g, request, plan, budget) {
-		ok, err := visitLazyKindScanEntities(request, budget, "", processStart)
-		if err != nil {
-			return Response{}, err
-		}
-		if !ok {
-			return Response{}, ErrIndexUnavailable
-		}
-	} else {
-		starts, err := matchCandidatesForPlan(g, request, plan, budget)
-		if err != nil {
-			return Response{}, err
-		}
-		for _, entity := range starts {
-			more, err := processStart(entity)
-			if err != nil {
-				return Response{}, err
-			}
-			if !more {
-				break
-			}
-		}
+	if err := scanSourceEntities(g, request, plan, budget, "", borrowStart, processStart); err != nil {
+		return Response{}, err
 	}
 
 	var results []Result

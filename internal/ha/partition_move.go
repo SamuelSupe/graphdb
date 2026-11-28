@@ -137,9 +137,6 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) (
 		return control(partition.Action{Operation: "graph_move_cancelled", DataState: &restored})
 	case "cancel_cleanup":
 		var retired partition.DataState
-		if err := data(m.Target, "data_move_reserve", m.Epoch, nil); err != nil {
-			return err
-		}
 		if err := data(m.Target, "data_move_retire", m.Epoch, &retired); err != nil {
 			return err
 		}

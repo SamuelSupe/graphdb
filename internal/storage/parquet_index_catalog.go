@@ -321,6 +321,7 @@ func indexCatalogRows(catalog IndexCatalog) []indexCatalogRow {
 			Kind:          indexCatalogRowEdgeShard,
 			ParentOrdinal: i,
 			RelationType:  shard.RelationType,
+			Role:          shard.ImpactDirection,
 			Shard:         shard.Shard,
 			Format:        shard.Format,
 			Codec:         shard.Codec,
@@ -414,15 +415,16 @@ func applyIndexCatalogRow(catalog *IndexCatalog, row indexCatalogRow) error {
 			return fmt.Errorf("index catalog edge shard ordinal mismatch")
 		}
 		catalog.EdgeShards = append(catalog.EdgeShards, EdgeShard{
-			RelationType: row.RelationType,
-			Shard:        row.Shard,
-			Format:       row.Format,
-			Codec:        row.Codec,
-			RowCount:     row.RowCount,
-			EdgeCount:    row.EdgeCount,
-			ContentHash:  row.ContentHash,
-			SchemaHash:   row.SchemaHash,
-			UpdatedAt:    row.UpdatedAt,
+			RelationType:    row.RelationType,
+			ImpactDirection: row.Role,
+			Shard:           row.Shard,
+			Format:          row.Format,
+			Codec:           row.Codec,
+			RowCount:        row.RowCount,
+			EdgeCount:       row.EdgeCount,
+			ContentHash:     row.ContentHash,
+			SchemaHash:      row.SchemaHash,
+			UpdatedAt:       row.UpdatedAt,
 		})
 	case "edge_adjacency_v1":
 		if row.ParentOrdinal >= len(catalog.EdgeShards) || catalog.EdgeShards[row.ParentOrdinal].AdjacencyRoot != nil {

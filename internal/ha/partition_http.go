@@ -2,6 +2,7 @@ package ha
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,35 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func (c *Cluster) listShardTenantSummaries(w http.ResponseWriter, r *http.Request) {
+	var items []storage.TenantInfo
+	var err error
+	if r.URL.Query().Get("include_legacy") == "true" {
+		items, err = c.App.Store.ListTenantInfosIncludingLegacy(r.Context())
+	} else {
+		items, err = c.App.Store.ListManagedTenantInfos(r.Context())
+	}
+	if err != nil {
+		c.writeError(w, err)
+		return
+	}
+	for i := range items {
+		g, err := c.App.graphDescriptor(r.Context(), items[i].TenantID)
+		if errors.Is(err, storage.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			c.writeError(w, err)
+			return
+		}
+		if g.State == "active" {
+			items[i].ManifestVersion, items[i].SnapshotVersion, items[i].CommitTailLength = g.Version, g.Version, 0
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"tenants": items})
+}
 
 func (c *Cluster) servePartitionedGraph(w http.ResponseWriter, r *http.Request, body []byte, tenant string) bool {
 	if tenant == "" || c.App.ShardID == "" || c.config.Protocol < 5 {

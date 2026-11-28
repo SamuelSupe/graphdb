@@ -8,34 +8,15 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/catalog"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 	"golang.org/x/sync/errgroup"
 )
 
-type Manifest struct {
-	LayoutVersion      int                `json:"layout_version,omitempty"`
-	TenantID           string             `json:"tenant_id"`
-	Version            int64              `json:"version"`
-	HeadCommitID       string             `json:"head_commit_id,omitempty"`
-	SnapshotKey        string             `json:"snapshot_key,omitempty"`
-	SnapshotCatalogKey string             `json:"snapshot_catalog_key,omitempty"`
-	SnapshotVersion    int64              `json:"snapshot_version"`
-	CommitSegments     []CommitSegmentRef `json:"commit_segments,omitempty"`
-	CommitKeys         []string           `json:"commit_keys,omitempty"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	WriterFence        string             `json:"-"`
-	WriterFenceEpoch   int64              `json:"-"`
-	DataHash           string             `json:"-"`
-}
-
-type CommitSegmentRef struct {
-	Key          string `json:"key"`
-	Codec        string `json:"codec"`
-	FirstVersion int64  `json:"first_version"`
-	LastVersion  int64  `json:"last_version"`
-	Count        int    `json:"count"`
-	ContentHash  string `json:"content_hash"`
-}
+type (
+	Manifest         = catalog.Manifest
+	CommitSegmentRef = catalog.CommitSegmentRef
+)
 
 type CommitResult struct {
 	Manifest
@@ -71,6 +52,17 @@ type CommitOptions struct {
 	rejectSuppressed         bool
 }
 
+// TenantStore coordinates versioned graph storage, derived indexes, backups,
+// maintenance, and async tasks for all tenants.
+//
+// Lock Hierarchy (strictly acquire top-to-bottom, never in reverse, and never
+// hold global/instance locks across network I/O or multi-megabyte codecs):
+//
+//	ha.Application.readers (ReadersBarrier)
+//	  -> ha.Application.mu
+//	    -> TenantStore tenantLock (foreground / maintenance)
+//	      -> FileStore.objectLock (per-key / journal)
+//	        -> FileStore.receiptMu
 type TenantStore struct {
 	ReplicationMode  bool
 	queryMu          sync.Mutex
@@ -131,6 +123,8 @@ type TenantStore struct {
 	fieldLookupCache              *decodedLookupCache[map[string][]string]
 	taskMu                        sync.Mutex
 	queuedTaskCatalogs            map[string]*queuedTaskCatalog
+	terminalTaskHeaders           map[taskListKey]Task
+	taskHeaderEpoch               uint64
 	taskCancels                   map[string]context.CancelFunc
 	taskActive                    map[string]Task
 	taskWorkers                   sync.WaitGroup
@@ -236,7 +230,9 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,
 	}
-	if source, ok := unwrapTenantMigrationStore(objects).(interface{ OnChange(func(string)) func() }); ok {
+	if files, ok := unwrapTenantMigrationStore(objects).(*FileStore); ok {
+		store.unsubscribe = files.onChangeContext(store.localFileChangedContext)
+	} else if source, ok := unwrapTenantMigrationStore(objects).(interface{ OnChange(func(string)) func() }); ok {
 		store.unsubscribe = source.OnChange(store.localFileChanged)
 	}
 	return store
@@ -268,7 +264,7 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
 		return manifest, fmt.Errorf("register tenant %q: %w", tenantID, err)
 	}
-	s.setWriteCache(tenantID, loadedGraph{
+	s.setWriteCacheContext(ctx, tenantID, loadedGraph{
 		Graph: g, Manifest: manifest, Meta: meta,
 		DataHash:   dataHash,
 		CommitTail: emptyCommitTailCache(),

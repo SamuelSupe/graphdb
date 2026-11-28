@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -35,7 +36,7 @@ func appendTopLevelAndFilters(filters []Filter, expr *FilterExpr) []Filter {
 	}
 	op := strings.ToLower(strings.TrimSpace(expr.Op))
 	if expr.Field != "" {
-		filters = append(filters, Filter{Field: expr.Field, Op: expr.Op, Value: expr.Value})
+		filters = append(filters, Filter{Field: expr.Field, Op: op, Value: expr.Value})
 		return filters
 	}
 	if op == "and" {
@@ -188,6 +189,30 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 	case "neq":
 		return !valuesEqual(actual, filter.Value)
 	case "in":
+		if actualStr, ok := actual.(string); ok {
+			switch values := filter.Value.(type) {
+			case []string:
+				for _, value := range values {
+					if actualStr == value {
+						return true
+					}
+				}
+				return false
+			case []any:
+				for _, value := range values {
+					if s, ok := value.(string); ok {
+						if actualStr == s {
+							return true
+						}
+						continue
+					}
+					if valuesEqual(actual, value) {
+						return true
+					}
+				}
+				return false
+			}
+		}
 		for _, value := range anySlice(filter.Value) {
 			if valuesEqual(actual, value) {
 				return true
@@ -197,8 +222,14 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 	case "gt", "gte", "lt", "lte":
 		return compareFilter(actual, filter.Value, op)
 	case "prefix":
-		return strings.HasPrefix(fmt.Sprint(actual), fmt.Sprint(filter.Value))
+		return strings.HasPrefix(canonicalScalarText(actual), canonicalScalarText(filter.Value))
 	case "contains":
+		if actualStr, ok := actual.(string); ok {
+			if wantStr, ok := filter.Value.(string); ok {
+				return strings.Contains(strings.ToLower(actualStr), strings.ToLower(wantStr))
+			}
+			return strings.Contains(strings.ToLower(actualStr), strings.ToLower(fmt.Sprint(filter.Value)))
+		}
 		if values, ok := actual.([]any); ok {
 			for _, value := range values {
 				if valuesEqual(value, filter.Value) {
@@ -208,6 +239,14 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 			return false
 		}
 		if values, ok := actual.([]string); ok {
+			if wantStr, ok := filter.Value.(string); ok {
+				for _, value := range values {
+					if value == wantStr {
+						return true
+					}
+				}
+				return false
+			}
 			for _, value := range values {
 				if valuesEqual(value, filter.Value) {
 					return true
@@ -410,8 +449,8 @@ func compareFilter(actual any, expected any, op string) bool {
 	if leftOK && rightOK {
 		return compareFloat(left, right, op)
 	}
-	leftText := fmt.Sprint(actual)
-	rightText := fmt.Sprint(expected)
+	leftText := canonicalScalarText(actual)
+	rightText := canonicalScalarText(expected)
 	switch op {
 	case "gt":
 		return leftText > rightText
@@ -427,6 +466,9 @@ func compareFilter(actual any, expected any, op string) bool {
 }
 
 func valuesEqual(left any, right any) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
 	if timestamp, ok := left.(time.Time); ok {
 		return timestampFilterMatches(timestamp, right, "eq")
 	}
@@ -439,7 +481,45 @@ func valuesEqual(left any, right any) bool {
 	if leftOK && rightOK {
 		return leftNumber == rightNumber
 	}
+	if isSliceValue(left) && isSliceValue(right) {
+		leftSlice := anySlice(left)
+		rightSlice := anySlice(right)
+		if len(leftSlice) != len(rightSlice) {
+			return false
+		}
+		for i := range leftSlice {
+			if !valuesEqual(leftSlice[i], rightSlice[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	if leftMap, ok := left.(map[string]any); ok {
+		rightMap, ok := right.(map[string]any)
+		if !ok || len(leftMap) != len(rightMap) {
+			return false
+		}
+		for k, lv := range leftMap {
+			rv, exists := rightMap[k]
+			if !exists || !valuesEqual(lv, rv) {
+				return false
+			}
+		}
+		return true
+	}
 	return reflect.DeepEqual(left, right)
+}
+
+func isSliceValue(v any) bool {
+	if v == nil {
+		return false
+	}
+	switch v.(type) {
+	case []any, []string, []int, []int64, []float64, []bool:
+		return true
+	default:
+		return reflect.TypeOf(v).Kind() == reflect.Slice
+	}
 }
 
 func compareFloat(left, right float64, op string) bool {
@@ -507,6 +587,43 @@ func indexableFilterValue(value any) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func canonicalScalarText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case float64:
+		if !math.IsNaN(typed) && !math.IsInf(typed, 0) && math.Trunc(typed) == typed && math.Abs(typed) <= 1e20 {
+			if typed == 0 {
+				return "0"
+			}
+			return strconv.FormatFloat(typed, 'f', -1, 64)
+		}
+		return strconv.FormatFloat(typed, 'g', -1, 64)
+	case float32:
+		f := float64(typed)
+		if !math.IsNaN(f) && !math.IsInf(f, 0) && math.Trunc(f) == f && math.Abs(f) <= 1e20 {
+			if f == 0 {
+				return "0"
+			}
+			return strconv.FormatFloat(f, 'f', -1, 32)
+		}
+		return strconv.FormatFloat(f, 'g', -1, 32)
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	case int32:
+		return strconv.FormatInt(int64(typed), 10)
+	case json.Number:
+		if f, err := typed.Float64(); err == nil {
+			return canonicalScalarText(f)
+		}
+		return typed.String()
+	default:
+		return fmt.Sprint(value)
 	}
 }
 

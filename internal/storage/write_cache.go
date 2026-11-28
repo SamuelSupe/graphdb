@@ -127,11 +127,17 @@ func (s *TenantStore) getWriteCache(tenantID string) (loadedGraph, bool) {
 // setWriteCache publishes an already-durable immutable graph to attached
 // readers, even when the writer cache has no capacity to retain it.
 func (s *TenantStore) setWriteCache(tenantID string, loaded loadedGraph) {
+	s.setWriteCacheContext(context.Background(), tenantID, loaded)
+}
+
+func (s *TenantStore) setWriteCacheContext(ctx context.Context, tenantID string, loaded loadedGraph) {
 	loaded.CacheBytes = normalizedWriteCacheBytes(loaded)
 	publish := true
 	defer func() {
 		if publish {
-			s.publishGraph(tenantID, loaded)
+			if !deferReplicationCommit(ctx, func() { s.publishGraph(tenantID, loaded) }) {
+				s.publishGraph(tenantID, loaded)
+			}
 		}
 	}()
 	s.lockMu.Lock()

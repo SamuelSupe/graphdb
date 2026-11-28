@@ -49,7 +49,7 @@ func runtimeArchiveRoots(cfg config.Config) (map[string]string, runtimeArchiveMa
 		roots["wal"] = cfg.IngestWALDir
 	}
 	for role, root := range roots {
-		absolute, err := filepath.Abs(root)
+		absolute, err := canonicalRuntimePath(root)
 		if err != nil {
 			return nil, manifest, err
 		}
@@ -70,7 +70,29 @@ func runtimeArchiveRoots(cfg config.Config) (map[string]string, runtimeArchiveMa
 	return roots, manifest, nil
 }
 
-func runRuntimeRecovery(args []string, cfg config.Config) error {
+func canonicalRuntimePath(name string) (string, error) {
+	absolute, err := filepath.Abs(name)
+	if err != nil {
+		return "", err
+	}
+	var missing []string
+	for {
+		if _, err := os.Lstat(absolute); err == nil {
+			resolved, err := filepath.EvalSymlinks(absolute)
+			if err != nil {
+				return "", err
+			}
+			slices.Reverse(missing)
+			return filepath.Join(append([]string{resolved}, missing...)...), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(absolute))
+		absolute = filepath.Dir(absolute)
+	}
+}
+
+func runRuntimeRecovery(ctx context.Context, args []string, cfg config.Config) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: graphdb %s <archive> [--max-bytes <bytes>] [--isolated-cluster-recovery]", args[0])
 	}
@@ -101,23 +123,29 @@ func runRuntimeRecovery(args []string, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	archive, err := filepath.Abs(args[1])
+	archive, err := canonicalRuntimePath(args[1])
 	if err != nil {
 		return err
 	}
 	for _, root := range roots {
-		relative, _ := filepath.Rel(root, archive)
+		relative, err := filepath.Rel(root, archive)
+		if err != nil {
+			return err
+		}
 		if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("runtime archive must be outside the restored roots")
 		}
 	}
 	if args[0] == "runtime-backup" {
-		return backupRuntime(archive, roots, manifest, limit)
+		return backupRuntime(ctx, archive, roots, manifest, limit)
 	}
-	return restoreRuntime(archive, roots, manifest, limit, cfg.DiskSpacePolicy())
+	return restoreRuntime(ctx, archive, roots, manifest, limit, cfg.DiskSpacePolicy())
 }
 
-func backupRuntime(filename string, roots map[string]string, manifest runtimeArchiveManifest, limit int64) (err error) {
+func backupRuntime(ctx context.Context, filename string, roots map[string]string, manifest runtimeArchiveManifest, limit int64) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	files, err := storage.OpenFileStore(roots["data"])
 	if err != nil {
 		return err
@@ -158,6 +186,9 @@ func backupRuntime(filename string, roots map[string]string, manifest runtimeArc
 		err = filepath.WalkDir(root, func(filename string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			if filename == root {
 				if !entry.IsDir() {
@@ -209,7 +240,7 @@ func backupRuntime(filename string, roots map[string]string, manifest runtimeArc
 			if err := archive.WriteHeader(&tar.Header{Name: role + "/" + filepath.ToSlash(relative), Size: info.Size(), Mode: 0600}); err != nil {
 				return err
 			}
-			_, err = io.Copy(archive, source)
+			_, err = io.Copy(archive, runtimeArchiveReader{ctx: ctx, reader: source})
 			return err
 		})
 		if err != nil {
@@ -232,6 +263,9 @@ func backupRuntime(filename string, roots map[string]string, manifest runtimeArc
 		return err
 	}
 	if err := output.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := os.Link(output.Name(), filename); err != nil {
@@ -269,7 +303,10 @@ func runtimeArchiveName(name string, roots map[string]string) (string, string, e
 	return role, relative, nil
 }
 
-func restoreRuntime(filename string, roots map[string]string, expected runtimeArchiveManifest, limit int64, policy storage.DiskSpacePolicy) (err error) {
+func restoreRuntime(ctx context.Context, filename string, roots map[string]string, expected runtimeArchiveManifest, limit int64, policy storage.DiskSpacePolicy) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	input, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -280,14 +317,14 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 		return err
 	}
 	digest := sha256.New()
-	if _, err := io.Copy(digest, input); err != nil {
+	if _, err := io.Copy(digest, runtimeArchiveReader{ctx: ctx, reader: input}); err != nil {
 		return err
 	}
 	if !bytes.Equal(checksum[:], digest.Sum(nil)) {
 		return fmt.Errorf("runtime archive checksum mismatch")
 	}
 	plan := runtimeRestorePlan{SHA256: hex.EncodeToString(checksum[:])}
-	contents, err := inspectRuntimeArchive(input, roots, expected, limit)
+	contents, err := inspectRuntimeArchive(ctx, input, roots, expected, limit)
 	if err != nil {
 		return err
 	}
@@ -306,7 +343,7 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 			}
 			break
 		}
-		status, err := storage.InspectDiskSpace(context.Background(), path, policy)
+		status, err := storage.InspectDiskSpace(ctx, path, policy)
 		if err != nil {
 			return err
 		}
@@ -325,6 +362,9 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 		return err
 	}
 	defer func() { closeRuntimeLocks(locks) }()
+	if err := cleanupOrphanRuntimeRestorePlans(roots["data"]); err != nil {
+		return err
+	}
 	journal := filepath.Join(roots["data"], runtimeRestoreJournal)
 	if info, statErr := os.Lstat(journal); statErr == nil {
 		if !info.Mode().IsRegular() {
@@ -358,6 +398,10 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 		}
 	} else if !os.IsNotExist(statErr) {
 		return statErr
+	} else {
+		if err := cleanupOrphanRuntimeRestoreStages(roots); err != nil {
+			return err
+		}
 	}
 	if err := checkRuntimeTargets(roots, journal, nil, nil); err != nil {
 		return err
@@ -376,9 +420,6 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 			return fmt.Errorf("restore staging target already exists or cannot be inspected")
 		}
 	}
-	if err := writeRuntimeRestorePlan(journal, plan); err != nil {
-		return err
-	}
 	for _, stage := range stages {
 		if err := os.Mkdir(stage, 0700); err != nil {
 			return err
@@ -394,7 +435,7 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 		return err
 	}
 	defer compressed.Close()
-	limited := &io.LimitedReader{R: compressed, N: limit + 1}
+	limited := &io.LimitedReader{R: runtimeArchiveReader{ctx: ctx, reader: compressed}, N: limit + 1}
 	archive := tar.NewReader(limited)
 	header, err := archive.Next()
 	if err != nil || header.Name != "manifest.json" || header.Typeflag != tar.TypeReg || header.Size > 1<<20 {
@@ -469,7 +510,7 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 	// Each staging directory is on its destination filesystem; check the
 	// remaining admission reserve before making any staged file visible.
 	for role := range usage {
-		status, err := storage.InspectDiskSpace(context.Background(), roots[role], policy)
+		status, err := storage.InspectDiskSpace(ctx, roots[role], policy)
 		if err == nil && !status.WriteReady {
 			err = fmt.Errorf("insufficient disk reserve to publish runtime restore")
 		}
@@ -490,6 +531,13 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 			return err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := writeRuntimeRestorePlan(journal, plan); err != nil {
+		return err
+	}
+	// Finish syncing a publication once its files start becoming visible.
 	directories := map[string]bool{}
 	for _, name := range plan.Files {
 		role, relative, _ := runtimeArchiveName(name, roots)
@@ -571,6 +619,81 @@ func checkRuntimeTargets(roots map[string]string, journal string, planned []stri
 		})
 		if err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func cleanupOrphanRuntimeRestorePlans(dataRoot string) error {
+	entries, err := os.ReadDir(dataRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	removed := false
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".runtime-restore-plan-") {
+			continue
+		}
+		path := filepath.Join(dataRoot, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("non-regular runtime restore plan temporary file: %s", path)
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		removed = true
+	}
+	if removed {
+		return syncRuntimeDirectory(dataRoot)
+	}
+	return nil
+}
+
+func cleanupOrphanRuntimeRestoreStages(roots map[string]string) error {
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		removed := false
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasPrefix(name, ".runtime-restore-") || strings.HasPrefix(name, ".runtime-restore-plan-") {
+				continue
+			}
+			path := filepath.Join(root, name)
+			info, err := os.Lstat(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return err
+			}
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			removed = true
+		}
+		if removed {
+			if err := syncRuntimeDirectory(root); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

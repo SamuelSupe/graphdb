@@ -10,8 +10,10 @@ import (
 )
 
 func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, mutations graph.Mutations, report graph.ApplyReport, baseVersion, version int64, rebuild, rebuildOnGap bool) error {
-	ordered, _ := ctx.Value(orderedIndexUpdateKey{}).(bool)
-	if rebuild && ordered {
+	buildOpts := s.executionEnv(ctx).BuildOpts
+	ordered := buildOpts.OrderedCatchup
+	explicitRebuild := buildOpts.ExplicitOnlineRebuild
+	if rebuild && ordered && explicitRebuild {
 		_, err := s.rebuildIndexesFromGraph(ctx, tenantID, after, Manifest{Version: version})
 		return err
 	}
@@ -61,7 +63,7 @@ func (s *TenantStore) ensureIncrementalIndexCurrent(ctx context.Context, tenantI
 	// Ordered local updates may trail the graph head. The caller retains its
 	// original writer fence and read view through publication, excluding tenant
 	// replacement and GC; the catalog CAS still requires the preceding catalog.
-	catchup, _ := ctx.Value(orderedIndexUpdateKey{}).(bool)
+	catchup := s.executionEnv(ctx).BuildOpts.OrderedCatchup
 	if current.Version != version && !(catchup && current.Version > version) {
 		return fmt.Errorf("%w: manifest for tenant %q changed while updating indexes", ErrConflict, tenantID)
 	}

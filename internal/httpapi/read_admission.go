@@ -34,6 +34,7 @@ func (s *Server) enterRead(w http.ResponseWriter, r *http.Request, tenantID stri
 			return nil, false
 		}
 		s.obs().Metrics.RecordReadAdmissionQueue(tenantID, "rejected", waited)
+		w.Header().Set("Retry-After", "1")
 		writeErrorDetail(w, http.StatusTooManyRequests, ErrorCodeTooManyRequests, "read admission queue timeout", true, nil)
 		return nil, false
 	}

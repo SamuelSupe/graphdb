@@ -3,6 +3,7 @@ package graph
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -395,8 +396,8 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if err := g.validateEdge(normalized); err != nil {
 			return ApplyReport{}, err
 		}
-		if previous, ok := g.Edges.Get(normalized.ID); ok {
-			g.removeEdgeFromIndexes(normalized.ID, previous)
+		previous, exists := g.Edges.Get(normalized.ID)
+		if exists {
 			var mergeReport ApplyReport
 			normalized, mergeReport = mergeEdgeForUpsert(previous, normalized, normalized.ID, incomingID, commit.Version, now)
 			report.Suppressed = append(report.Suppressed, mergeReport.Suppressed...)
@@ -411,8 +412,15 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		}
 		normalized.UpdatedAt = now
 		normalized.Version = commit.Version
+		indexChanged := !exists || previous.Type != normalized.Type || previous.From != normalized.From || previous.To != normalized.To ||
+			!slices.Equal(edgeAliasValues(previous), edgeAliasValues(normalized))
+		if exists && indexChanged {
+			g.removeEdgeFromIndexes(normalized.ID, previous)
+		}
 		g.Edges.Set(normalized.ID, normalized)
-		g.addEdgeToIndexes(normalized.ID, normalized)
+		if indexChanged {
+			g.addEdgeToIndexes(normalized.ID, normalized)
+		}
 		if err := g.validateCardinality(normalized); err != nil {
 			return ApplyReport{}, err
 		}

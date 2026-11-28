@@ -10,7 +10,7 @@ import (
 
 const cliTaskPollInterval = 100 * time.Millisecond
 
-func startTask(args []string, store *storage.TenantStore) error {
+func startTask(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 2 || len(args) > 3 {
 		return fmt.Errorf("usage: graphdb start-task <tenant-id> <type> [params.json]")
 	}
@@ -21,7 +21,7 @@ func startTask(args []string, store *storage.TenantStore) error {
 		}
 	}
 	task, err := startAndWaitTask(
-		context.Background(), store, args[0], args[1], params,
+		ctx, store, args[0], args[1], params,
 	)
 	if err != nil {
 		return err
@@ -29,7 +29,7 @@ func startTask(args []string, store *storage.TenantStore) error {
 	return printFinishedTask(task)
 }
 
-func listTasks(args []string, store *storage.TenantStore) error {
+func listTasks(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) < 1 || len(args) > 3 {
 		return fmt.Errorf("usage: graphdb list-tasks <tenant-id> [type] [status]")
 	}
@@ -40,44 +40,44 @@ func listTasks(args []string, store *storage.TenantStore) error {
 	if len(args) == 3 {
 		options.Status = args[2]
 	}
-	tasks, err := store.ListTasks(context.Background(), args[0], options)
+	tasks, err := store.ListTasks(ctx, args[0], options)
 	if err != nil {
 		return err
 	}
 	return printJSON(map[string]any{"tasks": tasks})
 }
 
-func getTask(args []string, store *storage.TenantStore) error {
+func getTask(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb task <tenant-id> <task-id>")
 	}
-	task, err := store.GetTask(context.Background(), args[0], args[1])
+	task, err := store.GetTask(ctx, args[0], args[1])
 	if err != nil {
 		return err
 	}
 	return printJSON(task)
 }
 
-func cancelTask(args []string, store *storage.TenantStore) error {
+func cancelTask(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb cancel-task <tenant-id> <task-id>")
 	}
-	task, err := store.CancelTask(context.Background(), args[0], args[1])
+	task, err := store.CancelTask(ctx, args[0], args[1])
 	if err != nil {
 		return err
 	}
 	return printJSON(task)
 }
 
-func retryTask(args []string, store *storage.TenantStore) error {
+func retryTask(ctx context.Context, args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb retry-task <tenant-id> <task-id>")
 	}
-	task, err := store.RetryTask(context.Background(), args[0], args[1])
+	task, err := store.RetryTask(ctx, args[0], args[1])
 	if err != nil {
 		return err
 	}
-	task, err = waitForTask(context.Background(), store, task)
+	task, err = waitForTask(ctx, store, task)
 	if err != nil {
 		return err
 	}

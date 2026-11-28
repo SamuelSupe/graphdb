@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -16,8 +17,37 @@ import (
 // Remote partitions are validated by their own replica snapshots.
 func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 	prefix := path.Join(s.Prefix, "control/graphs") + "/"
+	type validatedPageKey struct {
+		prefix string
+		ref    Root
+	}
+	validatedPages := map[validatedPageKey]struct{}{}
+	var validateTree func(tree Tree, ref Root, depth int) error
+	validateTree = func(tree Tree, ref Root, depth int) error {
+		if ref.Hash == "" {
+			return nil
+		}
+		if depth > 32 {
+			return fmt.Errorf("%w: fragment tree depth exceeded", ErrPartitionCorrupt)
+		}
+		key := validatedPageKey{prefix: tree.Prefix, ref: ref}
+		if _, ok := validatedPages[key]; ok {
+			return nil
+		}
+		page, err := tree.load(ctx, ref)
+		if err != nil {
+			return err
+		}
+		for _, child := range page.Children {
+			if err := validateTree(tree, child, depth+1); err != nil {
+				return err
+			}
+		}
+		validatedPages[key] = struct{}{}
+		return nil
+	}
 	validateRoot := func(tenant string, generation int64, id uint8, root Root) error {
-		return s.Tree(tenant, generation, id).Scan(ctx, root, "", "", func(Row) (bool, error) { return true, nil })
+		return validateTree(s.Tree(tenant, generation, id), root, 0)
 	}
 	validateRoots := func(view Graph, current Graph) error {
 		for i, root := range view.Roots {
@@ -25,6 +55,9 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 				continue
 			}
 			if _, err := s.Data(ctx, view.Tenant, view.Generation, uint8(i)); err != nil {
+				if current.State == "initializing" && current.ConversionAttempt != 0 && root == (Root{}) && errors.Is(err, storage.ErrNotFound) {
+					continue
+				}
 				return fmt.Errorf("required graph partition missing: %w", err)
 			}
 			if err := validateRoot(view.Tenant, view.Generation, uint8(i), root); err != nil {
@@ -49,6 +82,7 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 		verifiedViews[key] = true
 		return nil
 	}
+	checkedAbandoned := map[string]bool{}
 	return s.walkObjects(ctx, prefix, func(object storage.ObjectInfo) error {
 		key := object.Key
 		if !strings.HasSuffix(key, ".json") {
@@ -64,6 +98,20 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 		var family string
 		if len(parts) == 4 {
 			family = parts[2]
+			if generation, err := strconv.ParseInt(parts[1], 10, 64); err == nil && generation > 0 {
+				scope := parts[0] + "/" + parts[1]
+				abandoned, checked := checkedAbandoned[scope]
+				if !checked {
+					abandoned, err = s.isAbandoned(ctx, parts[0], generation)
+					if err != nil {
+						return err
+					}
+					checkedAbandoned[scope] = abandoned
+				}
+				if abandoned {
+					return nil
+				}
+			}
 		}
 		if strings.HasSuffix(key, "/state.json") {
 			var state DataState

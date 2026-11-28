@@ -84,6 +84,10 @@ func (g *Graph) KindCount(kind string) int {
 	return g.kindCounts[kind]
 }
 
+func (g *Graph) HasKindIndex() bool {
+	return g.kindEntityIDs.Len() > 0
+}
+
 func (g *Graph) matchCandidates(kind string, filters Fields) []Entity {
 	if kind == "" {
 		return g.allEntities()
@@ -139,12 +143,42 @@ func (g *Graph) Neighbors(entityID, direction, relationType string) []Neighbor {
 }
 
 func (g *Graph) FilteredNeighbors(entityID, direction string, relationTypes map[string]struct{}, nodeKinds []string, impact bool, charge func() error) ([]Neighbor, error) {
+	refs, err := g.filteredNeighborRefs(entityID, direction, relationTypes, nodeKinds, impact, charge)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]Neighbor, 0, len(refs))
+	for _, ref := range refs {
+		edge := g.Edges.At(ref.edgeID)
+		entity := g.Entities.At(ref.entityID)
+		results = append(results, Neighbor{Entity: copyEntity(entity), Edge: copyEdge(edge), Direction: ref.direction})
+	}
+	return results, nil
+}
+
+// VisitFilteredNeighborIDs visits matching neighbors in deterministic
+// (edgeID, entityID, direction) order without deep-copying entities or edges.
+func (g *Graph) VisitFilteredNeighborIDs(entityID, direction string, relationTypes map[string]struct{}, nodeKinds []string, impact bool, charge func() error, visit func(entityID, edgeID string) (bool, error)) error {
+	refs, err := g.filteredNeighborRefs(entityID, direction, relationTypes, nodeKinds, impact, charge)
+	if err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		more, err := visit(ref.entityID, ref.edgeID)
+		if err != nil || !more {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Graph) filteredNeighborRefs(entityID, direction string, relationTypes map[string]struct{}, nodeKinds []string, impact bool, charge func() error) ([]neighborRef, error) {
 	if direction == "" {
 		direction = "both"
 	}
 	refs := make([]neighborRef, 0)
 	if direction == "out" || direction == "both" {
-		for edgeID := range g.out.At(entityID) {
+		for edgeID := range g.out.At(entityID).Keys() {
 			if charge != nil {
 				if err := charge(); err != nil {
 					return nil, err
@@ -165,7 +199,7 @@ func (g *Graph) FilteredNeighbors(entityID, direction string, relationTypes map[
 		}
 	}
 	if direction == "in" || direction == "both" {
-		for edgeID := range g.in.At(entityID) {
+		for edgeID := range g.in.At(entityID).Keys() {
 			if charge != nil {
 				if err := charge(); err != nil {
 					return nil, err
@@ -194,13 +228,7 @@ func (g *Graph) FilteredNeighbors(entityID, direction string, relationTypes map[
 		}
 		return refs[i].edgeID < refs[j].edgeID
 	})
-	results := make([]Neighbor, 0, len(refs))
-	for _, ref := range refs {
-		edge := g.Edges.At(ref.edgeID)
-		entity := g.Entities.At(ref.entityID)
-		results = append(results, Neighbor{Entity: copyEntity(entity), Edge: copyEdge(edge), Direction: ref.direction})
-	}
-	return results, nil
+	return refs, nil
 }
 
 type neighborRef struct {

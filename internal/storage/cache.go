@@ -21,6 +21,7 @@ type ReaderCache struct {
 	Observer         ReaderCacheObserver
 
 	mu        sync.RWMutex
+	closed    bool
 	entries   map[string]cacheEntry
 	loading   map[string]*cacheLoad
 	loadSlots chan struct{}
@@ -141,6 +142,7 @@ func (c *ReaderCache) Start(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	c.Store.StartBackground(ctx, func(ctx context.Context) {
 		defer ticker.Stop()
+		defer c.Close()
 		for {
 			select {
 			case <-ctx.Done():
@@ -150,6 +152,32 @@ func (c *ReaderCache) Start(ctx context.Context) {
 			}
 		}
 	})
+}
+
+// Close marks the cache closing and cancels any detached store loads so
+// FileStore.Close does not block waiting on background read views during shutdown.
+func (c *ReaderCache) Close() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.closed = true
+	cancels := make([]context.CancelFunc, 0, len(c.loading)*2)
+	for _, load := range c.loading {
+		if load == nil {
+			continue
+		}
+		if load.cancel != nil {
+			cancels = append(cancels, load.cancel)
+		}
+		if load.cancelPhase != nil {
+			cancels = append(cancels, load.cancelPhase)
+		}
+	}
+	c.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (c *ReaderCache) Load(ctx context.Context, tenantID string) (*graph.Graph, Manifest, error) {

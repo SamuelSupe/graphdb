@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 )
@@ -14,10 +15,56 @@ import (
 type replicatedRestoreKey struct{}
 type replicatedBackupKey struct{}
 type replicatedImportKey struct{}
+type taskProgressMutedKey struct{}
+type restoreDrillSourceUsageKey struct{}
 
-// PrepareReplicatedTask materializes and verifies a restore before proposal.
-// Its bytes are majority-persisted in Raft; application never fetches S3.
-func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]byte, error) {
+type replicatedBackupPayload struct {
+	backupstore.Entry
+	Automation map[string]any `json:"automation,omitempty"`
+}
+
+func objectBackupID(task Task) string {
+	if id := taskCheckpointString(task, "remote_backup_id"); id != "" {
+		return id
+	}
+	if boolTaskParam(task.Params, "automatic") {
+		return "scheduled-" + task.ID
+	}
+	return task.ID
+}
+
+// ReplicatedTaskPreparation holds local state captured under the application
+// read lock so network I/O, restore drills, and payload marshaling run outside
+// the lock in Build.
+type ReplicatedTaskPreparation struct {
+	store             *TenantStore
+	task              Task
+	kind              string
+	importKey         string
+	importData        []byte
+	backupManifest    backupstore.Manifest
+	backupSource      fileReader
+	backupSize        int64
+	backupAutomatic   bool
+	backupSourceUsage *TenantUsageReport
+	restoreBackupKey  string
+	remoteRestore     bool
+	localRestoreInput tenantBackupInput
+}
+
+func (p *ReplicatedTaskPreparation) Close() error {
+	if p == nil || p.backupSource == nil {
+		return nil
+	}
+	err := p.backupSource.Close()
+	p.backupSource = nil
+	return err
+}
+
+// CaptureReplicatedTaskPreparation captures local state required to prepare a
+// replicated task without performing remote object-store network I/O or restore
+// drills while holding the caller's read lock.
+func (s *TenantStore) CaptureReplicatedTaskPreparation(ctx context.Context, task Task) (*ReplicatedTaskPreparation, error) {
 	if err := s.CheckTaskDiskSpace(ctx, task); err != nil {
 		return nil, err
 	}
@@ -30,58 +77,156 @@ func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]b
 		if err != nil {
 			return nil, err
 		}
-		digest := sha256Hex(data)
-		if expected := stringTaskParam(task.Checkpoint, importSourceDigestCheckpoint); expected != "" && expected != digest {
-			return nil, fmt.Errorf("%w: import source %q differs from the admitted input", ErrInvalidArgument, key)
-		}
-		return json.Marshal(digest)
+		return &ReplicatedTaskPreparation{
+			store:      s,
+			task:       task,
+			kind:       "import",
+			importKey:  key,
+			importData: data,
+		}, nil
 	}
 	if task.Type == TaskTypeTenantBackup && stringTaskParam(task.Params, "destination") == "object" {
-		backupID := task.ID
-		if boolTaskParam(task.Params, "automatic") {
-			backupID = "scheduled-" + backupID
-		}
-		record, err := s.loadTenantBackupRecord(ctx, s.taskResultKey(task.TenantID, backupID))
-		if err != nil {
-			return nil, err
-		}
-		source, err := openFileReader(ctx, s.Objects, s.taskResultKey(task.TenantID, backupID))
-		if err != nil {
-			return nil, err
-		}
-		defer source.Close()
-		size, err := source.Seek(0, io.SeekEnd)
-		if err != nil {
-			return nil, err
-		}
 		if s.Backups == nil {
 			return nil, fmt.Errorf("object backups are not configured")
 		}
-		entry, err := s.Backups.Publish(ctx, backupstore.Manifest{Automatic: boolTaskParam(task.Params, "automatic"), TenantID: record.TenantID, BackupID: backupID, Version: record.Version, CreatedAt: record.CreatedAt}, io.NewSectionReader(source, 0, size))
+		backupID := objectBackupID(task)
+		key := s.taskResultKey(task.TenantID, backupID)
+		record, err := s.loadTenantBackupRecord(ctx, key)
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(entry)
+		source, err := openFileReader(ctx, s.Objects, key)
+		if err != nil {
+			return nil, err
+		}
+		size, err := source.Seek(0, io.SeekEnd)
+		if err != nil {
+			_ = source.Close()
+			return nil, err
+		}
+		automatic := boolTaskParam(task.Params, "automatic")
+		prep := &ReplicatedTaskPreparation{
+			store: s,
+			task:  task,
+			kind:  "object_backup",
+			backupManifest: backupstore.Manifest{
+				Automatic: automatic,
+				TenantID:  record.TenantID,
+				BackupID:  backupID,
+				Version:   record.Version,
+				CreatedAt: record.CreatedAt,
+			},
+			backupSource:    source,
+			backupSize:      size,
+			backupAutomatic: automatic,
+		}
+		if automatic && boolTaskParam(task.Params, "restore_drill") {
+			usage, err := s.TenantUsage(ctx, task.TenantID)
+			if err != nil {
+				_ = source.Close()
+				return nil, err
+			}
+			prep.backupSourceUsage = &usage
+		}
+		return prep, nil
 	}
 	if task.Type != TaskTypeTenantRestore && task.Type != TaskTypeTenantRestoreDrill {
-		return nil, nil
+		return &ReplicatedTaskPreparation{store: s, task: task}, nil
+	}
+	backupKey := stringTaskParam(task.Params, "backup_key")
+	if strings.HasPrefix(backupKey, "s3://") {
+		return &ReplicatedTaskPreparation{
+			store:            s,
+			task:             task,
+			kind:             "restore",
+			restoreBackupKey: backupKey,
+			remoteRestore:    true,
+		}, nil
 	}
 	// A new leader must reproduce the same transfer digest, including the
 	// integrity report timestamp, when resuming a queued restore.
-	input, err := s.loadTenantBackupInput(ReplicatedContext(ctx, task.ID, task.StartedAt), stringTaskParam(task.Params, "backup_key"))
+	input, err := s.loadTenantBackupInputForTenant(ReplicatedContext(ctx, task.ID, task.StartedAt), backupKey, requiredTenantRestoreSource(task))
 	if err != nil {
 		return nil, err
 	}
-	if input.Integrity.Status == "error" {
-		return nil, fmt.Errorf("%w: restore backup integrity failed", ErrInvalidArgument)
+	return &ReplicatedTaskPreparation{
+		store:             s,
+		task:              task,
+		kind:              "restore",
+		restoreBackupKey:  backupKey,
+		localRestoreInput: input,
+	}, nil
+}
+
+// Build executes any network I/O, restore drill verification, and JSON marshaling
+// for a captured replicated task preparation.
+func (p *ReplicatedTaskPreparation) Build(ctx context.Context) ([]byte, error) {
+	if p == nil || p.kind == "" {
+		return nil, nil
 	}
-	if err := validateTenantRestoreSource(task, input.Record); err != nil {
+	s := p.store
+	task := p.task
+	switch p.kind {
+	case "import":
+		digest := sha256Hex(p.importData)
+		if expected := stringTaskParam(task.Checkpoint, importSourceDigestCheckpoint); expected != "" && expected != digest {
+			return nil, fmt.Errorf("%w: import source %q differs from the admitted input", ErrInvalidArgument, p.importKey)
+		}
+		return json.Marshal(digest)
+	case "object_backup":
+		if s.Backups == nil {
+			return nil, fmt.Errorf("object backups are not configured")
+		}
+		entry, err := s.Backups.Publish(ctx, p.backupManifest, io.NewSectionReader(p.backupSource, 0, p.backupSize))
+		if err != nil {
+			return nil, err
+		}
+		payload := replicatedBackupPayload{Entry: entry}
+		if p.backupAutomatic {
+			prepCtx := s.withProgressReporter(ReplicatedContext(ctx, task.ID, mutationTime(ctx)), MutedReporter{})
+			if p.backupSourceUsage != nil {
+				prepCtx = context.WithValue(prepCtx, restoreDrillSourceUsageKey{}, *p.backupSourceUsage)
+			}
+			automation, err := s.finishAutomaticBackup(prepCtx, task, entry)
+			if err != nil {
+				return nil, err
+			}
+			payload.Automation = automation
+		}
+		return json.Marshal(payload)
+	case "restore":
+		input := p.localRestoreInput
+		if p.remoteRestore {
+			var err error
+			input, err = s.loadTenantBackupInputForTenant(ReplicatedContext(ctx, task.ID, task.StartedAt), p.restoreBackupKey, requiredTenantRestoreSource(task))
+			if err != nil {
+				return nil, err
+			}
+		}
+		if input.Integrity.Status == "error" {
+			return nil, fmt.Errorf("%w: restore backup integrity failed", ErrInvalidArgument)
+		}
+		if err := validateTenantRestoreSource(task, input.Record); err != nil {
+			return nil, err
+		}
+		if err := s.checkRestoreDiskSpace(ctx, input.Record); err != nil {
+			return nil, err
+		}
+		return json.Marshal(input)
+	default:
+		return nil, nil
+	}
+}
+
+// PrepareReplicatedTask materializes and verifies a restore before proposal.
+// Its bytes are majority-persisted in Raft; application never fetches S3.
+func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]byte, error) {
+	prep, err := s.CaptureReplicatedTaskPreparation(ctx, task)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.checkRestoreDiskSpace(ctx, input.Record); err != nil {
-		return nil, err
-	}
-	return json.Marshal(input)
+	defer prep.Close()
+	return prep.Build(ctx)
 }
 
 func (s *TenantStore) RunReplicatedTask(ctx context.Context, tenantID, id string, restore []byte) (Task, error) {
@@ -115,11 +260,11 @@ func (s *TenantStore) RunReplicatedTaskFromReader(ctx context.Context, tenantID,
 			}
 			ctx = context.WithValue(ctx, replicatedImportKey{}, digest)
 		} else if task.Type == TaskTypeTenantBackup {
-			var entry backupstore.Entry
-			if err := decoder.Decode(&entry); err != nil {
+			var payload replicatedBackupPayload
+			if err := decoder.Decode(&payload); err != nil {
 				return Task{}, err
 			}
-			ctx = context.WithValue(ctx, replicatedBackupKey{}, entry)
+			ctx = context.WithValue(ctx, replicatedBackupKey{}, payload)
 		} else {
 			var input tenantBackupInput
 			if err := decoder.Decode(&input); err != nil {
@@ -178,10 +323,10 @@ func (s *TenantStore) CaptureReplicatedObjectBackup(ctx context.Context, tenantI
 	if err != nil {
 		return err
 	}
-	backupID := task.ID
-	if boolTaskParam(task.Params, "automatic") {
-		backupID = "scheduled-" + backupID
+	if taskTerminal(task.Status) {
+		return nil
 	}
+	backupID := objectBackupID(task)
 	key := s.taskResultKey(tenantID, backupID)
 	if _, err := s.loadTenantBackupRecord(ctx, key); err == nil {
 		return nil
@@ -196,10 +341,7 @@ func (s *TenantStore) CaptureReplicatedObjectBackup(ctx context.Context, tenantI
 }
 
 func (s *TenantStore) ReplicatedObjectBackupCaptured(ctx context.Context, task Task) (bool, error) {
-	backupID := task.ID
-	if boolTaskParam(task.Params, "automatic") {
-		backupID = "scheduled-" + backupID
-	}
+	backupID := objectBackupID(task)
 	_, err := s.loadTenantBackupRecord(ctx, s.taskResultKey(task.TenantID, backupID))
 	if errors.Is(err, ErrNotFound) {
 		return false, nil

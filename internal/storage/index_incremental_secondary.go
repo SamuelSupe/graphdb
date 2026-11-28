@@ -98,41 +98,55 @@ func (s *TenantStore) buildIncrementalSecondaryIndexes(ctx context.Context, tena
 
 		entryCount := spec.EntryCount
 		distinctValues := spec.DistinctValues
+		removalsByValue := make(map[string][]string)
+		additionsByValue := make(map[string][]string)
+		touchedValues := make(map[string]struct{})
 		for _, entityID := range entityIDs {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
 			oldValue, oldOK := secondaryIndexEntityValue(before, entityID, spec)
 			newValue, newOK := secondaryIndexEntityValue(after, entityID, spec)
 			if oldOK == newOK && oldValue == newValue {
 				continue
 			}
 			if oldOK {
-				group, err := loadGroup(oldValue)
-				if err != nil {
-					return nil, nil, err
-				}
-				removed, emptied := removeSecondaryIndexID(group.index.Values, oldValue, entityID)
-				if !removed {
-					return nil, nil, fmt.Errorf("incremental index %s.%s is missing entity %q", spec.Kind, spec.Field, entityID)
-				}
-				group.changed = true
-				entryCount--
-				if emptied {
-					distinctValues--
-				}
+				removalsByValue[oldValue] = append(removalsByValue[oldValue], entityID)
+				touchedValues[oldValue] = struct{}{}
 			}
 			if newOK {
-				group, err := loadGroup(newValue)
+				additionsByValue[newValue] = append(additionsByValue[newValue], entityID)
+				touchedValues[newValue] = struct{}{}
+			}
+		}
+		if len(touchedValues) > 0 {
+			sortedValues := make([]string, 0, len(touchedValues))
+			for valueKey := range touchedValues {
+				sortedValues = append(sortedValues, valueKey)
+			}
+			sort.Strings(sortedValues)
+			for _, valueKey := range sortedValues {
+				if err := ctx.Err(); err != nil {
+					return nil, nil, err
+				}
+				group, err := loadGroup(valueKey)
 				if err != nil {
 					return nil, nil, err
 				}
-				added, created := addSecondaryIndexID(group.index.Values, newValue, entityID)
-				if !added {
-					return nil, nil, fmt.Errorf("incremental index %s.%s already contains entity %q", spec.Kind, spec.Field, entityID)
+				deltaEntries, deltaDistinct, err := applySecondaryIndexValueDelta(
+					group.index.Values,
+					valueKey,
+					removalsByValue[valueKey],
+					additionsByValue[valueKey],
+					spec.Kind,
+					spec.Field,
+				)
+				if err != nil {
+					return nil, nil, err
 				}
 				group.changed = true
-				entryCount++
-				if created {
-					distinctValues++
-				}
+				entryCount += deltaEntries
+				distinctValues += deltaDistinct
 			}
 		}
 
@@ -260,32 +274,76 @@ func secondaryIndexEntityValue(g *graph.Graph, entityID string, spec IndexSpec) 
 	return graph.ScalarIndexKey(value)
 }
 
-func removeSecondaryIndexID(values map[string][]string, value string, entityID string) (bool, bool) {
-	ids := values[value]
-	index := sort.SearchStrings(ids, entityID)
-	if index >= len(ids) || ids[index] != entityID {
-		return false, false
+// applySecondaryIndexValueDelta merges sorted removals and additions into an
+// existing sorted posting list in a single O(N + K log K) linear pass instead
+// of shifting the slice O(N) per entity.
+func applySecondaryIndexValueDelta(
+	values map[string][]string,
+	value string,
+	removes []string,
+	adds []string,
+	kind string,
+	field string,
+) (deltaEntries int, deltaDistinct int, err error) {
+	if len(removes) > 1 {
+		sort.Strings(removes)
 	}
-	ids = append(ids[:index], ids[index+1:]...)
-	if len(ids) == 0 {
-		delete(values, value)
-		return true, true
+	if len(adds) > 1 {
+		sort.Strings(adds)
 	}
-	values[value] = ids
-	return true, false
-}
-
-func addSecondaryIndexID(values map[string][]string, value string, entityID string) (bool, bool) {
-	ids, existed := values[value]
-	index := sort.SearchStrings(ids, entityID)
-	if index < len(ids) && ids[index] == entityID {
-		return false, false
+	for i := 1; i < len(adds); i++ {
+		if adds[i] == adds[i-1] {
+			return 0, 0, fmt.Errorf("incremental index %s.%s already contains entity %q", kind, field, adds[i])
+		}
 	}
-	ids = append(ids, "")
-	copy(ids[index+1:], ids[index:])
-	ids[index] = entityID
-	values[value] = ids
-	return true, !existed
+	existing, existed := values[value]
+	if len(existing) == 0 && len(removes) > 0 {
+		return 0, 0, fmt.Errorf("incremental index %s.%s is missing entity %q", kind, field, removes[0])
+	}
+	outCap := len(existing) - len(removes) + len(adds)
+	if outCap < 0 {
+		outCap = 0
+	}
+	out := make([]string, 0, outCap)
+	ei, ri, ai := 0, 0, 0
+	for ei < len(existing) || ai < len(adds) {
+		if ei < len(existing) && ri < len(removes) {
+			if existing[ei] == removes[ri] {
+				ei++
+				ri++
+				continue
+			}
+			if removes[ri] < existing[ei] {
+				return 0, 0, fmt.Errorf("incremental index %s.%s is missing entity %q", kind, field, removes[ri])
+			}
+		}
+		if ei < len(existing) && (ai >= len(adds) || existing[ei] < adds[ai]) {
+			out = append(out, existing[ei])
+			ei++
+			continue
+		}
+		if ei < len(existing) && existing[ei] == adds[ai] {
+			return 0, 0, fmt.Errorf("incremental index %s.%s already contains entity %q", kind, field, adds[ai])
+		}
+		out = append(out, adds[ai])
+		ai++
+	}
+	if ri < len(removes) {
+		return 0, 0, fmt.Errorf("incremental index %s.%s is missing entity %q", kind, field, removes[ri])
+	}
+	deltaEntries = len(adds) - len(removes)
+	if len(out) == 0 {
+		if existed {
+			delete(values, value)
+			deltaDistinct = -1
+		}
+		return deltaEntries, deltaDistinct, nil
+	}
+	if !existed {
+		deltaDistinct = 1
+	}
+	values[value] = out
+	return deltaEntries, deltaDistinct, nil
 }
 
 func removeSecondaryIndexObjectGroup(objects []IndexObject, target IndexObject) []IndexObject {

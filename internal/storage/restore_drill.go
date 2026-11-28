@@ -130,9 +130,36 @@ func (s *TenantStore) tenantRestoreDrillTask(
 	report.BackupManifestKey = input.ManifestKey
 	report.BackupIntegrity = input.Integrity
 	report.BackupManifestStats = stats
-	sourceUsage, err := s.TenantUsage(ctx, task.TenantID)
-	if err != nil {
-		return report, err
+	generatedCleaned := false
+	cleanupGeneratedBackup := func(cleanupCtx context.Context) {
+		if !generated || generatedCleaned {
+			return
+		}
+		generatedCleaned = true
+		backupID := task.ID + "-backup"
+		_ = s.Objects.Delete(cleanupCtx, s.taskResultKey(task.TenantID, backupID))
+		_ = s.Objects.Delete(cleanupCtx, s.backupManifestKey(task.TenantID, backupID))
+	}
+	if cleanup && generated {
+		defer func() {
+			if generatedCleaned {
+				return
+			}
+			cleanupCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), defaultRestoreDrillCleanupTimeout,
+			)
+			defer cancel()
+			cleanupGeneratedBackup(cleanupCtx)
+		}()
+	}
+	var sourceUsage TenantUsageReport
+	if preCaptured, ok := ctx.Value(restoreDrillSourceUsageKey{}).(TenantUsageReport); ok {
+		sourceUsage = preCaptured
+	} else {
+		sourceUsage, err = s.TenantUsage(ctx, task.TenantID)
+		if err != nil {
+			return report, err
+		}
 	}
 	report.SourceUsage = &sourceUsage
 	if dryRun {
@@ -190,6 +217,7 @@ func (s *TenantStore) tenantRestoreDrillTask(
 	}
 	restoreCtx, finishRestore := targetStore.inlineTask(ctx, restoreTask)
 	defer finishRestore()
+	restoreCtx = targetStore.withProgressReporter(restoreCtx, NewLiveTaskReporter(targetStore))
 	restoreReport, err := targetStore.restoreTenantBackupInputTask(restoreCtx, restoreTask, report.BackupKey, input)
 	if err != nil {
 		return report, err
@@ -251,6 +279,9 @@ func (s *TenantStore) tenantRestoreDrillTask(
 			report.finish(mutationTime(ctx))
 			return report, fmt.Errorf("cleanup restore drill target: %w", err)
 		}
+		if generated {
+			cleanupGeneratedBackup(ctx)
+		}
 	}
 	report.finish(mutationTime(ctx))
 	_ = s.updateTaskProgress(ctx, task, "restore_drill_done", total, total, map[string]any{"phase": "restore_drill_done", "recoverable": report.Recoverable, "status": report.Status})
@@ -260,9 +291,12 @@ func (s *TenantStore) tenantRestoreDrillTask(
 func (s *TenantStore) restoreDrillBackupInput(ctx context.Context, task Task) (tenantBackupInput, string, bool, BackupManifestStats, error) {
 	backupKey := stringTaskParam(task.Params, "backup_key")
 	if backupKey != "" {
-		input, err := s.loadTenantBackupInput(ctx, backupKey)
-		if err == nil {
-			err = validateTenantRestoreSource(task, input.Record)
+		input, err := s.loadTenantBackupInputForTenant(ctx, backupKey, requiredTenantRestoreSource(task))
+		if err != nil {
+			return tenantBackupInput{}, backupKey, false, BackupManifestStats{}, err
+		}
+		if err := validateTenantRestoreSource(task, input.Record); err != nil {
+			return tenantBackupInput{}, backupKey, false, BackupManifestStats{}, err
 		}
 		stats := BackupManifestStats{Entities: len(input.Record.Snapshot.Entities), Edges: len(input.Record.Snapshot.Edges)}
 		if input.ManifestKey != "" {
@@ -270,36 +304,16 @@ func (s *TenantStore) restoreDrillBackupInput(ctx context.Context, task Task) (t
 				stats = manifest.Stats
 			}
 		}
-		return input, backupKey, false, stats, err
+		return input, backupKey, false, stats, nil
 	}
 	input, resultKey, stats, err := s.createRestoreDrillBackup(ctx, task.TenantID, task.ID+"-backup")
 	return input, resultKey, true, stats, err
 }
 
 func (s *TenantStore) createRestoreDrillBackup(ctx context.Context, tenantID string, backupID string) (tenantBackupInput, string, BackupManifestStats, error) {
-	loaded, err := s.loadWithMeta(ctx, tenantID)
+	_, record, _, err := s.captureTenantBackup(ctx, tenantID)
 	if err != nil {
 		return tenantBackupInput{}, "", BackupManifestStats{}, err
-	}
-	g := loaded.Graph
-	manifest := loaded.Manifest
-	metadata, configured, _, err := s.getTenantMetadataWithMeta(ctx, tenantID)
-	if err != nil {
-		return tenantBackupInput{}, "", BackupManifestStats{}, err
-	}
-	if !configured {
-		metadata = legacyTenantMetadata(tenantID)
-	}
-	record := TenantBackupRecord{TenantID: tenantID, Version: manifest.Version, CreatedAt: mutationTime(ctx), Metadata: metadata, Snapshot: g.Snapshot()}
-	if config, ok, err := s.GetTenantConfig(ctx, tenantID); err != nil {
-		return tenantBackupInput{}, "", BackupManifestStats{}, err
-	} else if ok {
-		record.Config = &config
-	}
-	if policy, ok, err := s.GetSourcePolicy(ctx, tenantID); err != nil {
-		return tenantBackupInput{}, "", BackupManifestStats{}, err
-	} else if ok {
-		record.SourcePolicy = &policy
 	}
 	resultKey := s.taskResultKey(tenantID, backupID)
 	if err := s.putTaskResult(ctx, tenantID, backupID, taskResult(record)); err != nil {
@@ -329,6 +343,8 @@ func (s *TenantStore) restoreDrillTargetStore(targetPrefix string, objects Objec
 	target.IndexPrefetchTimeout = s.IndexPrefetchTimeout
 	target.WriteIndexRangePages = s.WriteIndexRangePages
 	target.WriteIndexAdjacencyPages = s.WriteIndexAdjacencyPages
+	target.WriteEntityRecords = s.WriteEntityRecords
+	target.UseEntityRecordsForRead = s.UseEntityRecordsForRead
 	target.MaxRetries = s.MaxRetries
 	target.MaxMaintenanceBytes = s.MaxMaintenanceBytes
 	target.maintenance = s.maintenance

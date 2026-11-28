@@ -7,9 +7,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -88,8 +91,8 @@ type fileRuntime struct {
 	ingestAdmissions         map[string]*localViewGate
 	walGenerations           map[string]int64
 	publicationMu            sync.Mutex
-	pendingDirectories       map[string]struct{}
-	pendingDeleteDirectories map[string]struct{}
+	pendingDirectories       directorySyncBarrier
+	pendingDeleteDirectories directorySyncBarrier
 	generation               uint64
 	manifests                map[string]localManifestEntry
 	manifestBytes            int
@@ -101,6 +104,7 @@ type fileRuntime struct {
 	mu                       sync.Mutex
 	etags                    map[string]string
 	listeners                map[uint64]func(string)
+	contextListeners         map[uint64]func(context.Context, string)
 	listenerID               uint64
 	closeOnce                sync.Once
 	closeErr                 error
@@ -108,6 +112,8 @@ type fileRuntime struct {
 	parentCleanup            chan []string
 	parentCleanupStop        context.CancelFunc
 	replicationMu            sync.Mutex
+	replicationDB            *bolt.DB
+	retainedCheckpoint       atomic.Pointer[[]byte]
 }
 
 func (s *FileStore) Close() error {
@@ -126,7 +132,10 @@ func (s *FileStore) Close() error {
 		}
 		s.runtime.mu.Unlock()
 		s.runtime.active.Wait()
-		s.runtime.closeErr = errors.Join(s.closeReceiptDBs(""), syscall.Flock(int(s.runtime.lock.Fd()), syscall.LOCK_UN), s.runtime.lock.Close())
+		s.runtime.replicationMu.Lock()
+		journalErr := s.closeReplicationJournalLocked()
+		s.runtime.replicationMu.Unlock()
+		s.runtime.closeErr = errors.Join(journalErr, s.closeReceiptDBs(""), syscall.Flock(int(s.runtime.lock.Fd()), syscall.LOCK_UN), s.runtime.lock.Close())
 	})
 	return s.runtime.closeErr
 }
@@ -149,7 +158,27 @@ func (s *FileStore) OnChange(listener func(string)) func() {
 	return sync.OnceFunc(func() { r.mu.Lock(); delete(r.listeners, id); r.mu.Unlock() })
 }
 
+func (s *FileStore) onChangeContext(listener func(context.Context, string)) func() {
+	if s.runtime == nil {
+		return func() {}
+	}
+	r := s.runtime
+	r.mu.Lock()
+	r.listenerID++
+	id := r.listenerID
+	if r.contextListeners == nil {
+		r.contextListeners = make(map[uint64]func(context.Context, string))
+	}
+	r.contextListeners[id] = listener
+	r.mu.Unlock()
+	return sync.OnceFunc(func() { r.mu.Lock(); delete(r.contextListeners, id); r.mu.Unlock() })
+}
+
 func (s *FileStore) changed(key, etag string, removed bool) {
+	s.changedContext(context.Background(), key, etag, removed)
+}
+
+func (s *FileStore) changedContext(ctx context.Context, key, etag string, removed bool) {
 	if s.runtime == nil {
 		return
 	}
@@ -158,6 +187,14 @@ func (s *FileStore) changed(key, etag string, removed bool) {
 	s.runtime.invalidateViewFile(key, removed)
 	delete(s.runtime.walGenerations, key)
 	delete(s.runtime.etags, key)
+	if s.isReceiptDB(key) {
+		receiptPrefix := strings.TrimSuffix(key, receiptDatabase)
+		for cachedKey := range s.runtime.etags {
+			if strings.HasPrefix(cachedKey, receiptPrefix) {
+				delete(s.runtime.etags, cachedKey)
+			}
+		}
+	}
 	if entry, ok := s.runtime.manifests[key]; ok {
 		s.runtime.manifestBytes -= entry.bytes
 		delete(s.runtime.manifests, key)
@@ -172,16 +209,23 @@ func (s *FileStore) changed(key, etag string, removed bool) {
 	for _, listener := range s.runtime.listeners {
 		listeners = append(listeners, listener)
 	}
+	contextListeners := make([]func(context.Context, string), 0, len(s.runtime.contextListeners))
+	for _, listener := range s.runtime.contextListeners {
+		contextListeners = append(contextListeners, listener)
+	}
 	s.runtime.mu.Unlock()
 	for _, listener := range listeners {
 		listener(key)
+	}
+	for _, listener := range contextListeners {
+		listener(ctx, key)
 	}
 }
 
 // The cache is valid only while this process owns the directory. Every local
 // mutation invalidates it while holding the same per-key lock as metadata reads.
 func (s *FileStore) objectState(key, path string, hash bool) (string, bool, error) {
-	if !hash || s.runtime == nil {
+	if !hash || s.runtime == nil || s.isReceiptDB(key) {
 		return readFileStoreObjectState(path, hash)
 	}
 	s.runtime.mu.Lock()
@@ -278,6 +322,18 @@ func ensureDurableDirectoryMode(dir string, mode os.FileMode) error {
 }
 
 func (s *FileStore) readMeta(ctx context.Context, key, path string) (ObjectMeta, error) {
+	if s.isReceiptDB(key) {
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			return ObjectMeta{Key: key}, ErrNotFound
+		} else if err != nil {
+			return ObjectMeta{Key: key}, err
+		}
+		data, err := s.readReceiptDBSnapshot(ctx, key)
+		if err != nil {
+			return ObjectMeta{Key: key}, err
+		}
+		return ObjectMeta{Key: key, ETag: sha256Hex(data), Exists: true}, nil
+	}
 	unlock := s.lockObject(key)
 	defer unlock()
 	if err := objectContextErr(ctx); err != nil {

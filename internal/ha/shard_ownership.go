@@ -121,7 +121,7 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 		}
 		owner = sharding.Ownership{Epoch: action.Epoch, State: "retired", MoveID: action.MoveID}
 	case "stage":
-		if !match || (owner.State != "importing" && owner.State != "installed") || action.Part < 0 || int64(action.Part)*sharding.ChunkBytes >= a.MaxSnapshotBytes || len(action.Data) > sharding.ChunkBytes {
+		if !match || (owner.State != "importing" && owner.State != "installed") || action.Part < 0 || len(action.Data) > sharding.ChunkBytes {
 			return conflict("invalid migration chunk or destination ownership")
 		}
 		// A lost install response can restart the copy phase. Installed data
@@ -129,7 +129,7 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 		if owner.State == "installed" {
 			return resultJSON(http.StatusOK, owner)
 		}
-		if action.Bytes <= 0 || action.Bytes > a.MaxSnapshotBytes || int64(action.Part)*sharding.ChunkBytes >= action.Bytes || int64(len(action.Data)) != min(sharding.ChunkBytes, action.Bytes-int64(action.Part)*sharding.ChunkBytes) || (owner.TransferBytes != 0 && owner.TransferBytes != action.Bytes) {
+		if action.Bytes <= 0 || int64(action.Part)*sharding.ChunkBytes >= action.Bytes || int64(len(action.Data)) != min(sharding.ChunkBytes, action.Bytes-int64(action.Part)*sharding.ChunkBytes) || (owner.TransferBytes != 0 && owner.TransferBytes != action.Bytes) {
 			return conflict("migration chunk size or transfer size changed")
 		}
 		if action.Part > owner.NextPart || (owner.Digest != "" && action.Digest != "" && owner.Digest != action.Digest) {
@@ -194,16 +194,11 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 }
 
 func (a *Application) tenantMigrationReady(ctx context.Context, tenant string) (bool, error) {
-	objects, err := a.Files.List(ctx, a.ingestPrefix())
-	if err != nil {
+	if err := a.ensurePending(ctx); err != nil {
 		return false, err
 	}
-	for _, object := range objects {
-		record, err := a.accepted(ctx, object.Key)
-		if err != nil {
-			return false, err
-		}
-		if record.Tenant == tenant && record.State == "accepted" {
+	for _, pending := range a.pending {
+		if pending.tenant == tenant {
 			return false, nil
 		}
 	}
@@ -223,23 +218,30 @@ func (a *Application) removeMigratedTenant(ctx context.Context, tenant string) e
 	if _, err := a.Store.PurgeTenant(ctx, tenant, true); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return err
 	}
-	objects, err := a.Files.List(ctx, a.ingestPrefix())
-	if err != nil {
-		return err
-	}
 	removedReceipt := false
-	for _, object := range objects {
-		record, err := a.accepted(ctx, object.Key)
-		if err != nil {
-			return err
-		}
-		if record.Tenant == tenant {
-			if err := a.Files.Delete(ctx, object.Key); err != nil {
+	if err := a.visitTenantIngestReceipts(ctx, tenant, func(object storage.ObjectInfo, record acceptedRequest) error {
+		if record.AcceptedEpoch != 0 {
+			canonical := a.ingestKey(record.Tenant, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Generation)
+			alias, err := a.receiptAliasKey(ctx, record, canonical)
+			if err != nil {
 				return err
 			}
-			removedReceipt = true
+			if alias != "" {
+				if err := a.Files.Delete(ctx, alias); err != nil {
+					return err
+				}
+			}
 		}
+		if err := a.Files.Delete(ctx, object.Key); err != nil {
+			return err
+		}
+		a.untrackTenantReceipt(object.Key)
+		removedReceipt = true
+		return nil
+	}); err != nil {
+		return err
 	}
+	a.untrackTenantReceiptsForTenant(tenant)
 	if removedReceipt {
 		if err := a.invalidatePendingCheckpoint(ctx); err != nil {
 			return err

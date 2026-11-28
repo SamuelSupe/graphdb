@@ -3,8 +3,10 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
@@ -12,22 +14,24 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
 const ingestRecordCodecParquet = "ingest-record-arrow-parquet-v1"
 
 const (
-	ingestRowMetadata      = "ingest_metadata"
-	ingestRowItem          = "ingest_item"
-	ingestRowDeleteEntity  = "ingest_delete_entity"
-	ingestRowDeleteEdge    = "ingest_delete_edge"
-	ingestRowPrecondition  = "ingest_precondition"
-	ingestRowFailure       = "ingest_failure"
-	ingestRowConflict      = "ingest_conflict"
-	ingestRowConflictValue = "ingest_conflict_value"
-	ingestConflictValueOld = "existing"
-	ingestConflictValueNew = "incoming"
+	ingestRowReplicatedReceipt = "ingest_replicated_receipt"
+	ingestRowMetadata          = "ingest_metadata"
+	ingestRowItem              = "ingest_item"
+	ingestRowDeleteEntity      = "ingest_delete_entity"
+	ingestRowDeleteEdge        = "ingest_delete_edge"
+	ingestRowPrecondition      = "ingest_precondition"
+	ingestRowFailure           = "ingest_failure"
+	ingestRowConflict          = "ingest_conflict"
+	ingestRowConflictValue     = "ingest_conflict_value"
+	ingestConflictValueOld     = "existing"
+	ingestConflictValueNew     = "incoming"
 )
 
 func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) ([]byte, error) {
@@ -55,6 +59,20 @@ func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) (
 
 	batch := builder.NewRecordBatch()
 	defer batch.Release()
+	var storageOptions []parquet.WriterProperty
+	writerOptions := []pqarrow.WriterOption{pqarrow.WithAllocator(memory.DefaultAllocator)}
+	// An epoch-free binding is only published by ordinary HA protocol 13.
+	// Tenant-sharded receipts can still move to a protocol-12 destination.
+	if normalized.ReplicatedReceipt != nil && normalized.ReplicatedReceipt.Epoch == 0 {
+		batch = sparseIngestBatch(batch)
+		defer batch.Release()
+		schema = batch.Schema()
+		// A point lookup decodes the whole receipt. Its primitive types are
+		// recoverable directly from the Parquet schema without an Arrow footer.
+		storageOptions = append(storageOptions, parquet.WithStats(false))
+	} else {
+		writerOptions = append(writerOptions, pqarrow.WithStoreSchema())
+	}
 	table := array.NewTableFromRecords(schema, []arrow.RecordBatch{batch})
 	defer table.Release()
 
@@ -63,8 +81,8 @@ func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) (
 	if rowGroupSize < 1 {
 		rowGroupSize = 1
 	}
-	writerProps := parquetio.DataWriterProperties(schema)
-	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
+	writerProps := parquetio.DataWriterProperties(schema, storageOptions...)
+	arrowProps := pqarrow.NewArrowWriterProperties(writerOptions...)
 	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
 		return nil, err
 	}
@@ -81,13 +99,21 @@ func decodeParquetIngestRecord(ctx context.Context, data []byte) (IngestBatchRec
 	if table.NumRows() < 1 {
 		return IngestBatchRecord{}, fmt.Errorf("parquet ingest record is empty")
 	}
+	compact := len(table.Schema().FieldIndices(sparseIngestTenantColumn)) != 0
+	if compact {
+		table, err = expandSparseIngestTable(table)
+		if err != nil {
+			return IngestBatchRecord{}, err
+		}
+		defer table.Release()
+	}
 	if table.NumCols() < int64(parquetCommitColumnEdgeSourceObservedAt+1) {
 		return IngestBatchRecord{}, fmt.Errorf("parquet ingest record has %d columns, want at least %d", table.NumCols(), parquetCommitColumnEdgeSourceObservedAt+1)
 	}
 
 	var record IngestBatchRecord
 	var expectedHash string
-	build := &commitBuild{}
+	build := codec.NewCommitBuilder(table.NumRows())
 	deletes := ingestDeleteRows{}
 	rows := 0
 	reader := array.NewTableReader(table, 4096)
@@ -115,6 +141,9 @@ func decodeParquetIngestRecord(ctx context.Context, data []byte) (IngestBatchRec
 				return IngestBatchRecord{}, fmt.Errorf("ingest record identity mismatch")
 			}
 			row := codec.ParquetCommitRowFromColumns(columns, i)
+			if err := columns.ValidateOrdinals(i, table.NumRows(), row.Kind != ingestRowFailure && row.Kind != ingestRowConflict); err != nil {
+				return IngestBatchRecord{}, err
+			}
 			if err := applyIngestRecordRow(&record, build, &deletes, row); err != nil {
 				return IngestBatchRecord{}, err
 			}
@@ -122,6 +151,9 @@ func decodeParquetIngestRecord(ctx context.Context, data []byte) (IngestBatchRec
 		}
 	}
 	applyIngestBuildRows(&record, build, deletes)
+	if compact && (record.ReplicatedReceipt == nil || record.ReplicatedReceipt.Epoch != 0) {
+		return IngestBatchRecord{}, fmt.Errorf("sparse parquet ingest record has no ordinary HA receipt binding")
+	}
 	hash, err := ingestRecordContentHash(record)
 	if err != nil {
 		return IngestBatchRecord{}, err
@@ -139,6 +171,23 @@ type ingestDeleteRows struct {
 
 func applyIngestRecordRow(record *IngestBatchRecord, build *commitBuild, deletes *ingestDeleteRows, row parquetCommitRow) error {
 	switch row.Kind {
+	case ingestRowReplicatedReceipt:
+		index, indexErr := strconv.ParseUint(row.ID, 10, 64)
+		digest, digestErr := hex.DecodeString(row.SourceID)
+		if record.ReplicatedReceipt != nil || indexErr != nil || index == 0 || digestErr != nil || len(digest) != 32 {
+			return fmt.Errorf("invalid replicated ingest receipt")
+		}
+		var epoch uint64
+		if row.ExternalID != "" {
+			var err error
+			epoch, err = strconv.ParseUint(row.ExternalID, 10, 64)
+			if err != nil || epoch == 0 {
+				return fmt.Errorf("invalid replicated ingest receipt epoch")
+			}
+		}
+		record.ReplicatedReceipt = &ReplicatedIngestReceipt{
+			Generation: row.VersionValue, Index: index, Epoch: epoch, Digest: row.SourceID, SkipReason: row.Reason,
+		}
 	case ingestRowMetadata:
 		record.Request.Source = row.Source
 		record.Request.CollectorID = row.ExternalID
@@ -160,6 +209,8 @@ func applyIngestRecordRow(record *IngestBatchRecord, build *commitBuild, deletes
 		record.Result.ErrorCode = row.ComponentKind
 		record.Result.Suppressed = row.EdgeSource.Priority
 		record.Result.Skipped = row.Indexed
+		record.Result.SkipReason = row.SplitFrom
+		record.Result.DetailsTruncated = row.Directed
 		record.Result.Cursor = row.Reason
 		record.StartedAt = row.CreatedAtValue
 		record.FinishedAt = row.UpdatedAtValue
@@ -281,12 +332,14 @@ func ingestRecordRows(record IngestBatchRecord) ([]parquetCommitRow, error) {
 		SourceID:       record.Request.Cursor,
 		Required:       record.Request.FullSync,
 		Indexed:        record.Result.Skipped,
+		Directed:       record.Result.DetailsTruncated,
 		Unique:         record.Request.ExpectedVersion != nil,
 		Action:         record.Request.StaleAction,
 		KindName:       record.Request.StaleKind,
 		Strategy:       record.Request.FailureMode,
 		ComponentKind:  record.Result.ErrorCode,
 		To:             record.Result.BatchID,
+		SplitFrom:      record.Result.SkipReason,
 		Reason:         record.Result.Cursor,
 		SourcePriority: record.Result.Applied,
 		VersionValue:   record.Result.Version,
@@ -298,6 +351,16 @@ func ingestRecordRows(record IngestBatchRecord) ([]parquetCommitRow, error) {
 	}}
 	if record.Request.ExpectedVersion != nil {
 		rows[0].FieldSource.Version = *record.Request.ExpectedVersion
+	}
+	if receipt := record.ReplicatedReceipt; receipt != nil {
+		row := parquetCommitRow{
+			Kind: ingestRowReplicatedReceipt, ID: strconv.FormatUint(receipt.Index, 10),
+			SourceID: receipt.Digest, VersionValue: receipt.Generation, Reason: receipt.SkipReason,
+		}
+		if receipt.Epoch != 0 {
+			row.ExternalID = strconv.FormatUint(receipt.Epoch, 10)
+		}
+		rows = append(rows, row)
 	}
 	for i, condition := range record.Request.Preconditions {
 		row := parquetCommitRow{

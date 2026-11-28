@@ -205,11 +205,42 @@ func (s *TenantStore) PersistIngestFailure(
 func (s *TenantStore) ResolveIngestFailure(
 	ctx context.Context,
 	tenantID string,
-	request IngestRequest,
+	entry IngestBatchEntry,
 	result IngestResult,
-	started time.Time,
 	finished time.Time,
 ) (IngestResult, error) {
+	request, started := entry.Request, entry.AcceptedAt
+	if entry.Prepared != nil {
+		viewCtx, release, err := s.ReadViewContext(ctx, tenantID)
+		if err != nil {
+			return result, err
+		}
+		defer release()
+		ctx = viewCtx
+		unlock, err := s.lockTenantForeground(ctx, tenantID)
+		if err != nil {
+			return result, err
+		}
+		defer unlock()
+		if err := s.validateLocalIngestGeneration(ctx, tenantID, normalizedIngestAcceptedGeneration(entry)); err != nil {
+			if errors.Is(err, errIngestGenerationFenced) {
+				return result, nil
+			}
+			return result, err
+		}
+		published, err := s.preparedIngestPublished(ctx, tenantID, *entry.Prepared)
+		if err != nil {
+			return result, err
+		}
+		if published {
+			result = entry.Prepared.Result
+			ctx, err = s.acquireAndBindWriterFence(ctx, tenantID)
+			if err != nil {
+				return result, err
+			}
+			return result, s.saveIngestResultMetadata(ctx, tenantID, request, result, started, finished, true)
+		}
+	}
 	previous, ok, err := s.loadIngestRecord(ctx, tenantID, request)
 	if err != nil {
 		if errors.Is(err, ErrIngestIdentityConflict) || errors.Is(err, ErrIdempotencyConflict) {

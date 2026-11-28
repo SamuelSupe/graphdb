@@ -2,10 +2,10 @@ package storage
 
 import (
 	"context"
-	"github.com/SamuelSupe/graphdb/v2/internal/query"
 	"strconv"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
 
 func estimateFieldLookupBytes(values map[string][]string) int64 {
@@ -77,8 +77,15 @@ func (l *PersistedIndexLookup) VisitFieldIndex(ctx context.Context, kind, field 
 }
 
 func (l *PersistedIndexLookup) fieldPostings(ctx context.Context, spec IndexSpec, object IndexObject, sharded bool) (map[string][]string, bool, error) {
-	cacheKey := l.TenantID + "\x00" + strconv.FormatInt(l.Version, 10) + "\x00" + spec.Kind + "\x00" + spec.Field + "\x00" + spec.ContentHash + "\x00" + object.Key + "\x00" + object.ContentHash
-	return l.Store.fieldLookupCache.load(ctx, cacheKey, func() (map[string][]string, bool, error) {
+	key, hash, schema := object.Key, object.ContentHash, object.SchemaHash
+	if !sharded {
+		key = firstIndexObjectKey(spec.Objects, "postings", "")
+		hash, schema = spec.ContentHash, spec.SchemaHash
+	}
+	cacheKey := l.TenantID + "\x00" + strconv.FormatInt(indexObjectVersion(l.Version, key), 10) + "\x00" + spec.Kind + "\x00" + spec.Field + "\x00" + key + "\x00" + hash + "\x00" + schema + "\x00" + strconv.FormatBool(secondaryIndexSpecUnique(spec))
+	loaded := false
+	postings, found, loadErr := l.Store.fieldLookupCache.load(ctx, cacheKey, func() (map[string][]string, bool, error) {
+		loaded = true
 		var index SecondaryIndex
 		var ok bool
 		var err error
@@ -90,6 +97,10 @@ func (l *PersistedIndexLookup) fieldPostings(ctx context.Context, spec IndexSpec
 		}
 		return index.Values, ok, err
 	})
+	if found && !loaded {
+		l.Store.recordIndexCache(l.TenantID, "secondary_index", "hit")
+	}
+	return postings, found, loadErr
 }
 
 func (l *PersistedIndexLookup) VisitFilteredFieldIndex(ctx context.Context, kind, field string, filters []query.Filter, startID string, visit func(string) (bool, error)) (bool, error) {

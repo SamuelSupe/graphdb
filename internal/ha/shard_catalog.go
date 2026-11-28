@@ -9,8 +9,10 @@ import (
 	"math"
 	"net/http"
 	"path"
+	"slices"
 	"sort"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
@@ -79,6 +81,9 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 				return conflict("drain the shard before unregistering it")
 			}
 			for _, placement := range state.Tenants {
+				if placement.ConversionCleanup != nil && slices.Contains(placement.ConversionCleanup.Groups, shard.ID) {
+					return conflict("shard has cancelled graph data awaiting reclamation")
+				}
 				for _, group := range placement.GraphGroups {
 					if group == shard.ID {
 						return conflict("shard still owns graph partitions")
@@ -115,6 +120,9 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			if placement.State == "partitioning" {
 				return resultJSON(http.StatusOK, placement)
 			}
+			if placement.ConversionCleanup != nil {
+				return conflict("previous graph conversion cleanup is still running")
+			}
 			if placement.State != "active" || len(action.GraphGroups) < 2 || len(action.GraphGroups) > 256 {
 				return conflict("partitioning requires an active tenant and 2 to 256 data groups")
 			}
@@ -129,13 +137,60 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			placement.State = "partitioning"
 			placement.GraphGroups = groups
 			placement.PartitionError = ""
+			if action.PartitionAttempt != 0 {
+				placement.PartitionAttempt = state.Version + 1
+			}
 		case "partition_ready":
-			if !exists || placement.State != "partitioning" || placement.Epoch != action.Epoch {
+			if !exists || placement.State != "partitioning" || placement.Epoch != action.Epoch || placement.PartitionAttempt != action.PartitionAttempt {
 				return conflict("tenant is not awaiting partition activation")
 			}
 			placement.Mode = "partitioned"
 			placement.State = "active"
 			placement.PartitionError = ""
+		case "partition_preflight_rejected":
+			if !exists || placement.State != "partitioning" || placement.Epoch != action.Epoch || placement.Mode == "partitioned" || placement.PartitionAttempt != action.PartitionAttempt {
+				return conflict("tenant is not awaiting partition activation")
+			}
+			placement.State = "active"
+			placement.GraphGroups = nil
+			placement.PartitionError = action.Error
+		case "cancel_partition":
+			if !exists || placement.Epoch != action.Epoch || placement.PartitionAttempt != action.PartitionAttempt || placement.Mode == "partitioned" || (placement.State != "partitioning" && placement.State != "partition_cancelling") {
+				return conflict("tenant is not awaiting graph conversion cancellation")
+			}
+			if placement.State == "partition_cancelling" {
+				return resultJSON(http.StatusOK, placement)
+			}
+			placement.State = "partition_cancelling"
+			placement.PartitionError = action.Error
+		case "partition_cancelled", "partition_cancel_lost":
+			if !exists || placement.State != "partition_cancelling" || placement.Epoch != action.Epoch || placement.PartitionAttempt != action.PartitionAttempt {
+				return conflict("graph conversion cancellation changed")
+			}
+			if action.Operation == "partition_cancel_lost" {
+				placement.State = "partitioning"
+				placement.PartitionError = "graph activation was already committed"
+				break
+			}
+			if action.GraphGeneration <= placement.GraphGenerationFloor {
+				return conflict("cancelled graph generation is stale")
+			}
+			groups := append(slices.Clone(placement.GraphGroups), placement.Shard)
+			sort.Strings(groups)
+			placement.ConversionCleanup = &sharding.ConversionCleanup{Generation: action.GraphGeneration, Groups: slices.Compact(groups)}
+			placement.GraphGenerationFloor = action.GraphGeneration
+			placement.State = "active"
+			placement.GraphGroups = nil
+		case "partition_cleanup_group":
+			if !exists || placement.ConversionCleanup == nil || placement.ConversionCleanup.Generation != action.GraphGeneration || !slices.Contains(placement.ConversionCleanup.Groups, action.Target) {
+				return conflict("graph conversion cleanup changed")
+			}
+			groups := slices.DeleteFunc(slices.Clone(placement.ConversionCleanup.Groups), func(id string) bool { return id == action.Target })
+			if len(groups) == 0 {
+				placement.ConversionCleanup = nil
+			} else {
+				placement.ConversionCleanup = &sharding.ConversionCleanup{Generation: action.GraphGeneration, Groups: groups}
+			}
 		case "graph_group":
 			if !exists || placement.Mode != "partitioned" || placement.State != "active" || placement.Epoch != action.Epoch || state.Shards[action.Target].ID == "" || state.Shards[action.Target].Draining {
 				return conflict("graph target group is not available")
@@ -148,8 +203,15 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 				placement.GraphGroups = append(append([]string(nil), placement.GraphGroups...), action.Target)
 				sort.Strings(placement.GraphGroups)
 			}
+		case "prune_graph_group":
+			if !exists || placement.Mode != "partitioned" || placement.State != "active" || placement.Epoch != action.Epoch ||
+				action.Target == "" || action.Target == placement.Shard || !state.Shards[action.Target].Draining ||
+				(action.CatalogVersion != 0 && action.CatalogVersion != state.Version) {
+				return conflict("graph group cannot be pruned")
+			}
+			placement.GraphGroups = slices.DeleteFunc(slices.Clone(placement.GraphGroups), func(id string) bool { return id == action.Target })
 		case "partition_error":
-			if !exists || placement.State != "partitioning" || placement.Epoch != action.Epoch {
+			if !exists || placement.State != "partitioning" || placement.Epoch != action.Epoch || placement.PartitionAttempt != action.PartitionAttempt {
 				return conflict("tenant is not partitioning")
 			}
 			if placement.PartitionError == action.Error {
@@ -279,10 +341,32 @@ func leastPopulatedShard(state sharding.Catalog) string {
 }
 
 func (c *Cluster) shardAction(ctx context.Context, action sharding.Action) ([]byte, error) {
+	switch action.Operation {
+	case "prune_graph_group":
+		if c.config.Protocol < partition.GroupTopologyProtocol {
+			return resultJSON(http.StatusConflict, map[string]any{"error": "graph group pruning requires catalog Raft protocol 13"})
+		}
+	case "cancel_partition", "partition_cancelled", "partition_cancel_lost", "partition_cleanup_group":
+		if c.config.Protocol < partition.ConversionCancellationProtocol {
+			return resultJSON(http.StatusConflict, map[string]any{"error": "conversion cancellation requires catalog Raft protocol 13"})
+		}
+	case "begin_partition":
+		if c.config.Protocol >= partition.ConversionCancellationProtocol {
+			action.PartitionAttempt = 1 // Apply assigns the catalog revision to the new attempt.
+		}
+	}
+	if c.config.Protocol < partition.ConversionPreflightProtocol && action.Operation == "partition_preflight_rejected" {
+		return resultJSON(http.StatusConflict, map[string]any{"error": "partition preflight rollback requires catalog Raft protocol 13"})
+	}
 	if c.config.Protocol < 5 && (action.Operation == "begin_partition" || action.Operation == "partition_ready" || action.Operation == "partition_error" || action.Operation == "graph_group") {
 		return resultJSON(http.StatusConflict, map[string]any{"error": "graph partitions require catalog Raft protocol 5"})
 	}
 
+	if (action.Operation == "stage" || action.Operation == "install") && c.App.MaxSnapshotBytes > 0 {
+		if action.Bytes > c.App.MaxSnapshotBytes || int64(action.Part)*sharding.ChunkBytes >= c.App.MaxSnapshotBytes {
+			return resultJSON(http.StatusConflict, map[string]any{"error": "migration transfer exceeds snapshot budget"})
+		}
+	}
 	if action.Operation == "stage" && action.Part == 0 {
 		if err := c.App.Store.CheckWriteDiskSpace(ctx, max(int64(len(action.Data))*4, action.Bytes*2)); err != nil {
 			return nil, err
@@ -296,6 +380,7 @@ func (c *Cluster) shardAction(ctx context.Context, action sharding.Action) ([]by
 	if action.Operation == "move" {
 		action.MoveID = cmd.ID
 	}
+	action.ManagedReceiptTransfer = action.Operation == "install" && c.config.Protocol >= ingestQueueCheckpointProtocol
 	cmd.Body, err = json.Marshal(action)
 	if err != nil {
 		return nil, err

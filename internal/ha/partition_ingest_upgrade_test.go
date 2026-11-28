@@ -134,6 +134,29 @@ func TestHAPartitionIngestUpgradePreservesSourceReceipts(t *testing.T) {
 	a.stop(2)
 	a.nodes[2].cfg.Raft.Protocol = partition.IngestProtocol
 	a.start(2)
+	for _, stale := range []struct {
+		kind string
+		code string
+	}{
+		{"http", "graph_mode_changed"},
+		{"partition_accept", "tenant_generation_changed"},
+	} {
+		late, err := newCommand(stale.kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		late.Tenant, late.RouteEpoch, late.Method, late.URI = cmd.Tenant, cmd.RouteEpoch, cmd.Method, cmd.URI
+		late.Header, late.Body = cmd.Header, cmd.Body
+		late.ExpectedGeneration = converted.Generation - 1
+		data, err := a.nodes[leader].cluster.propose(ctx, late)
+		var result httpResult
+		var failure struct {
+			Code string `json:"code"`
+		}
+		if err != nil || json.Unmarshal(data, &result) != nil || result.Status != http.StatusConflict || json.Unmarshal(result.Body, &failure) != nil || failure.Code != stale.code {
+			t.Fatalf("stale %s after conversion: %s (%v)", stale.kind, data, err)
+		}
+	}
 	changed := alias
 	changed.Cursor = "different payload"
 	call(http.MethodPost, "/v1/ingest/batches", "legacy-wal", changed, http.StatusConflict)

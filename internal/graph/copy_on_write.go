@@ -8,11 +8,8 @@ type copyOnWriteState struct {
 	outNodes         map[string]struct{}
 	inNodes          map[string]struct{}
 	edgeAliases      map[string]struct{}
-	edgeAliasCopy    bool
 	edgeTypes        map[string]struct{}
-	edgeTypeCopy     bool
 	entityAliases    map[string]struct{}
-	entityAliasCopy  bool
 	identityKinds    map[string]struct{}
 	fieldKinds       map[string]struct{}
 	kindEntityCopies map[string]struct{}
@@ -68,9 +65,9 @@ func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 		Edges:                   g.Edges.Clone(),
 		out:                     g.out.Clone(),
 		in:                      g.in.Clone(),
-		edgeAliasIndex:          g.edgeAliasIndex,
-		edgeTypeIndex:           g.edgeTypeIndex,
-		entityAliasIndex:        g.entityAliasIndex,
+		edgeAliasIndex:          g.edgeAliasIndex.Clone(),
+		edgeTypeIndex:           g.edgeTypeIndex.Clone(),
+		entityAliasIndex:        g.entityAliasIndex.Clone(),
 		kindCounts:              storageMutationMap(g.kindCounts, impact.entities),
 		kindEntityIDs:           g.kindEntityIDs.Clone(),
 		nonScalarFields:         g.nonScalarFields.Clone(),
@@ -115,130 +112,67 @@ func copyStringSet(source map[string]struct{}) map[string]struct{} {
 	return shallowCopyMap(source)
 }
 
-func (g *Graph) writableOut(node string) map[string]struct{} {
+func (g *Graph) writableOut(node string) *ShardedMap[struct{}] {
 	if g.cow == nil {
-		if g.out.At(node) == nil {
-			g.out.Set(node, map[string]struct{}{})
-		}
-		return g.out.At(node)
+		return writableIndexSet(g.out, node, nil)
 	}
-	if _, ok := g.cow.outNodes[node]; !ok {
-		g.out.Set(node, copyStringSet(g.out.At(node)))
-		g.cow.outNodes[node] = struct{}{}
-	}
-	if g.out.At(node) == nil {
-		g.out.Set(node, map[string]struct{}{})
-	}
-	return g.out.At(node)
+	return writableIndexSet(g.out, node, g.cow.outNodes)
 }
 
-func (g *Graph) writableIn(node string) map[string]struct{} {
+func (g *Graph) writableIn(node string) *ShardedMap[struct{}] {
 	if g.cow == nil {
-		if g.in.At(node) == nil {
-			g.in.Set(node, map[string]struct{}{})
-		}
-		return g.in.At(node)
+		return writableIndexSet(g.in, node, nil)
 	}
-	if _, ok := g.cow.inNodes[node]; !ok {
-		g.in.Set(node, copyStringSet(g.in.At(node)))
-		g.cow.inNodes[node] = struct{}{}
-	}
-	if g.in.At(node) == nil {
-		g.in.Set(node, map[string]struct{}{})
-	}
-	return g.in.At(node)
+	return writableIndexSet(g.in, node, g.cow.inNodes)
 }
 
-func (g *Graph) writableEntityAlias(alias string) map[string]struct{} {
+func (g *Graph) writableEntityAlias(alias string) *ShardedMap[struct{}] {
 	if g.cow == nil {
-		if g.entityAliasIndex == nil {
-			g.entityAliasIndex = map[string]map[string]struct{}{}
-		}
-		if g.entityAliasIndex[alias] == nil {
-			g.entityAliasIndex[alias] = map[string]struct{}{}
-		}
-		return g.entityAliasIndex[alias]
+		return writableIndexSet(g.entityAliasIndex, alias, nil)
 	}
-	if !g.cow.entityAliasCopy {
-		g.entityAliasIndex = shallowCopyMap(g.entityAliasIndex)
-		g.cow.entityAliasCopy = true
-	}
-	if _, ok := g.cow.entityAliases[alias]; !ok {
-		g.entityAliasIndex[alias] = copyStringSet(
-			g.entityAliasIndex[alias],
-		)
-		g.cow.entityAliases[alias] = struct{}{}
-	}
-	if g.entityAliasIndex[alias] == nil {
-		g.entityAliasIndex[alias] = map[string]struct{}{}
-	}
-	return g.entityAliasIndex[alias]
+	return writableIndexSet(g.entityAliasIndex, alias, g.cow.entityAliases)
 }
 
-func (g *Graph) writableEdgeAlias(alias string) map[string]struct{} {
+func (g *Graph) writableEdgeAlias(alias string) *ShardedMap[struct{}] {
 	if g.cow == nil {
-		if g.edgeAliasIndex == nil {
-			g.edgeAliasIndex = map[string]map[string]struct{}{}
-		}
-		if g.edgeAliasIndex[alias] == nil {
-			g.edgeAliasIndex[alias] = map[string]struct{}{}
-		}
-		return g.edgeAliasIndex[alias]
+		return writableIndexSet(g.edgeAliasIndex, alias, nil)
 	}
-	if !g.cow.edgeAliasCopy {
-		g.edgeAliasIndex = shallowCopyMap(g.edgeAliasIndex)
-		g.cow.edgeAliasCopy = true
-	}
-	if _, ok := g.cow.edgeAliases[alias]; !ok {
-		g.edgeAliasIndex[alias] = copyStringSet(
-			g.edgeAliasIndex[alias],
-		)
-		g.cow.edgeAliases[alias] = struct{}{}
-	}
-	if g.edgeAliasIndex[alias] == nil {
-		g.edgeAliasIndex[alias] = map[string]struct{}{}
-	}
-	return g.edgeAliasIndex[alias]
+	return writableIndexSet(g.edgeAliasIndex, alias, g.cow.edgeAliases)
 }
 
-func (g *Graph) writableEdgeType(edgeType string) map[string]struct{} {
+func (g *Graph) writableEdgeType(edgeType string) *ShardedMap[struct{}] {
 	if g.cow == nil {
-		if g.edgeTypeIndex == nil {
-			g.edgeTypeIndex = map[string]map[string]struct{}{}
-		}
-		if g.edgeTypeIndex[edgeType] == nil {
-			g.edgeTypeIndex[edgeType] = map[string]struct{}{}
-		}
-		return g.edgeTypeIndex[edgeType]
+		return writableIndexSet(g.edgeTypeIndex, edgeType, nil)
 	}
-	if !g.cow.edgeTypeCopy {
-		g.edgeTypeIndex = shallowCopyMap(g.edgeTypeIndex)
-		g.cow.edgeTypeCopy = true
-	}
-	if _, ok := g.cow.edgeTypes[edgeType]; !ok {
-		g.edgeTypeIndex[edgeType] = copyStringSet(
-			g.edgeTypeIndex[edgeType],
-		)
-		g.cow.edgeTypes[edgeType] = struct{}{}
-	}
-	if g.edgeTypeIndex[edgeType] == nil {
-		g.edgeTypeIndex[edgeType] = map[string]struct{}{}
-	}
-	return g.edgeTypeIndex[edgeType]
+	return writableIndexSet(g.edgeTypeIndex, edgeType, g.cow.edgeTypes)
 }
 
-func (g *Graph) writableIdentityKind(kind string) map[string]string {
-	if g.cow == nil {
-		if g.identityIndex[kind] == nil {
-			g.identityIndex[kind] = map[string]string{}
+func writableIndexSet(index *ShardedMap[*ShardedMap[struct{}]], key string, copied map[string]struct{}) *ShardedMap[struct{}] {
+	ids := index.At(key)
+	_, owned := copied[key]
+	if ids == nil || (copied != nil && !owned) {
+		ids = ids.Clone()
+		index.Set(key, ids)
+		if copied != nil {
+			copied[key] = struct{}{}
 		}
-		return g.identityIndex[kind]
 	}
-	if _, ok := g.cow.identityKinds[kind]; !ok {
-		g.identityIndex[kind] = shallowCopyMap(g.identityIndex[kind])
+	return ids
+}
+
+func (g *Graph) writableIdentityKind(kind string) *ShardedMap[string] {
+	identities := g.identityIndex[kind]
+	if g.cow == nil {
+		if identities == nil {
+			identities = NewShardedMap[string]()
+			g.identityIndex[kind] = identities
+		}
+	} else if _, ok := g.cow.identityKinds[kind]; !ok {
+		identities = identities.Clone()
+		g.identityIndex[kind] = identities
 		g.cow.identityKinds[kind] = struct{}{}
 	}
-	return g.identityIndex[kind]
+	return identities
 }
 
 func (g *Graph) writableFieldKind(kind string) map[string]*fieldValueIndex {
@@ -251,6 +185,9 @@ func (g *Graph) writableFieldKind(kind string) map[string]*fieldValueIndex {
 	if _, ok := g.cow.fieldKinds[kind]; !ok {
 		g.fieldIndex[kind] = shallowCopyMap(g.fieldIndex[kind])
 		g.cow.fieldKinds[kind] = struct{}{}
+	}
+	if g.fieldIndex[kind] == nil {
+		g.fieldIndex[kind] = map[string]*fieldValueIndex{}
 	}
 	return g.fieldIndex[kind]
 }
@@ -269,6 +206,9 @@ func (g *Graph) writableFieldName(kind, field string) *fieldValueIndex {
 	if _, ok := g.cow.fieldNames[kind][field]; !ok {
 		byKind[field] = byKind[field].Clone()
 		g.cow.fieldNames[kind][field] = struct{}{}
+	}
+	if byKind[field] == nil {
+		byKind[field] = NewShardedMap[*ShardedMap[struct{}]]()
 	}
 	return byKind[field]
 }

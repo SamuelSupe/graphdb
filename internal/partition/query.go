@@ -59,41 +59,19 @@ func (l *Lookup) GetEntities(ctx context.Context, ids []string, _ []string) (map
 			byPartition[Bucket(id)] = append(byPartition[Bucket(id)], EntityKey(id))
 		}
 	}
-	var requests []ReadRequest
-	for bucket, keys := range byPartition {
-		for len(keys) > 0 {
-			end := min(128, len(keys))
-			requests = append(requests, ReadRequest{Partition: bucket, Keys: keys[:end]})
-			keys = keys[end:]
+	err := l.View.visitKeys(ctx, byPartition, func(bucket uint8, row Row) error {
+		var entity graph.Entity
+		if err := decodeRecord(row, &entity); err != nil {
+			return fmt.Errorf("%w: malformed entity record: %v", ErrPartitionCorrupt, err)
 		}
-	}
-	for len(requests) > 0 {
-		batches, err := l.View.readBatch(ctx, requests)
-		if err != nil {
-			return nil, false, err
+		if row.Key != EntityKey(entity.ID) || Bucket(entity.ID) != bucket {
+			return fmt.Errorf("%w: entity fragment identity mismatch", ErrPartitionCorrupt)
 		}
-		next := requests[:0]
-		for i, batch := range batches {
-			for _, row := range batch.Rows {
-				var entity graph.Entity
-				if err := decodeRecord(row, &entity); err != nil {
-					return nil, false, fmt.Errorf("%w: malformed entity record: %v", ErrPartitionCorrupt, err)
-				}
-				if row.Key != EntityKey(entity.ID) || Bucket(entity.ID) != requests[i].Partition {
-					return nil, false, fmt.Errorf("%w: entity fragment identity mismatch", ErrPartitionCorrupt)
-				}
-				out[entity.ID] = entity
-			}
-			if len(batch.Remaining) > 0 {
-				if len(batch.Remaining) >= len(requests[i].Keys) {
-					return nil, false, fmt.Errorf("%w: entity batch made no progress", ErrPartitionCorrupt)
-				}
-				pending := requests[i]
-				pending.Keys = batch.Remaining
-				next = append(next, pending)
-			}
-		}
-		requests = next
+		out[entity.ID] = entity
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
 	}
 	return out, true, nil
 }
@@ -171,18 +149,46 @@ func (l *Lookup) VisitEntities(ctx context.Context, kind string, _ []string, sta
 	if err != nil {
 		return false, err
 	}
+	iterators := make([]*entityIterator, 0, len(initial))
 	for i, result := range initial {
 		it := &entityIterator{lookup: l, request: requests[i]}
 		if err := it.accept(result); err != nil {
 			return false, err
 		}
-		found, err := it.advance(ctx)
+		iterators = append(iterators, it)
+	}
+	// Advance empty iterators in parallel batched waves rather than falling back
+	// to sequential single-partition RPCs on sparse kind-filtered scans.
+	for len(iterators) > 0 {
+		var needBatch []*entityIterator
+		var batchReqs []ReadRequest
+		for _, it := range iterators {
+			if len(it.rows) > 0 {
+				found, err := it.advance(ctx)
+				if err != nil {
+					return false, err
+				}
+				if found {
+					heap.Push(&pending, it)
+				}
+			} else if !it.done {
+				needBatch = append(needBatch, it)
+				batchReqs = append(batchReqs, it.request)
+			}
+		}
+		if len(needBatch) == 0 {
+			break
+		}
+		results, err := l.View.readBatch(ctx, batchReqs)
 		if err != nil {
 			return false, err
 		}
-		if found {
-			heap.Push(&pending, it)
+		for i, result := range results {
+			if err := needBatch[i].accept(result); err != nil {
+				return false, err
+			}
 		}
+		iterators = needBatch
 	}
 	ids := make([]string, 0, 128)
 	for len(pending) > 0 {
@@ -252,25 +258,9 @@ func (l *Lookup) edges(ctx context.Context, id, direction string, allowed map[st
 			locations = append(locations, loc)
 			byPartition[loc.Partition] = append(byPartition[loc.Partition], EdgeKey(loc.ID))
 		}
-		edges := map[string]graph.Edge{}
-		for bucket, keys := range byPartition {
-			for len(keys) > 0 {
-				result, err := l.View.Read(ctx, bucket, ReadRequest{Keys: keys})
-				if err != nil {
-					return false, err
-				}
-				for _, row := range result.Rows {
-					var edge graph.Edge
-					if err := decodeRecord(row, &edge); err != nil {
-						return false, err
-					}
-					edges[edge.ID] = edge
-				}
-				if len(result.Remaining) >= len(keys) {
-					return false, fmt.Errorf("%w: edge batch made no progress", ErrPartitionCorrupt)
-				}
-				keys = result.Remaining
-			}
+		edges, err := l.View.fetchEdges(ctx, byPartition)
+		if err != nil {
+			return false, err
 		}
 		for _, loc := range locations {
 			edge, ok := edges[loc.ID]
@@ -297,6 +287,22 @@ func (l *Lookup) edges(ctx context.Context, id, direction string, allowed map[st
 	}
 }
 
+func (v View) fetchEdges(ctx context.Context, byPartition map[uint8][]string) (map[string]graph.Edge, error) {
+	edges := make(map[string]graph.Edge)
+	err := v.visitKeys(ctx, byPartition, func(bucket uint8, row Row) error {
+		var edge graph.Edge
+		if err := decodeRecord(row, &edge); err != nil {
+			return err
+		}
+		if row.Key != EdgeKey(edge.ID) || Bucket(edge.From) != bucket {
+			return fmt.Errorf("%w: edge fragment identity mismatch", ErrPartitionCorrupt)
+		}
+		edges[edge.ID] = edge
+		return nil
+	})
+	return edges, err
+}
+
 func (l *Lookup) VisitOutEdges(ctx context.Context, id string, allowed map[string]struct{}, start string, visit func(graph.Edge) (bool, error)) (bool, error) {
 	return l.edges(ctx, id, "out", allowed, start, 64, visit)
 }
@@ -315,6 +321,10 @@ func (l *Lookup) InEdges(ctx context.Context, id string, allowed map[string]stru
 }
 
 func ExecuteQuery(ctx context.Context, view View, request query.Request) (query.Response, error) {
+	return ExecuteQueryWithPredicate(ctx, view, request, nil)
+}
+
+func ExecuteQueryWithPredicate(ctx context.Context, view View, request query.Request, predicate func(graph.Entity) bool) (query.Response, error) {
 	if err := query.ValidateRequest(request); err != nil {
 		return query.Response{}, err
 	}
@@ -341,17 +351,25 @@ func ExecuteQuery(ctx context.Context, view View, request query.Request) (query.
 	if len(stats.EntityPages) == 0 {
 		stats.EntityPages = []query.PlannerEntityPageStat{{Shard: "empty"}}
 	}
-	for _, rt := range view.Graph.RelationTypes {
-		stats.EdgeShards = append(stats.EdgeShards, query.PlannerEdgeStat{RelationType: rt.Name, ImpactDirection: rt.ImpactDirection, EdgeCount: int(view.Graph.EdgeTypeCounts[rt.Name])})
-	}
 	g, err := graph.FromSnapshot(graph.Snapshot{Version: view.Graph.Version, CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes})
 	if err != nil {
 		return query.Response{}, err
 	}
+	for _, rt := range g.RelationTypes {
+		edgeStat := query.PlannerEdgeStat{RelationType: rt.Name, ImpactDirection: rt.ImpactDirection, EdgeCount: int(view.Graph.EdgeTypeCounts[rt.Name])}
+		stats.EdgeShards = append(stats.EdgeShards, edgeStat)
+		stats.ReverseEdgeShards = append(stats.ReverseEdgeShards, edgeStat)
+	}
 	if !query.SupportsLazyRead(request, stats) {
 		return query.Response{}, fmt.Errorf("%w: distributed execution does not support this query", query.ErrInvalid)
 	}
-	result, err := query.ExecuteContextWithOptions(ctx, g, request, query.ExecuteOptions{PlannerStats: stats, IndexLookup: lookup, EntityLookup: lookup})
+	result, err := query.ExecuteContextWithOptions(ctx, g, request, query.ExecuteOptions{
+		PlannerStats:              stats,
+		IndexLookup:               lookup,
+		EntityLookup:              lookup,
+		AuthoritativeEntityLookup: true,
+		EntityPredicate:           predicate,
+	})
 	if errors.Is(err, ErrReadBudget) {
 		err = fmt.Errorf("%w: %v", query.ErrLimitExceeded, err)
 	}

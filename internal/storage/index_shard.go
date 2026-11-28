@@ -45,6 +45,10 @@ func indexShardIDCandidates(value string) []string {
 	return []string{primary, legacy}
 }
 
+func IndexShardIDMatches(value string, shardID string) bool {
+	return indexShardIDMatches(value, shardID)
+}
+
 func indexShardIDMatches(value string, shardID string) bool {
 	for _, candidate := range indexShardIDCandidates(value) {
 		if candidate == shardID {

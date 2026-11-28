@@ -60,17 +60,17 @@ func (s *TenantStore) tenantMigrationObjectPayload(
 	targetPrefix string,
 	segmentHashes map[string]string,
 	targetFence writerFenceRef,
-) ([]byte, error) {
+) ([]byte, string, error) {
 	data, err := s.Objects.Get(ctx, object.Key)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	sourcePrefix := s.tenantObjectPrefix(tenantID)
 	relative := strings.TrimPrefix(object.Key, sourcePrefix)
 	if !tenantMigrationObjectNeedsRewrite(relative) {
-		return data, nil
+		return data, "", nil
 	}
-	rewritten, changed, err := s.rewriteTenantMigrationObject(
+	rewritten, rewrittenKey, changed, err := s.rewriteTenantMigrationObject(
 		ctx,
 		data,
 		object.Key,
@@ -82,12 +82,12 @@ func (s *TenantStore) tenantMigrationObjectPayload(
 		targetFence,
 	)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if changed {
-		return rewritten, nil
+		return rewritten, rewrittenKey, nil
 	}
-	return data, nil
+	return data, "", nil
 }
 
 func (s *TenantStore) copyTenantMigrationPage(
@@ -118,7 +118,7 @@ func (s *TenantStore) copyTenantMigrationPage(
 			defer workers.Done()
 			for index := range jobs {
 				pending := objects[index]
-				data, err := s.tenantMigrationObjectPayload(
+				data, rewrittenTargetKey, err := s.tenantMigrationObjectPayload(
 					copyCtx,
 					pending.object,
 					tenantID,
@@ -128,7 +128,11 @@ func (s *TenantStore) copyTenantMigrationPage(
 					targetFence,
 				)
 				if err == nil {
-					err = write(copyCtx, pending.targetKey, data)
+					dstKey := pending.targetKey
+					if rewrittenTargetKey != "" {
+						dstKey = rewrittenTargetKey
+					}
+					err = write(copyCtx, dstKey, data)
 				}
 				if err != nil {
 					errorMu.Lock()
@@ -154,5 +158,8 @@ sendLoop:
 	}
 	close(jobs)
 	workers.Wait()
+	if firstErr == nil {
+		firstErr = ctx.Err()
+	}
 	return hashes, copied, firstErr
 }

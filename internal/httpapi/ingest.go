@@ -176,6 +176,9 @@ func WriteIngestResult(w http.ResponseWriter, result storage.IngestResult) {
 	case storage.IngestErrorAtomicValidation:
 		status = http.StatusUnprocessableEntity
 		code = ErrorCodeAtomicValidationFailed
+	case storage.IngestErrorMutationBudget:
+		status = http.StatusUnprocessableEntity
+		code = ErrorCodeMutationBudget
 	case storage.IngestErrorAtomicSuppressed:
 		status = http.StatusConflict
 		code = ErrorCodeAtomicSuppressed
@@ -201,6 +204,11 @@ func (s *Server) ingestBatchStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	if strings.HasPrefix(r.URL.EscapedPath(), "/v1/ingest/writers/") {
 		writeError(w, http.StatusNotImplemented, "writer-routed status is unsupported; use /v1/ingest/batches/{source}/{collector_id}/{batch_id}")
 		return

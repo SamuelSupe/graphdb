@@ -51,6 +51,64 @@ func TestManifestCannotRedirectRestore(t *testing.T) {
 	}
 }
 
+func TestBackupListContinuesPastInvalidManifest(t *testing.T) {
+	const prefix = "backups/tenant-a/"
+	var failGet atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, "<ListBucketResult><IsTruncated>false</IsTruncated>")
+			for _, id := range []string{"a", "b", "c"} {
+				key := prefix + id + "/manifest.json"
+				if key > r.URL.Query().Get("start-after") {
+					fmt.Fprintf(w, "<Contents><Key>%s</Key></Contents>", key)
+				}
+			}
+			fmt.Fprint(w, "</ListBucketResult>")
+			return
+		}
+		if failGet.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/test-bucket/"+prefix), "/manifest.json")
+		if id == "b" {
+			fmt.Fprint(w, "{incomplete")
+			return
+		}
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte("snapshot")))
+		json.NewEncoder(w).Encode(Manifest{Format: Format, BackupID: id, TenantID: "tenant-a",
+			Version: 1, CreatedAt: time.Unix(100, 0).UTC(), Bytes: 8, SHA256: hash,
+			SnapshotKey: prefix + id + "/" + hash + ".parquet"})
+	}))
+	t.Cleanup(server.Close)
+	repo, err := New(t.Context(), Config{Bucket: "test-bucket", Prefix: "backups", Endpoint: server.URL,
+		PathStyle: true, AccessKeyID: "test", SecretAccessKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := repo.client.Options()
+	opts.RetryMaxAttempts = 1
+	repo.client = s3.New(opts)
+	page, err := repo.List(t.Context(), "tenant-a", "", 1)
+	if err != nil || len(page.Backups) != 1 || page.Backups[0].BackupID != "a" ||
+		page.InvalidManifests != 1 || page.NextCursor == "" {
+		t.Fatalf("first page: %+v (%v)", page, err)
+	}
+	next, err := repo.List(t.Context(), "tenant-a", page.NextCursor, 1)
+	if err != nil || len(next.Backups) != 1 || next.Backups[0].BackupID != "c" || next.InvalidManifests != 0 || next.NextCursor != "" {
+		t.Fatalf("next page: %+v (%v)", next, err)
+	}
+	broken, _ := repo.URI("tenant-a", "b")
+	if _, err := repo.ReadManifest(t.Context(), broken); !errors.Is(err, errInvalidManifest) {
+		t.Fatalf("direct restore read accepted a damaged manifest: %v", err)
+	}
+	failGet.Store(true)
+	if _, err := repo.List(t.Context(), "tenant-a", "", 1); err == nil || errors.Is(err, errInvalidManifest) {
+		t.Fatalf("remote failure misreported as invalid manifest: %v", err)
+	}
+}
+
 func TestObjectBackupMultipartAndPublication(t *testing.T) {
 	endpoint := os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT")
 	if endpoint == "" {
@@ -130,6 +188,21 @@ func TestObjectBackupMultipartAndPublication(t *testing.T) {
 	}
 	if _, err := repo.List(ctx, "tenant-b", page.NextCursor, 1); err == nil {
 		t.Fatal("accepted another tenant's cursor")
+	}
+	_, err = repo.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(repo.bucket), Key: aws.String(repo.manifestKey("tenant-a", "backup-aa")),
+		Body: strings.NewReader("{invalid"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = repo.List(ctx, "tenant-a", "", 1)
+	if err != nil || len(page.Backups) != 1 || page.Backups[0].BackupID != "backup-a" || page.InvalidManifests != 1 || page.NextCursor == "" {
+		t.Fatalf("first page with an invalid manifest: %+v %v", page, err)
+	}
+	next, err = repo.List(ctx, "tenant-a", page.NextCursor, 1)
+	if err != nil || len(next.Backups) != 1 || next.Backups[0].BackupID != "backup-b" || next.InvalidManifests != 0 {
+		t.Fatalf("next page after an invalid manifest: %+v %v", next, err)
 	}
 	cancelUpload.Store(true)
 	m.BackupID = "canceled-upload"

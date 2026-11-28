@@ -93,7 +93,7 @@ func visitIndexedPathNeighborEdge(
 		}
 		return true, nil
 	}
-	if !pathAllowsKind(entity.Kind, request.Path) {
+	if !budget.allowsEntity(entity) || !pathAllowsKind(entity.Kind, request.Path) {
 		return true, nil
 	}
 	return visit(graph.Neighbor{

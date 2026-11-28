@@ -40,10 +40,14 @@ func readParquetEntityRecordHeader(data []byte) (parquetEntityRecordHeader, erro
 }
 
 func readFirstParquetString(rowGroup *file.RowGroupReader, column int) (string, error) {
+	if column < 0 || column >= rowGroup.NumColumns() {
+		return "", fmt.Errorf("parquet entity record column %d out of range", column)
+	}
 	reader, err := rowGroup.Column(column)
 	if err != nil {
 		return "", err
 	}
+	defer reader.Close()
 	typed, ok := reader.(*file.ByteArrayColumnChunkReader)
 	if !ok {
 		return "", fmt.Errorf("parquet entity record column %d is not a string", column)
@@ -60,10 +64,14 @@ func readFirstParquetString(rowGroup *file.RowGroupReader, column int) (string, 
 }
 
 func readFirstParquetInt64(rowGroup *file.RowGroupReader, column int) (int64, error) {
+	if column < 0 || column >= rowGroup.NumColumns() {
+		return 0, fmt.Errorf("parquet entity record column %d out of range", column)
+	}
 	reader, err := rowGroup.Column(column)
 	if err != nil {
 		return 0, err
 	}
+	defer reader.Close()
 	typed, ok := reader.(*file.Int64ColumnChunkReader)
 	if !ok {
 		return 0, fmt.Errorf("parquet entity record column %d is not int64", column)

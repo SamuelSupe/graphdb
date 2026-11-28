@@ -88,27 +88,25 @@ func (s *Server) streamEntities(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
+	headerSent := false
 	for {
-		if options.Cursor == "" {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{
+		if !headerSent {
+			headerSent = true
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{
 				"stream": true, "resource": "entity", "tenant_id": tenantID, "version": result.Version,
-			}, flush); err != nil {
-				return
-			}
+			}, flush))
 		}
 		for _, entity := range result.Entities {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush); err != nil {
-				return
-			}
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush))
 		}
 		if result.NextCursor == "" {
-			_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": result.Version}, flush)
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": result.Version}, flush))
 			return
 		}
 		options.Cursor = result.NextCursor
 		result, err = s.listEntitiesPage(r.Context(), tenantID, options, target)
 		if err != nil {
-			_ = encodeStreamError(w, encoder, readStreamError(err))
+			abortScanWrite(encodeStreamError(w, encoder, readStreamError(err)))
 			return
 		}
 	}
@@ -127,7 +125,17 @@ func readStreamError(err error) StreamErrorResponse {
 	if errors.Is(err, storage.ErrReaderLoadBusy) {
 		return streamErrorResponse(buildErrorResponse(ErrorCodeTooManyRequests, err.Error(), true, nil))
 	}
-	return streamErrorResponse(errorResponseFor(http.StatusBadRequest, err, "", nil))
+	response := errorResponseFor(http.StatusInternalServerError, err, "", nil)
+	if response.Code == ErrorCodeInternal {
+		response = buildErrorResponse(ErrorCodeInternal, "internal storage error", false, nil)
+	}
+	return streamErrorResponse(response)
+}
+
+func abortScanWrite(err error) {
+	if err != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (s *Server) streamEntitiesFromCatalog(w http.ResponseWriter, r *http.Request, tenantID string, catalog storage.IndexCatalog, options storage.EntityScanOptions) {
@@ -142,25 +150,21 @@ func (s *Server) streamEntitiesFromCatalog(w http.ResponseWriter, r *http.Reques
 	flush := streamFlush(w)
 	for {
 		if options.Cursor == "" {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{
 				"stream": true, "resource": "entity", "tenant_id": tenantID, "version": catalog.Version,
-			}, flush); err != nil {
-				return
-			}
+			}, flush))
 		}
 		for _, entity := range result.Entities {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush); err != nil {
-				return
-			}
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush))
 		}
 		if result.NextCursor == "" {
-			_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version}, flush)
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version}, flush))
 			return
 		}
 		options.Cursor = result.NextCursor
 		result, err = s.Store.ListEntitiesFromCatalog(r.Context(), tenantID, catalog, options)
 		if err != nil {
-			_ = encodeStreamError(w, encoder, readStreamError(err))
+			abortScanWrite(encodeStreamError(w, encoder, readStreamError(err)))
 			return
 		}
 	}
@@ -243,27 +247,25 @@ func (s *Server) streamEdges(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
+	headerSent := false
 	for {
-		if options.Cursor == "" {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{
+		if !headerSent {
+			headerSent = true
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{
 				"stream": true, "resource": "edge", "tenant_id": tenantID, "version": result.Version,
-			}, flush); err != nil {
-				return
-			}
+			}, flush))
 		}
 		for _, edge := range result.Edges {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge": edge}, flush); err != nil {
-				return
-			}
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"edge": edge}, flush))
 		}
 		if result.NextCursor == "" {
-			_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": result.Version}, flush)
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": result.Version}, flush))
 			return
 		}
 		options.Cursor = result.NextCursor
 		result, err = s.listEdgesPage(r.Context(), tenantID, options, target)
 		if err != nil {
-			_ = encodeStreamError(w, encoder, readStreamError(err))
+			abortScanWrite(encodeStreamError(w, encoder, readStreamError(err)))
 			return
 		}
 	}
@@ -281,25 +283,21 @@ func (s *Server) streamEdgesFromCatalog(w http.ResponseWriter, r *http.Request, 
 	flush := streamFlush(w)
 	for {
 		if options.Cursor == "" {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{
 				"stream": true, "resource": "edge", "tenant_id": tenantID, "version": catalog.Version,
-			}, flush); err != nil {
-				return
-			}
+			}, flush))
 		}
 		for _, edge := range result.Edges {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge": edge}, flush); err != nil {
-				return
-			}
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"edge": edge}, flush))
 		}
 		if result.NextCursor == "" {
-			_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version}, flush)
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version}, flush))
 			return
 		}
 		options.Cursor = result.NextCursor
 		result, err = s.Store.ListEdgesFromCatalog(r.Context(), tenantID, catalog, options)
 		if err != nil {
-			_ = encodeStreamError(w, encoder, readStreamError(err))
+			abortScanWrite(encodeStreamError(w, encoder, readStreamError(err)))
 			return
 		}
 	}
@@ -398,10 +396,16 @@ func (s *Server) exportSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	started := false
 	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
+		if err := r.Context().Err(); err != nil {
+			return err
+		}
 		started = true
 		return writeGraphSnapshotJSON(w, r.Context(), tenantID, manifest.Version, g)
 	})
-	if err != nil && !started {
+	if err != nil {
+		if started {
+			panic(http.ErrAbortHandler)
+		}
 		writeReadError(w, err)
 	}
 }
@@ -458,47 +462,46 @@ func (s *Server) streamSnapshotRefs(w http.ResponseWriter, r *http.Request, tena
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
-	if err := encodeStreamItem(r.Context(), encoder, map[string]any{
+	abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{
 		"stream": "snapshot", "tenant_id": tenantID, "version": catalog.Version, "mode": "refs", "sharded": true,
-	}, flush); err != nil {
-		return
-	}
-	if err := encodeStreamItem(r.Context(), encoder, map[string]any{"schema": catalog.Schema}, flush); err != nil {
-		return
-	}
+	}, flush))
+	abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"schema": catalog.Schema}, flush))
 	for _, page := range catalog.EntityPages {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity_page": page}, flush); err != nil {
-			return
-		}
+		abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"entity_page": page}, flush))
 	}
 	for _, shard := range catalog.EdgeShards {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge_shard": shard}, flush); err != nil {
-			return
-		}
+		abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"edge_shard": shard}, flush))
 	}
-	_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version, "mode": "refs", "sharded": true}, flush)
+	abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version, "mode": "refs", "sharded": true}, flush))
 }
 
 func (s *Server) streamIndexedSnapshot(w http.ResponseWriter, r *http.Request, tenantID string, catalog storage.IndexCatalog) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
-	if err := encodeStreamItem(r.Context(), encoder, map[string]any{
+	abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{
 		"stream": "snapshot", "tenant_id": tenantID, "version": catalog.Version, "indexed_read": true,
-	}, flush); err != nil {
+	}, flush))
+	if schemaGraph, _, err := s.Store.ReadCurrentSchema(r.Context(), tenantID); err == nil && schemaGraph != nil {
+		for _, ciType := range schemaGraph.ListCITypes() {
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"ci_type": ciType}, flush))
+		}
+		for _, relType := range schemaGraph.ListRelationTypes() {
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"relation_type": relType}, flush))
+		}
+	} else if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		abortScanWrite(encodeStreamError(w, encoder, readStreamError(err)))
 		return
 	}
 	entityOptions := storage.EntityScanOptions{Limit: scanStreamPageSize}
 	for {
 		result, err := s.Store.ListEntitiesFromCatalog(r.Context(), tenantID, catalog, entityOptions)
 		if err != nil {
-			_ = encodeStreamError(w, encoder, readStreamError(err))
+			abortScanWrite(encodeStreamError(w, encoder, readStreamError(err)))
 			return
 		}
 		for _, entity := range result.Entities {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush); err != nil {
-				return
-			}
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush))
 		}
 		if result.NextCursor == "" {
 			break
@@ -509,20 +512,18 @@ func (s *Server) streamIndexedSnapshot(w http.ResponseWriter, r *http.Request, t
 	for {
 		result, err := s.Store.ListEdgesFromCatalog(r.Context(), tenantID, catalog, edgeOptions)
 		if err != nil {
-			_ = encodeStreamError(w, encoder, readStreamError(err))
+			abortScanWrite(encodeStreamError(w, encoder, readStreamError(err)))
 			return
 		}
 		for _, edge := range result.Edges {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge": edge}, flush); err != nil {
-				return
-			}
+			abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"edge": edge}, flush))
 		}
 		if result.NextCursor == "" {
 			break
 		}
 		edgeOptions.Cursor = result.NextCursor
 	}
-	_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version, "indexed_read": true}, flush)
+	abortScanWrite(encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": catalog.Version, "indexed_read": true}, flush))
 }
 
 func (s *Server) streamLoadedSnapshot(w http.ResponseWriter, r *http.Request, tenantID string, target readTarget) {

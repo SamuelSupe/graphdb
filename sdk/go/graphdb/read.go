@@ -2,6 +2,7 @@ package graphdb
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -138,7 +139,8 @@ func (c *Client) ListRelationTypes(ctx context.Context, options *ReadOptions) (o
 }
 
 func (c *Client) streamGet(ctx context.Context, path string, values url.Values) (*Stream, error) {
-	resp, err := c.do(ctx, "GET", path, "", values, nil, "")
+	headers := http.Header{"Accept": []string{"application/x-ndjson"}}
+	resp, err := c.doWithHeaders(ctx, http.MethodGet, path, "", values, nil, "", headers)
 	if err != nil {
 		return nil, err
 	}

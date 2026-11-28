@@ -22,6 +22,10 @@ const (
 	MaxValueBytes  = 1 << 20
 	MaxChanges     = 4096
 	MaxChangeBytes = 8 << 20
+
+	// A single incident-edge mutation can update several rows in the same
+	// fragment. The transaction dependency and byte limits still apply.
+	maxFragmentChanges = 32768
 )
 
 type Row struct {
@@ -49,11 +53,13 @@ type treeReadCache struct {
 }
 
 type Tree struct {
-	balanceLeaves bool
-	cache         *treeReadCache
-	saved         func(context.Context, string) error
-	Objects       storage.ObjectStore
-	Prefix        string
+	balanceLeaves   bool
+	balanceBranches bool
+	cache           *treeReadCache
+	logicalDigests  *LogicalDigestCache
+	saved           func(context.Context, string) error
+	Objects         storage.ObjectStore
+	Prefix         string
 }
 
 func validDigest(s string) bool {
@@ -63,8 +69,12 @@ func validDigest(s string) bool {
 
 func (t Tree) pageKey(hash string) string { return t.Prefix + "/" + hash[:2] + "/" + hash }
 
+func (root Root) validPageRef() bool {
+	return validDigest(root.Hash) && root.Count > 0 && root.First != "" && root.First <= root.Last
+}
+
 func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
-	if !validDigest(root.Hash) || root.Count <= 0 || root.First == "" || root.First > root.Last {
+	if !root.validPageRef() {
 		return treePage{}, fmt.Errorf("%w: invalid fragment root", ErrPartitionCorrupt)
 	}
 	if err := ctx.Err(); err != nil {
@@ -95,13 +105,17 @@ func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 }
 
 func (t Tree) loadWithData(ctx context.Context, root Root) (treePage, []byte, error) {
-	if !validDigest(root.Hash) || root.Count <= 0 || root.First == "" || root.First > root.Last {
+	if !root.validPageRef() {
 		return treePage{}, nil, fmt.Errorf("%w: invalid fragment root", ErrPartitionCorrupt)
 	}
 	if err := ctx.Err(); err != nil {
 		return treePage{}, nil, err
 	}
 	data, err := t.Objects.Get(ctx, t.pageKey(root.Hash))
+	return decodeTreePage(root, data, err)
+}
+
+func decodeTreePage(root Root, data []byte, err error) (treePage, []byte, error) {
 	if errors.Is(err, storage.ErrNotFound) {
 		return treePage{}, nil, fmt.Errorf("%w: required fragment page %s is missing", ErrPartitionCorrupt, root.Hash)
 	}
@@ -165,7 +179,7 @@ func (t Tree) save(ctx context.Context, p treePage) (Root, error) {
 		}
 	}
 	_, err = t.Objects.PutConditional(ctx, t.pageKey(root.Hash), data, storage.PutCondition{IfNoneMatch: true})
-	if err == storage.ErrConflict {
+	if errors.Is(err, storage.ErrConflict) {
 		existing, readErr := t.Objects.Get(ctx, t.pageKey(root.Hash))
 		if readErr != nil {
 			return Root{}, readErr
@@ -257,7 +271,11 @@ func (t Tree) Scan(ctx context.Context, root Root, prefix, start string, visit f
 // Update writes only paths touched by the batch. Empty values delete keys;
 // callers retain the old immutable root until graph publication and GC agree.
 func (t Tree) Update(ctx context.Context, root Root, changes []Row) (Root, error) {
-	if len(changes) > MaxChanges {
+	return t.updateRows(ctx, root, changes, MaxChanges)
+}
+
+func (t Tree) updateRows(ctx context.Context, root Root, changes []Row, maxChanges int) (Root, error) {
+	if len(changes) > maxChanges {
 		return Root{}, fmt.Errorf("%w: fragment change count exceeded", storage.ErrInvalidArgument)
 	}
 	edits := append([]Row(nil), changes...)
@@ -280,7 +298,7 @@ func (t Tree) Update(ctx context.Context, root Root, changes []Row) (Root, error
 		return Root{}, err
 	}
 	for len(refs) > 1 {
-		refs, err = t.saveBranches(ctx, refs)
+		refs, err = t.saveBranches(ctx, refs, true)
 		if err != nil {
 			return Root{}, err
 		}
@@ -308,7 +326,9 @@ func (t Tree) update(ctx context.Context, ref Root, edits []Row, depth int) ([]R
 	}
 	if len(p.Children) > 0 {
 		out := make([]Root, 0, len(p.Children)+1)
+		touched := make([]bool, 0, len(p.Children)+1)
 		at := 0
+		hasShrink := false
 		for i, child := range p.Children {
 			end := len(edits)
 			if i+1 < len(p.Children) {
@@ -316,16 +336,33 @@ func (t Tree) update(ctx context.Context, ref Root, edits []Row, depth int) ([]R
 			}
 			if end == at {
 				out = append(out, child)
+				touched = append(touched, false)
 			} else {
 				next, err := t.update(ctx, child, edits[at:end], depth+1)
 				if err != nil {
 					return nil, err
 				}
-				out = append(out, next...)
+				for _, n := range next {
+					if n.Count < child.Count {
+						hasShrink = true
+					}
+					out = append(out, n)
+					touched = append(touched, true)
+				}
+				if len(next) == 0 {
+					hasShrink = true
+				}
 			}
 			at = end
 		}
-		return t.saveBranches(ctx, out)
+		if t.balanceBranches && hasShrink && len(out) > 1 {
+			var err error
+			out, err = t.coalesceUnderfullChildren(ctx, out, touched)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return t.saveBranches(ctx, out, depth == 0)
 	}
 	rows := make([]Row, 0, len(p.Rows)+len(edits))
 	i, j := 0, 0
@@ -413,20 +450,129 @@ func balancedLeafSplit(rows []Row) int {
 	return best
 }
 
-func (t Tree) saveBranches(ctx context.Context, children []Root) ([]Root, error) {
-	var refs []Root
-	for len(children) > 0 {
-		end := min(pageEntries, len(children))
-		if len(children) == 1 {
-			refs = append(refs, children[0])
-			break
+func (t Tree) coalesceUnderfullChildren(ctx context.Context, children []Root, touched []bool) ([]Root, error) {
+	if len(children) < 2 {
+		return children, nil
+	}
+	merged := make([]Root, 0, len(children))
+	mergedTouched := make([]bool, 0, len(children))
+	for i, child := range children {
+		isTouched := i < len(touched) && touched[i]
+		if len(merged) == 0 {
+			merged = append(merged, child)
+			mergedTouched = append(mergedTouched, isTouched)
+			continue
 		}
-		ref, err := t.save(ctx, treePage{Children: children[:end]})
+		prevIdx := len(merged) - 1
+		if !isTouched && !mergedTouched[prevIdx] {
+			merged = append(merged, child)
+			mergedTouched = append(mergedTouched, false)
+			continue
+		}
+		prev := merged[prevIdx]
+		if prev.Count > pageEntries*pageEntries/4 && child.Count > pageEntries*pageEntries/4 {
+			merged = append(merged, child)
+			mergedTouched = append(mergedTouched, isTouched)
+			continue
+		}
+		leftPage, err := t.load(ctx, prev)
+		if err != nil {
+			return nil, err
+		}
+		rightPage, err := t.load(ctx, child)
+		if err != nil {
+			return nil, err
+		}
+		if len(leftPage.Children) > 0 && len(rightPage.Children) > 0 &&
+			(len(leftPage.Children) <= pageEntries/4 || len(rightPage.Children) <= pageEntries/4) &&
+			len(leftPage.Children)+len(rightPage.Children) <= pageEntries {
+			combined := make([]Root, 0, len(leftPage.Children)+len(rightPage.Children))
+			combined = append(combined, leftPage.Children...)
+			combined = append(combined, rightPage.Children...)
+			ref, err := t.save(ctx, treePage{Children: combined})
+			if err != nil {
+				return nil, err
+			}
+			merged[prevIdx] = ref
+			mergedTouched[prevIdx] = true
+			continue
+		}
+		if len(leftPage.Children) == 0 && len(rightPage.Children) == 0 &&
+			(len(leftPage.Rows) <= pageEntries/4 || len(rightPage.Rows) <= pageEntries/4) &&
+			len(leftPage.Rows)+len(rightPage.Rows) <= pageEntries {
+			totalBytes := 0
+			for _, row := range leftPage.Rows {
+				totalBytes += len(row.Key) + len(row.Value)
+			}
+			for _, row := range rightPage.Rows {
+				totalBytes += len(row.Key) + len(row.Value)
+			}
+			if totalBytes <= pageBytes {
+				combined := make([]Row, 0, len(leftPage.Rows)+len(rightPage.Rows))
+				combined = append(combined, leftPage.Rows...)
+				combined = append(combined, rightPage.Rows...)
+				ref, err := t.save(ctx, treePage{Rows: combined})
+				if err != nil {
+					return nil, err
+				}
+				merged[prevIdx] = ref
+				mergedTouched[prevIdx] = true
+				continue
+			}
+		}
+		merged = append(merged, child)
+		mergedTouched = append(mergedTouched, isTouched)
+	}
+	return merged, nil
+}
+
+func (t Tree) saveBranches(ctx context.Context, children []Root, allowUnwrap bool) ([]Root, error) {
+	if !t.balanceBranches {
+		var refs []Root
+		for len(children) > 0 {
+			end := min(pageEntries, len(children))
+			if len(children) == 1 {
+				refs = append(refs, children[0])
+				break
+			}
+			ref, err := t.save(ctx, treePage{Children: children[:end]})
+			if err != nil {
+				return nil, err
+			}
+			refs = append(refs, ref)
+			children = children[end:]
+		}
+		return refs, nil
+	}
+	if len(children) == 0 {
+		return nil, nil
+	}
+	if len(children) == 1 {
+		if allowUnwrap {
+			return children, nil
+		}
+		ref, err := t.save(ctx, treePage{Children: children})
+		if err != nil {
+			return nil, err
+		}
+		return []Root{ref}, nil
+	}
+	groups := (len(children) + pageEntries - 1) / pageEntries
+	base := len(children) / groups
+	extra := len(children) % groups
+	refs := make([]Root, 0, groups)
+	offset := 0
+	for g := 0; g < groups; g++ {
+		size := base
+		if g < extra {
+			size++
+		}
+		ref, err := t.save(ctx, treePage{Children: children[offset : offset+size]})
 		if err != nil {
 			return nil, err
 		}
 		refs = append(refs, ref)
-		children = children[end:]
+		offset += size
 	}
 	return refs, nil
 }

@@ -1,12 +1,20 @@
 import { objectEditor } from './forms.js';
 import { t } from './i18n.js';
-import { tenant, pathID, params, json, parseJSON, request } from './api.js';
+import { tenant, pathID, params, json, parseJSON, request, uuid } from './api.js';
 import { e, button, field, select, editor, tabs, notice, table, details, pre, rawDetails, structuredView, valueView, fieldSummary, link, objectInput, dialog, toast, confirmRequest, download, bindActions } from './ui.js';
 import { graphView, resultGraph } from './graph.js';
 
 let dataTab = 'entities', schemaTab = 'entityTypes', queryTab = 'query', resultTab = 'table';
+const MAX_CACHED_TENANTS = 20;
 const drafts = new Map();
 const dataStates = new Map();
+function setBounded(map, key, value) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > MAX_CACHED_TENANTS) {
+    map.delete(map.keys().next().value);
+  }
+}
 const samples = {
   json: { op: 'match', limit: 50, timeout_ms: 10000, profile: true },
   graphql: { query: 'query Browse($request: QueryRequest!) { graph(request: $request) { version results stats } }', variables: { request: { op: 'match', limit: 50, timeout_ms: 10000 } } },
@@ -15,7 +23,7 @@ const samples = {
 
 export async function dataPage(ctx) {
   const state = dataStates.get(tenant) || { filters: { kind: '', source: '', type: '', from: '', limit: 50 }, cursor: '', history: [], page: 1 };
-  dataStates.set(tenant, state);
+  setBounded(dataStates, tenant, state);
   let { filters, cursor, history, page } = state;
   let selected, entities = [], edges = [], version;
   const load = async () => {
@@ -56,7 +64,7 @@ export async function dataPage(ctx) {
     else if (action === 'next') { history.push(cursor); cursor = load.next; page++; await load(); }
     else if (action === 'previous') { cursor = history.pop() || ''; page--; await load(); }
     else if (action === 'export') {
-      const result = await ctx.get('data', '/v1/export/snapshot/stream?inline=true', { raw: true }); download(result, tenant + '-snapshot.ndjson', 'application/x-ndjson');
+      const result = await ctx.get('data', '/v1/export/snapshot/stream?inline=true', { blob: true, timeoutMs: 600000 }); download(result, tenant + '-snapshot.ndjson', 'application/x-ndjson');
     } else if (action === 'neighbors') {
       const result = await ctx.get('data', '/v1/query', { method: 'POST', body: { op: 'neighbors', id: selected.id, direction: 'both', limit: 100, timeout_ms: 10000 } });
       dialog('neighbors', resultGraph({ ...result, results: [{ entity: selected }, ...(result.results || [])] }) + '<div class="neighbor-detail"></div>' + details('response', result), async () => {}, 'close');
@@ -72,7 +80,7 @@ export async function dataPage(ctx) {
       const relationship = dataTab === 'relationships';
       const key = action === 'delete' ? relationship ? 'delete_edges' : 'delete_entities' : relationship ? 'upsert_edges' : 'upsert_entities';
       const item = action === 'write' ? relationship ? { type: '', from: '', to: '', fields: {} } : { id: '', kind: '', fields: {} } : action === 'delete' ? selected.id : selected;
-      const body = { expected_version: version, idempotency_key: crypto.randomUUID(), mutations: { [key]: [item] } };
+      const body = { expected_version: version, idempotency_key: uuid(), mutations: { [key]: [item] } };
       await confirmRequest(ctx, action === 'delete' ? 'remove' : action === 'edit' ? 'edit' : 'write', 'data', '/v1/commits', body, { destructive: action === 'delete', resource: selected?.id, after: load });
     }
   };
@@ -107,7 +115,7 @@ export async function schemaPage(ctx) {
         toast(t('success')); await load();
       }, deleting ? 'remove' : 'save', deleting);
     } else {
-      const body = { idempotency_key: crypto.randomUUID(), mutations: { [deleting ? definition.remove : definition.upsert]: [deleting ? name : item] } };
+      const body = { idempotency_key: uuid(), mutations: { [deleting ? definition.remove : definition.upsert]: [deleting ? name : item] } };
       if (version !== undefined) body.expected_version = version;
       await confirmRequest(ctx, deleting ? 'remove' : 'schemaJSON', 'data', '/v1/commits', body, { destructive: deleting, resource: name, after: load });
     }
@@ -120,7 +128,7 @@ export async function queryPage(ctx) {
   let state = drafts.get(draftKey) || { mode: 'json', text: json(samples.json), result: null, elapsed: 0, next: '' };
   state.texts ||= { [state.mode]: state.text };
   state.example ||= 'match';
-  drafts.set(draftKey, state);
+  setBounded(drafts, draftKey, state);
   let queryController, saved = [], running = [];
   const retain = () => { const textarea = ctx.root.querySelector('[name=queryPayload]'); if (textarea) state.texts[state.mode] = state.text = textarea.value; };
   const execute = async (body, path = '/v1/query') => {
@@ -140,7 +148,7 @@ export async function queryPage(ctx) {
   };
   const loadLists = async () => {
     const tab = queryTab;
-    if (tab === 'savedQueries') saved = (await ctx.get('admin', '/v1/query/templates')).queries || [];
+    if (tab === 'savedQueries') saved = (await ctx.get('data', '/v1/query/templates')).queries || [];
     else running = (await ctx.get('admin', '/v1/queries/running')).queries || [];
     if (ctx.valid() && queryTab === tab) draw();
   };

@@ -6,19 +6,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
-	SDKVersion       = "2.6.5"
+	SDKVersion       = "2.7.0"
 	defaultUserAgent = "graphdb-go-sdk/" + SDKVersion
 )
 
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
-	tenantID   string
-	headers    http.Header
-	userAgent  string
+	baseURL        *url.URL
+	httpClient     *http.Client
+	ownsHTTPClient bool
+	tenantID       string
+	headers        http.Header
+	userAgent      string
 }
 
 type Option func(*Client)
@@ -28,17 +30,34 @@ func NewClient(baseURL string, options ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("base URL must include scheme and host")
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, fmt.Errorf("base URL must include http or https scheme and host")
 	}
 	client := &Client{
-		baseURL:    parsed,
-		httpClient: http.DefaultClient,
-		headers:    http.Header{},
-		userAgent:  defaultUserAgent,
+		baseURL:   parsed,
+		headers:   http.Header{},
+		userAgent: defaultUserAgent,
 	}
 	for _, option := range options {
 		option(client)
+	}
+	if client.httpClient == nil {
+		var transport *http.Transport
+		if base, ok := http.DefaultTransport.(*http.Transport); ok && base != nil {
+			transport = base.Clone()
+		} else {
+			transport = &http.Transport{}
+		}
+		transport.MaxIdleConns = 128
+		transport.MaxIdleConnsPerHost = 64
+		transport.IdleConnTimeout = 90 * time.Second
+		client.httpClient = &http.Client{
+			Transport: transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		client.ownsHTTPClient = true
 	}
 	return client, nil
 }
@@ -46,7 +65,13 @@ func NewClient(baseURL string, options ...Option) (*Client, error) {
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(client *Client) {
 		if httpClient != nil {
-			client.httpClient = httpClient
+			copied := *httpClient
+			if copied.CheckRedirect == nil {
+				copied.CheckRedirect = func(*http.Request, []*http.Request) error {
+					return http.ErrUseLastResponse
+				}
+			}
+			client.httpClient = &copied
 		}
 	}
 }
@@ -83,9 +108,23 @@ func WithUserAgent(userAgent string) Option {
 
 func (c *Client) ForTenant(tenantID string) *Client {
 	clone := *c
+	clone.ownsHTTPClient = false
 	clone.tenantID = strings.TrimSpace(tenantID)
 	clone.headers = c.headers.Clone()
 	return &clone
+}
+
+func (c *Client) CloseIdleConnections() {
+	if c != nil && c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
+	}
+}
+
+func (c *Client) Close() error {
+	if c != nil && c.ownsHTTPClient {
+		c.CloseIdleConnections()
+	}
+	return nil
 }
 
 func (c *Client) TenantID() string {

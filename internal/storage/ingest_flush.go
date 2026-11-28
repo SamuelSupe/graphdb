@@ -204,7 +204,7 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		// though every request was admitted. Split only before a durable plan
 		// exists: a prepared cohort must retain its original atomic publication.
 		var pressure *BackpressureError
-		split := errors.Is(err, ErrIngestWALRecordTooLarge) || errors.Is(err, ErrIngestWALRecordExceedsSegment)
+		split := errors.Is(err, ErrIngestWALRecordTooLarge) || errors.Is(err, ErrIngestWALRecordExceedsSegment) || errors.Is(err, ErrIngestWALFull)
 		if errors.As(err, &pressure) {
 			for _, reason := range pressure.Reasons {
 				if reason.Code == "commit_tail_too_long" {
@@ -228,8 +228,6 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 			}
 		}
 		if terminalIngestFlushError(err) {
-			if errors.Is(err, ErrTenantDisabled) || errors.Is(err, ErrTenantDeleted) {
-			}
 			failureCtx, failureCancel := context.WithTimeout(s.runCtx, s.config.FlushTimeout)
 			defer failureCancel()
 			terminalResults := make([]IngestResult, len(items))
@@ -239,12 +237,12 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 				var persistErr error
 				if !errors.Is(err, errIngestGenerationFenced) {
 					if resolver, ok := s.store.(ingestFailureResolver); ok {
+						entries[index].Prepared = pending.envelope.Prepared
 						result, persistErr = resolver.ResolveIngestFailure(
 							failureCtx,
 							pending.envelope.TenantID,
-							pending.envelope.Request,
+							entries[index],
 							result,
-							pending.envelope.AcceptedAt,
 							finishedAt,
 						)
 					} else if failureStore, ok := s.store.(ingestFailureStore); ok {
@@ -268,13 +266,13 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 				}
 				terminalResults[index] = result
 			}
-			if retryIndex, appendErr := s.appendTerminalBatch(items, terminalResults); appendErr != nil {
+			if retryItems, appendErr := s.appendTerminalBatchPending(items, terminalResults); appendErr != nil {
 				flushErr = appendErr
 				s.recordError(appendErr)
-				for _, retry := range items[retryIndex:] {
+				for _, retry := range retryItems {
 					s.setPendingRetry(retry, appendErr)
 				}
-				return items[retryIndex:]
+				return retryItems
 			}
 			return nil
 		}
@@ -286,13 +284,13 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		}
 		return items
 	}
-	if retryIndex, err := s.appendTerminalBatch(items, results); err != nil {
+	if retryItems, err := s.appendTerminalBatchPending(items, results); err != nil {
 		flushErr = err
 		s.recordError(err)
-		for _, retry := range items[retryIndex:] {
+		for _, retry := range retryItems {
 			s.setPendingRetry(retry, err)
 		}
-		return items[retryIndex:]
+		return retryItems
 	}
 	return nil
 }

@@ -49,11 +49,11 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	if !options.replicated {
 		options.listBefore = time.Now()
 	}
-	ctx = context.WithValue(ctx, fileListDirectoriesKey{}, make(fileListDirectories))
+	ctx = WithFileListPageCache(ctx)
 	var admission *taskExecutionAdmission
-	if parent, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
+	if parent, ok := s.taskAdmissionFromContext(ctx); ok {
 		parent.release()
-		admission = &taskExecutionAdmission{execution: parent.execution}
+		admission = &taskExecutionAdmission{store: s, execution: parent.execution}
 		defer func() {
 			admission.release()
 			if !parent.acquire(ctx) && err == nil {
@@ -78,7 +78,7 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return report, err
 		}
 		next := batch.Checkpoint.NextCursor
-		if next == "" || next <= options.CheckpointCursor {
+		if !gcCursorAdvanced(options.CheckpointCursor, next) {
 			return report, fmt.Errorf("gc checkpoint did not advance from %q", options.CheckpointCursor)
 		}
 		if options.RunBudget > 0 && time.Since(started) >= options.RunBudget {
@@ -100,9 +100,67 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	}
 }
 
+func gcCursorAdvanced(prev, next string) bool {
+	if next == "" || next == prev {
+		return false
+	}
+	if prev == "" {
+		return true
+	}
+	if prevPrefix, prevVer, ok := splitShardedSnapshotCursor(prev); ok {
+		if nextPrefix, nextVer, nextSharded := splitShardedSnapshotCursor(next); nextSharded && nextPrefix == prevPrefix {
+			return nextVer > prevVer || (nextVer == prevVer && next > prev)
+		}
+		if strings.HasPrefix(next, prevPrefix) {
+			if nextVer, ok := snapshotIdentityFromKey(next); ok {
+				return nextVer >= prevVer
+			}
+			// Transition from sharded/v<N>/... into ~sharded-orphans/ is forward.
+			return next > prev
+		}
+		return next > prevPrefix
+	}
+	return next > prev
+}
+
+func splitShardedSnapshotCursor(cursor string) (snapshotPrefix string, version int64, ok bool) {
+	idx := strings.Index(cursor, "/snapshots/sharded/v")
+	if idx < 0 {
+		return "", 0, false
+	}
+	snapshotPrefix = cursor[:idx+len("/snapshots/")]
+	version, ok = shardedSnapshotVersionFromCursor(snapshotPrefix, cursor)
+	return snapshotPrefix, version, ok
+}
+
+const gcReportKeySampleLimit = 10000
+
+func appendBoundedKeys(dst []string, src []string) []string {
+	if len(src) == 0 || len(dst) >= gcReportKeySampleLimit {
+		return dst
+	}
+	remaining := gcReportKeySampleLimit - len(dst)
+	if len(src) > remaining {
+		src = src[:remaining]
+	}
+	return append(dst, src...)
+}
+
 func mergeGCReport(total *GCReport, batch GCReport) {
 	if total.TenantID == "" {
 		*total = batch
+		if len(total.DeletedKeys) > gcReportKeySampleLimit {
+			total.DeletedKeys = total.DeletedKeys[:gcReportKeySampleLimit]
+		}
+		if len(total.CommitCleanup.DeletedKeys) > gcReportKeySampleLimit {
+			total.CommitCleanup.DeletedKeys = total.CommitCleanup.DeletedKeys[:gcReportKeySampleLimit]
+		}
+		if len(total.Checkpoint.DeletedKeys) > gcReportKeySampleLimit {
+			total.Checkpoint.DeletedKeys = total.Checkpoint.DeletedKeys[:gcReportKeySampleLimit]
+		}
+		if len(total.Checkpoint.PlannedKeys) > gcReportKeySampleLimit {
+			total.Checkpoint.PlannedKeys = total.Checkpoint.PlannedKeys[:gcReportKeySampleLimit]
+		}
 		return
 	}
 	total.ManifestVersion = batch.ManifestVersion
@@ -127,15 +185,15 @@ func mergeGCReport(total *GCReport, batch GCReport) {
 		total.SnapshotCleanupSkippedReason = batch.SnapshotCleanupSkippedReason
 	}
 	total.IndexCleanupError = batch.IndexCleanupError
-	total.DeletedKeys = append(total.DeletedKeys, batch.DeletedKeys...)
+	total.DeletedKeys = appendBoundedKeys(total.DeletedKeys, batch.DeletedKeys)
 	c, b := &total.CommitCleanup, batch.CommitCleanup
 	c.ManifestVersion = b.ManifestVersion
 	c.ReferencedKeys = b.ReferencedKeys
 	c.Deleted += b.Deleted
 	c.KeptFuture += b.KeptFuture
-	c.DeletedKeys = append(c.DeletedKeys, b.DeletedKeys...)
-	c.FutureKeys = append(c.FutureKeys, b.FutureKeys...)
-	c.InvalidKeys = append(c.InvalidKeys, b.InvalidKeys...)
+	c.DeletedKeys = appendBoundedKeys(c.DeletedKeys, b.DeletedKeys)
+	c.FutureKeys = appendBoundedKeys(c.FutureKeys, b.FutureKeys)
+	c.InvalidKeys = appendBoundedKeys(c.InvalidKeys, b.InvalidKeys)
 	cp, bp := &total.Checkpoint, batch.Checkpoint
 	cp.NextCursor, cp.LastKey = bp.NextCursor, bp.LastKey
 	cp.ScannedKeys += bp.ScannedKeys
@@ -143,9 +201,9 @@ func mergeGCReport(total *GCReport, batch GCReport) {
 	cp.SkippedByCursor += bp.SkippedByCursor
 	cp.Deleted += bp.Deleted
 	cp.Planned += bp.Planned
-	cp.DeletedKeys = append(cp.DeletedKeys, bp.DeletedKeys...)
-	cp.PlannedKeys = append(cp.PlannedKeys, bp.PlannedKeys...)
-	cp.FailedKeys = append(cp.FailedKeys, bp.FailedKeys...)
+	cp.DeletedKeys = appendBoundedKeys(cp.DeletedKeys, bp.DeletedKeys)
+	cp.PlannedKeys = appendBoundedKeys(cp.PlannedKeys, bp.PlannedKeys)
+	cp.FailedKeys = appendBoundedKeys(cp.FailedKeys, bp.FailedKeys)
 	for _, prefix := range bp.ScannedPrefixes {
 		found := false
 		for _, seen := range cp.ScannedPrefixes {

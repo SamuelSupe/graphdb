@@ -1,20 +1,20 @@
 package storage
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/wal"
 )
 
-const ingestWALDurableFile = ".durable"
-const ingestWALTailSlotBytes = 44
+const ingestWALDurableFile = wal.DurableFileName
+const ingestWALTailSlotBytes = wal.TailSlotBytes
 
-var ingestWALCRCTable = crc32.MakeTable(crc32.Castagnoli)
+var ingestWALCRCTable = wal.CRCTable
 
 type ingestWALDurableTail struct {
 	startLSN   uint64
@@ -26,76 +26,41 @@ type ingestWALDurableTail struct {
 }
 
 func (t *ingestWALDurableTail) valid() bool {
-	return t.startLSN > 0 && t.offset >= 0 && t.lastLSN >= t.startLSN-1 && (t.offset == 0) == (t.lastLSN == t.startLSN-1)
-}
-func loadIngestWALDurableTail(dir string) (*ingestWALDurableTail, error) {
-	data, err := os.ReadFile(filepath.Join(dir, ingestWALDurableFile))
-	if os.IsNotExist(err) {
-		return nil, nil
+	wt := wal.DurableTail{
+		StartLSN:   t.startLSN,
+		Offset:     t.offset,
+		LastLSN:    t.lastLSN,
+		Checkpoint: t.checkpoint,
+		Sequence:   t.sequence,
+		Uncertain:  t.uncertain,
 	}
-	if err != nil {
+	return wt.Valid()
+}
+
+func loadIngestWALDurableTail(dir string) (*ingestWALDurableTail, error) {
+	wt, err := wal.LoadDurableTail(dir)
+	if err != nil || wt == nil {
 		return nil, err
 	}
-	bad := func() (*ingestWALDurableTail, error) {
-		return nil, fmt.Errorf("%w: invalid durable WAL boundary", ErrIngestWALCorrupt)
-	}
-	table := ingestWALCRCTable
-	if len(data) == 36 {
-		if string(data[:4]) != "GIWD" || data[4] != 1 || data[5] > 1 || crc32.Checksum(data[:32], table) != binary.BigEndian.Uint32(data[32:]) {
-			return bad()
-		}
-		tail := &ingestWALDurableTail{startLSN: binary.BigEndian.Uint64(data[8:16]), offset: int64(binary.BigEndian.Uint64(data[16:24])), lastLSN: binary.BigEndian.Uint64(data[24:32]), checkpoint: data[5] == 1}
-		if !tail.valid() {
-			return bad()
-		}
-		return tail, nil
-	}
-	if len(data) != 2*ingestWALTailSlotBytes {
-		return bad()
-	}
-	var valid []*ingestWALDurableTail
-	for slot := range 2 {
-		b := data[slot*ingestWALTailSlotBytes : (slot+1)*ingestWALTailSlotBytes]
-		if string(b[:4]) != "GIWD" || b[4] != 2 || b[5] > 1 || b[6] != 0 || b[7] != 0 || crc32.Checksum(b[:40], table) != binary.BigEndian.Uint32(b[40:]) {
-			continue
-		}
-		t := &ingestWALDurableTail{sequence: binary.BigEndian.Uint64(b[8:16]), startLSN: binary.BigEndian.Uint64(b[16:24]), offset: int64(binary.BigEndian.Uint64(b[24:32])), lastLSN: binary.BigEndian.Uint64(b[32:40]), checkpoint: b[5] == 1}
-		if t.valid() && t.sequence%2 == uint64(slot) {
-			valid = append(valid, t)
-		}
-	}
-	if len(valid) == 0 {
-		return bad()
-	}
-	latest := valid[0]
-	if len(valid) == 2 {
-		old := valid[1]
-		if old.sequence > latest.sequence {
-			old, latest = latest, old
-		}
-		if latest.sequence-old.sequence != 1 || latest.lastLSN < old.lastLSN || latest.startLSN < old.startLSN {
-			return bad()
-		}
-	} else {
-		// The damaged slot may contain a newer ACK. Replay valid frames, but never
-		// use this older proof to truncate a corrupt or incomplete suffix.
-		latest.uncertain = true
-	}
-	return latest, nil
+	return &ingestWALDurableTail{
+		startLSN:   wt.StartLSN,
+		offset:     wt.Offset,
+		lastLSN:    wt.LastLSN,
+		checkpoint: wt.Checkpoint,
+		sequence:   wt.Sequence,
+		uncertain:  wt.Uncertain,
+	}, nil
 }
+
 func encodeIngestWALTail(t ingestWALDurableTail) []byte {
-	b := make([]byte, ingestWALTailSlotBytes)
-	copy(b, "GIWD")
-	b[4] = 2
-	if t.checkpoint {
-		b[5] = 1
-	}
-	binary.BigEndian.PutUint64(b[8:16], t.sequence)
-	binary.BigEndian.PutUint64(b[16:24], t.startLSN)
-	binary.BigEndian.PutUint64(b[24:32], uint64(t.offset))
-	binary.BigEndian.PutUint64(b[32:40], t.lastLSN)
-	binary.BigEndian.PutUint32(b[40:], crc32.Checksum(b[:40], ingestWALCRCTable))
-	return b
+	return wal.EncodeDurableTail(wal.DurableTail{
+		StartLSN:   t.startLSN,
+		Offset:     t.offset,
+		LastLSN:    t.lastLSN,
+		Checkpoint: t.checkpoint,
+		Sequence:   t.sequence,
+		Uncertain:  t.uncertain,
+	})
 }
 func (s *ingestWALWriterState) persistDurableTail(lsn uint64) error {
 	segment := s.segments[s.current]
@@ -159,6 +124,13 @@ func (s *ingestWALWriterState) persistDurableTail(lsn uint64) error {
 	return nil
 }
 func (s *ingestWALWriterState) initializeDurableTail() error {
+	if s.wal.config.Durability != IngestWALDurabilitySync {
+		path := filepath.Join(s.wal.config.Dir, ingestWALDurableFile)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return syncDirectory(s.wal.config.Dir)
+	}
 	segment := s.segments[s.current]
 	if segment.size > 0 {
 		file, err := os.OpenFile(segment.path, os.O_RDWR, 0600)

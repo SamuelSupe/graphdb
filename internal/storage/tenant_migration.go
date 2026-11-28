@@ -3,11 +3,14 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 )
 
 const tenantMigrationSampleLimit = 100
@@ -184,12 +187,7 @@ func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		if err != nil {
 			return report, err
 		}
-		target.deleteWriteCache(targetTenantID)
-		target.deleteCachedTenantMetadata(targetTenantID)
-		target.deleteCachedTenantConfig(targetTenantID)
-		target.deleteCachedSourcePolicy(targetTenantID)
-		target.deleteCachedIndexCatalog(targetTenantID)
-		target.clearObjectKeyPrefix(targetPrefix)
+		target.invalidateTenantState(targetTenantID)
 	}
 	writeObject := func(writeCtx context.Context, key string, data []byte) error {
 		return target.putTenantObject(writeCtx, targetTenantID, key, data)
@@ -204,9 +202,33 @@ func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	if err != nil {
 		return report, err
 	}
+	// Pin mutable index catalogs before scanning so a concurrent source commit
+	// beyond sourceManifest.Version cannot poison target's index catalogs.
+	var pinnedIndexCatalogData []byte
+	if raw, err := source.Objects.Get(ctx, sourcePrefix+"indexes/catalog.parquet"); err == nil {
+		if catalog, decErr := decodeIndexCatalogObject(ctx, raw); decErr == nil && catalog.Version <= sourceManifest.Version {
+			pinnedIndexCatalogData = raw
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return report, err
+	}
+	var pinnedRevIndexCatalogData []byte
+	if len(pinnedIndexCatalogData) > 0 {
+		if raw, err := source.Objects.Get(ctx, sourcePrefix+"extensions/v1.1/reverse-index/catalog.json"); err == nil {
+			var rev ReverseIndexCatalog
+			if json.Unmarshal(raw, &rev) == nil && rev.Version <= sourceManifest.Version {
+				pinnedRevIndexCatalogData = raw
+			}
+		} else if !errors.Is(err, ErrNotFound) {
+			return report, err
+		}
+	}
+
 	found := false
 	manifestFound := false
 	manifestSample := -1
+	indexCatalogSample := -1
+	revIndexCatalogSample := -1
 	err = scanObjectPrefix(ctx, source.Objects, sourcePrefix, func(
 		objects []ObjectInfo,
 	) error {
@@ -220,7 +242,8 @@ func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 			report.Objects++
 			report.Bytes += object.Size
 			if relative == "control/writer-lease.parquet" ||
-				strings.HasPrefix(relative, "coordination/") {
+				strings.HasPrefix(relative, "coordination/") ||
+				tenantMigrationRelativeExceedsVersion(object.Key, relative, sourceManifest.Version) {
 				report.Skipped++
 				continue
 			}
@@ -238,6 +261,20 @@ func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 			if relative == "manifest.parquet" {
 				manifestFound = true
 				manifestSample = sampleIndex
+				continue
+			}
+			if relative == "indexes/catalog.parquet" {
+				indexCatalogSample = sampleIndex
+				if len(pinnedIndexCatalogData) == 0 {
+					report.Skipped++
+				}
+				continue
+			}
+			if relative == "extensions/v1.1/reverse-index/catalog.json" {
+				revIndexCatalogSample = sampleIndex
+				if len(pinnedRevIndexCatalogData) == 0 {
+					report.Skipped++
+				}
 				continue
 			}
 			if strings.HasPrefix(relative, "commits/segments/") {
@@ -283,6 +320,38 @@ func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	if !found || !manifestFound {
 		return report, fmt.Errorf("source tenant %q has no manifest object", sourceTenantID)
 	}
+	if len(pinnedIndexCatalogData) > 0 {
+		rewritten, _, _, err := source.rewriteTenantMigrationObject(
+			targetCtx, pinnedIndexCatalogData, sourcePrefix+"indexes/catalog.parquet",
+			sourceTenantID, targetTenantID, sourcePrefix, targetPrefix, segmentHashes, targetFence,
+		)
+		if err != nil {
+			return report, err
+		}
+		if err := writeObject(targetCtx, targetPrefix+"indexes/catalog.parquet", rewritten); err != nil {
+			return report, err
+		}
+		report.Copied++
+		if indexCatalogSample >= 0 {
+			report.Samples[indexCatalogSample].SHA256 = codec.ContentHash(rewritten)
+		}
+	}
+	if len(pinnedRevIndexCatalogData) > 0 {
+		rewritten, _, _, err := source.rewriteTenantMigrationObject(
+			targetCtx, pinnedRevIndexCatalogData, sourcePrefix+"extensions/v1.1/reverse-index/catalog.json",
+			sourceTenantID, targetTenantID, sourcePrefix, targetPrefix, segmentHashes, targetFence,
+		)
+		if err != nil {
+			return report, err
+		}
+		if err := writeObject(targetCtx, targetPrefix+"extensions/v1.1/reverse-index/catalog.json", rewritten); err != nil {
+			return report, err
+		}
+		report.Copied++
+		if revIndexCatalogSample >= 0 {
+			report.Samples[revIndexCatalogSample].SHA256 = codec.ContentHash(rewritten)
+		}
+	}
 	manifest := cloneManifest(sourceManifest)
 	rewriteTenantMigrationManifest(
 		&manifest,
@@ -312,9 +381,72 @@ func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	return report, nil
 }
 
+func tenantMigrationRelativeExceedsVersion(key, relative string, maxVersion int64) bool {
+	if strings.HasPrefix(relative, "snapshots/") {
+		if version, ok := snapshotIdentityFromKey(key); ok {
+			return version > maxVersion
+		}
+		if strings.HasPrefix(relative, "snapshots/sharded/v") {
+			rest := strings.TrimPrefix(relative, "snapshots/sharded/v")
+			if slash := strings.IndexByte(rest, '/'); slash > 0 {
+				if version, err := parseStrictPositiveVersion(rest[:slash]); err == nil {
+					return version > maxVersion
+				}
+			}
+		}
+	}
+	if strings.HasPrefix(relative, "indexes/parquet/versions/v") {
+		rest := strings.TrimPrefix(relative, "indexes/parquet/versions/v")
+		if slash := strings.IndexByte(rest, '/'); slash > 0 {
+			if version, err := parseStrictPositiveVersion(rest[:slash]); err == nil {
+				return version > maxVersion
+			}
+		}
+	}
+	return false
+}
+
+func parseStrictPositiveVersion(raw string) (int64, error) {
+	if raw == "" {
+		return 0, fmt.Errorf("empty version")
+	}
+	var v int64
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < '0' || raw[i] > '9' {
+			return 0, fmt.Errorf("invalid version %q", raw)
+		}
+		v = v*10 + int64(raw[i]-'0')
+	}
+	return v, nil
+}
+
+func isVersionedIndexCatalogRelative(relative string) bool {
+	if !strings.HasPrefix(relative, "indexes/parquet/versions/v") || !strings.HasSuffix(relative, ".parquet") {
+		return false
+	}
+	rest := strings.TrimPrefix(relative, "indexes/parquet/versions/v")
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return false
+	}
+	tail := rest[slash+1:]
+	if tail == "catalog.parquet" {
+		return true
+	}
+	if strings.HasPrefix(tail, "catalogs/") && !strings.Contains(strings.TrimPrefix(tail, "catalogs/"), "/") {
+		return true
+	}
+	return false
+}
+
+func isHashedVersionedIndexCatalogRelative(relative string) bool {
+	return isVersionedIndexCatalogRelative(relative) && strings.Contains(relative, "/catalogs/")
+}
+
 func tenantMigrationObjectNeedsRewrite(relative string) bool {
 	return relative == "manifest.parquet" ||
 		relative == "indexes/catalog.parquet" ||
+		isVersionedIndexCatalogRelative(relative) ||
 		relative == "extensions/v1.1/reverse-index/catalog.json" ||
 		strings.HasPrefix(relative, "indexes/entities/by-id/") ||
 		strings.HasPrefix(relative, "snapshots/sharded/") &&
@@ -323,13 +455,13 @@ func tenantMigrationObjectNeedsRewrite(relative string) bool {
 			strings.HasSuffix(relative, "/manifest.parquet")
 }
 
-func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []byte, key string, tenantID string, targetTenantID string, sourcePrefix string, targetPrefix string, segmentHashes map[string]string, targetFence writerFenceRef) ([]byte, bool, error) {
+func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []byte, key string, tenantID string, targetTenantID string, sourcePrefix string, targetPrefix string, segmentHashes map[string]string, targetFence writerFenceRef) ([]byte, string, bool, error) {
 	relative := strings.TrimPrefix(key, sourcePrefix)
 	switch {
 	case relative == "manifest.parquet":
 		manifest, err := decodeParquetManifest(ctx, data)
 		if err != nil {
-			return nil, false, err
+			return nil, "", false, err
 		}
 		rewriteTenantMigrationManifest(
 			&manifest,
@@ -340,11 +472,11 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 			segmentHashes,
 		)
 		rewritten, err := marshalParquetManifest(ctx, manifest)
-		return rewritten, true, err
+		return rewritten, "", true, err
 	case strings.HasPrefix(relative, "snapshots/sharded/") && strings.HasSuffix(relative, "/catalog.parquet"):
 		catalog, err := decodeParquetShardedSnapshotCatalog(ctx, data)
 		if err != nil {
-			return nil, false, err
+			return nil, "", false, err
 		}
 		catalog.TenantID = targetTenantID
 		catalog.Key = rewriteTenantObjectKey(catalog.Key, sourcePrefix, targetPrefix)
@@ -356,11 +488,11 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 			catalog.EdgeShards[i].Key = rewriteTenantObjectKey(catalog.EdgeShards[i].Key, sourcePrefix, targetPrefix)
 		}
 		rewritten, err := marshalParquetShardedSnapshotCatalog(ctx, catalog)
-		return rewritten, true, err
-	case relative == "indexes/catalog.parquet":
-		catalog, err := decodeParquetIndexCatalog(ctx, data)
+		return rewritten, "", true, err
+	case relative == "indexes/catalog.parquet" || isVersionedIndexCatalogRelative(relative):
+		catalog, err := decodeIndexCatalogObject(ctx, data)
 		if err != nil {
-			return nil, false, err
+			return nil, "", false, err
 		}
 		catalog.TenantID = targetTenantID
 		for i := range catalog.Indexes {
@@ -390,11 +522,23 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 		}
 		catalog.contentHash = ""
 		rewritten, err := marshalParquetIndexCatalog(ctx, catalog)
-		return rewritten, true, err
+		if err != nil {
+			return nil, "", false, err
+		}
+		rewrittenTargetKey := ""
+		if isHashedVersionedIndexCatalogRelative(relative) {
+			newHash, hashErr := indexCatalogContentHash(catalog)
+			if hashErr != nil {
+				return nil, "", false, hashErr
+			}
+			dir := path.Dir(relative)
+			rewrittenTargetKey = targetPrefix + path.Join(dir, identity.ObjectSegment(newHash)+".parquet")
+		}
+		return rewritten, rewrittenTargetKey, true, nil
 	case relative == "extensions/v1.1/reverse-index/catalog.json":
 		var catalog ReverseIndexCatalog
 		if err := json.Unmarshal(data, &catalog); err != nil {
-			return nil, false, err
+			return nil, "", false, err
 		}
 		catalog.TenantID = targetTenantID
 		for i := range catalog.EdgeShards {
@@ -408,29 +552,29 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 			}
 		}
 		rewritten, err := json.Marshal(catalog)
-		return rewritten, true, err
+		return rewritten, "", true, err
 	case strings.HasPrefix(relative, "indexes/entities/by-id/"):
 		id, _, err := s.entityIDFromRecordKey(tenantID, key)
 		if err != nil {
-			return nil, false, err
+			return nil, "", false, err
 		}
 		record, err := decodeParquetEntityRecord(ctx, data, tenantID, id)
 		if err != nil {
-			return nil, false, err
+			return nil, "", false, err
 		}
 		record.TenantID = targetTenantID
 		record.Page = rewriteTenantObjectKey(record.Page, sourcePrefix, targetPrefix)
 		record.ContentHash = entityRecordContentHash(record)
 		rewritten, err := marshalParquetEntityRecord(ctx, record)
-		return rewritten, true, err
+		return rewritten, "", true, err
 	case strings.HasPrefix(relative, "backups/") && strings.HasSuffix(relative, "/manifest.parquet"):
 		_, backupID, ok := s.backupManifestIdentityFromKey(key)
 		if !ok {
-			return nil, false, fmt.Errorf("invalid backup manifest key")
+			return nil, "", false, fmt.Errorf("invalid backup manifest key")
 		}
 		manifest, err := s.loadBackupManifestFromBytes(ctx, data, tenantID, backupID)
 		if err != nil {
-			return nil, false, err
+			return nil, "", false, err
 		}
 		manifest.TenantID = targetTenantID
 		manifest.BackupRecordKey = rewriteTenantObjectKey(manifest.BackupRecordKey, sourcePrefix, targetPrefix)
@@ -438,9 +582,9 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 			manifest.Objects[i].Key = rewriteTenantObjectKey(manifest.Objects[i].Key, sourcePrefix, targetPrefix)
 		}
 		rewritten, err := marshalParquetTaskResult(ctx, targetTenantID, backupID+"-manifest", taskResult(manifest))
-		return rewritten, true, err
+		return rewritten, "", true, err
 	default:
-		return nil, false, nil
+		return nil, "", false, nil
 	}
 }
 

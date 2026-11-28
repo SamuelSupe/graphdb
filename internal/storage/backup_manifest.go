@@ -7,65 +7,20 @@ import (
 	"net/url"
 	"path"
 	"strings"
-	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/backup"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
-const backupManifestFormat = "graphdb-tenant-backup-manifest-v1"
+const backupManifestFormat = backup.ManifestFormat
 
-type TenantBackupManifest struct {
-	Format          string              `json:"format"`
-	TenantID        string              `json:"tenant_id"`
-	BackupID        string              `json:"backup_id"`
-	Version         int64               `json:"version"`
-	CreatedAt       time.Time           `json:"created_at"`
-	BackupRecordKey string              `json:"backup_record_key"`
-	Objects         []BackupObjectRef   `json:"objects,omitempty"`
-	Stats           BackupManifestStats `json:"stats"`
-}
-
-type BackupObjectRef struct {
-	Role         string `json:"role"`
-	Key          string `json:"key"`
-	Kind         string `json:"kind,omitempty"`
-	Field        string `json:"field,omitempty"`
-	RelationType string `json:"relation_type,omitempty"`
-	Shard        string `json:"shard,omitempty"`
-	IndexType    string `json:"index_type,omitempty"`
-	Bytes        int64  `json:"bytes,omitempty"`
-	ETag         string `json:"etag,omitempty"`
-	SHA256       string `json:"sha256,omitempty"`
-	RowCount     int    `json:"row_count,omitempty"`
-	ContentHash  string `json:"content_hash,omitempty"`
-	SchemaHash   string `json:"schema_hash,omitempty"`
-	Required     bool   `json:"required,omitempty"`
-}
-
-type BackupManifestStats struct {
-	ObjectCount int   `json:"object_count"`
-	TotalBytes  int64 `json:"total_bytes"`
-	Entities    int   `json:"entities"`
-	Edges       int   `json:"edges"`
-}
-
-type BackupIntegrityReport struct {
-	Status      string    `json:"status"`
-	CheckedAt   time.Time `json:"checked_at"`
-	Objects     int       `json:"objects"`
-	Bytes       int64     `json:"bytes"`
-	ManifestKey string    `json:"manifest_key,omitempty"`
-	Issues      []string  `json:"issues,omitempty"`
-}
-
-type RestoreIntegrityReport struct {
-	Status              string    `json:"status"`
-	CheckedAt           time.Time `json:"checked_at"`
-	ManifestVersion     int64     `json:"manifest_version,omitempty"`
-	SnapshotVersion     int64     `json:"snapshot_version,omitempty"`
-	IndexCatalogVersion int64     `json:"index_catalog_version,omitempty"`
-	Issues              []string  `json:"issues,omitempty"`
-}
+type (
+	TenantBackupManifest   = backup.TenantBackupManifest
+	BackupObjectRef        = backup.BackupObjectRef
+	BackupManifestStats    = backup.BackupManifestStats
+	BackupIntegrityReport  = backup.BackupIntegrityReport
+	RestoreIntegrityReport = backup.RestoreIntegrityReport
+)
 
 func (s *TenantStore) putBackupManifest(ctx context.Context, tenantID string, backupID string, manifest TenantBackupManifest) (string, error) {
 	manifest.Format = backupManifestFormat

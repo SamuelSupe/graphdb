@@ -214,9 +214,16 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 		return TenantInfo{}, fmt.Errorf("%w: unsupported tenant status %q", ErrInvalidArgument, status)
 	}
 
-	if status != TenantStatusActive && s.ingestBarrier != nil {
-		if err := s.ingestBarrier(ctx, tenantID); err != nil {
+	if status != TenantStatusActive {
+		resume, err := s.pauseLocalIngest(ctx, tenantID)
+		if err != nil {
 			return TenantInfo{}, err
+		}
+		defer resume()
+		if s.localFileStore() == nil && s.ingestBarrier != nil {
+			if err := s.ingestBarrier(ctx, tenantID); err != nil {
+				return TenantInfo{}, err
+			}
 		}
 	}
 	info, err := s.mutateTenantMetadata(ctx, tenantID, true, func(metadata *TenantMetadata) {
@@ -376,6 +383,7 @@ func (s *TenantStore) purgeTenantLocked(
 	s.deleteCachedTenantConfig(tenantID)
 	s.deleteCachedSourcePolicy(tenantID)
 	s.deleteCachedIndexCatalog(tenantID)
+	s.deleteCachedTenantCollectorStatuses(tenantID)
 	s.deleteCachedWriterLease(tenantID)
 	s.deleteCachedTenantPurgeTombstone(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
@@ -668,7 +676,9 @@ func (s *TenantStore) getTenantMetadataForStatus(ctx context.Context, tenantID s
 }
 
 func (s *TenantStore) getTenantMetadataWithMetaFresh(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
-	s.clearWriterObjectKey(s.tenantMetadataKey(tenantID))
+	if s.localFileStore() == nil {
+		s.clearWriterObjectKey(s.tenantMetadataKey(tenantID))
+	}
 	return s.getTenantMetadataWithMeta(ctx, tenantID)
 }
 

@@ -2,7 +2,6 @@ package query
 
 import (
 	"context"
-	"fmt"
 	"sort"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -58,6 +57,9 @@ func scanRuntimeFieldIndexIDs(
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
+		if err := ConsumeIndexScanCost(ctx, 1); err != nil {
+			return false, err
+		}
 		return matchesKey(key), nil
 	}
 	bounds := runtimeIndexBounds(fieldFilters)
@@ -94,7 +96,7 @@ func runtimeIndexBounds(fieldFilters []Filter) []graph.FieldIndexRange {
 		case "gt", "gte", "lt", "lte", "prefix":
 			number, numeric := asFloat(filter.Value)
 			bounds = append(bounds, graph.FieldIndexRange{
-				Op: filter.Op, Text: fmt.Sprint(filter.Value), Number: number, Numeric: numeric,
+				Op: filter.Op, Text: canonicalScalarText(filter.Value), Number: number, Numeric: numeric,
 			})
 		}
 	}

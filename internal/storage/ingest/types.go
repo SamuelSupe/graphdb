@@ -95,11 +95,21 @@ type CollectorStatus struct {
 }
 
 type IngestBatchRecord struct {
-	TenantID   string        `json:"tenant_id,omitempty"`
-	Request    IngestRequest `json:"request"`
-	Result     IngestResult  `json:"result"`
-	StartedAt  time.Time     `json:"started_at"`
-	FinishedAt time.Time     `json:"finished_at"`
+	TenantID          string                   `json:"tenant_id,omitempty"`
+	Request           IngestRequest            `json:"request"`
+	Result            IngestResult             `json:"result"`
+	StartedAt         time.Time                `json:"started_at"`
+	FinishedAt        time.Time                `json:"finished_at"`
+	ReplicatedReceipt *ReplicatedIngestReceipt `json:"replicated_receipt,omitempty"`
+}
+
+// ReplicatedIngestReceipt binds a terminal tenant record to its original HA acceptance.
+type ReplicatedIngestReceipt struct {
+	Generation int64  `json:"generation"`
+	Index      uint64 `json:"accepted_lsn"`
+	Epoch      uint64 `json:"accepted_epoch,omitempty"`
+	Digest     string `json:"request_digest"`
+	SkipReason string `json:"skip_reason,omitempty"`
 }
 
 func (item *IngestItem) UnmarshalJSON(data []byte) error {

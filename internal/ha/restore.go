@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"net/http"
 	"net/url"
 	"path"
 
@@ -59,90 +60,150 @@ func (a *Application) clearRestore(ctx context.Context, tenant, id string) error
 	return nil
 }
 
-func (a *Application) stageRestore(ctx context.Context, cmd command) ([]byte, error) {
+var errRestoreStageConflict = errors.New("restore stage conflict")
+
+// restoreApplyOutcome enforces explicit classification between non-fatal
+// failover/staging conflicts and fatal local corruption during restore apply.
+type restoreApplyOutcome struct {
+	task        storage.Task
+	response    []byte
+	conflictMsg string
+	fatalErr    error
+}
+
+func restoreConflictOutcome(msg string) restoreApplyOutcome {
+	return restoreApplyOutcome{conflictMsg: msg}
+}
+
+func restoreFatalOutcome(err error) restoreApplyOutcome {
+	return restoreApplyOutcome{fatalErr: err}
+}
+
+func (o restoreApplyOutcome) toCommandResult() ([]byte, error) {
+	if o.fatalErr != nil {
+		return nil, o.fatalErr
+	}
+	if o.conflictMsg != "" {
+		return resultJSON(http.StatusConflict, map[string]any{"code": "restore_stage_conflict", "error": o.conflictMsg})
+	}
+	if o.response != nil {
+		return o.response, nil
+	}
+	return json.Marshal(o.task)
+}
+
+func checkProposalConflict(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var response httpResult
+	if json.Unmarshal(data, &response) == nil && response.Status == http.StatusConflict {
+		return storage.ErrConflict
+	}
+	return nil
+}
+
+func (a *Application) stageRestore(ctx context.Context, cmd command) restoreApplyOutcome {
 	if len(cmd.IDs) != 1 {
-		return nil, fmt.Errorf("invalid restore task identity")
+		return restoreFatalOutcome(fmt.Errorf("invalid restore task identity"))
 	}
 	task, err := a.Store.GetTask(ctx, cmd.Tenant, cmd.IDs[0])
 	if err != nil {
-		return nil, err
+		return restoreFatalOutcome(err)
 	}
 	if task.Status != storage.TaskStatusQueued {
-		return nil, a.clearRestore(ctx, cmd.Tenant, task.ID)
+		if err := a.clearRestore(ctx, cmd.Tenant, task.ID); err != nil {
+			return restoreFatalOutcome(err)
+		}
+		return restoreApplyOutcome{response: []byte{}}
 	}
 	var part restorePart
 	if err := json.Unmarshal(cmd.Body, &part); err != nil {
-		return nil, err
+		return restoreFatalOutcome(err)
 	}
 	digest, err := hex.DecodeString(part.SHA256)
 	if !transferTask(task) || err != nil || len(digest) != sha256.Size || part.Bytes <= 0 ||
-		part.Bytes > a.MaxSnapshotBytes || part.Part < 0 || part.Part >= (part.Bytes+restoreChunkBytes-1)/restoreChunkBytes ||
+		part.Part < 0 || part.Part >= (part.Bytes+restoreChunkBytes-1)/restoreChunkBytes ||
 		int64(len(cmd.Restore)) != min(restoreChunkBytes, part.Bytes-part.Part*restoreChunkBytes) {
-		return nil, fmt.Errorf("invalid restore part")
+		return restoreFatalOutcome(fmt.Errorf("invalid restore part"))
 	}
 	prefix := a.restorePrefix(cmd.Tenant, task.ID)
 	manifest, err := json.Marshal(part.restoreManifest)
 	if err != nil {
-		return nil, err
+		return restoreFatalOutcome(err)
 	}
 	previous, err := a.Files.Get(ctx, prefix+"manifest.json")
-	if errors.Is(err, storage.ErrNotFound) && part.Part == 0 {
+	if errors.Is(err, storage.ErrNotFound) {
+		if part.Part != 0 {
+			return restoreConflictOutcome("restore manifest missing")
+		}
 		if err := a.Files.Put(ctx, prefix+"manifest.json", manifest); err != nil {
-			return nil, err
+			return restoreFatalOutcome(err)
 		}
 	} else if err != nil {
-		return nil, err
+		return restoreFatalOutcome(err)
 	} else if !bytes.Equal(previous, manifest) {
-		return nil, fmt.Errorf("restore input changed during transfer")
+		return restoreConflictOutcome("restore input changed during transfer")
 	}
 	key := restorePartKey(prefix, part.Part)
 	previous, err = a.Files.Get(ctx, key)
 	if err == nil {
 		if !bytes.Equal(previous, cmd.Restore) {
-			return nil, fmt.Errorf("restore part conflicts with persisted input")
+			return restoreConflictOutcome("restore part conflicts with persisted input")
 		}
-		return nil, nil
+		return restoreApplyOutcome{response: []byte{}}
 	}
 	if !errors.Is(err, storage.ErrNotFound) {
-		return nil, err
+		return restoreFatalOutcome(err)
 	}
-	return nil, a.Files.Put(ctx, key, cmd.Restore)
+	if err := a.Files.Put(ctx, key, cmd.Restore); err != nil {
+		return restoreFatalOutcome(err)
+	}
+	return restoreApplyOutcome{response: []byte{}}
 }
 
-func (a *Application) runStagedRestore(ctx context.Context, cmd command) (storage.Task, error) {
+func (a *Application) runStagedRestore(ctx context.Context, cmd command) restoreApplyOutcome {
 	task, err := a.Store.GetTask(ctx, cmd.Tenant, cmd.IDs[0])
 	if err != nil {
-		return task, err
+		return restoreFatalOutcome(err)
 	}
 	if task.Status != storage.TaskStatusQueued {
-		return task, a.clearRestore(ctx, cmd.Tenant, task.ID)
+		if err := a.clearRestore(ctx, cmd.Tenant, task.ID); err != nil {
+			return restoreFatalOutcome(err)
+		}
+		return restoreApplyOutcome{task: task}
 	}
 	var manifest restoreManifest
 	if err := json.Unmarshal(cmd.Body, &manifest); err != nil {
-		return task, err
+		return restoreFatalOutcome(err)
 	}
 	prefix := a.restorePrefix(cmd.Tenant, task.ID)
 	persisted, err := a.Files.Get(ctx, prefix+"manifest.json")
+	if errors.Is(err, storage.ErrNotFound) {
+		return restoreConflictOutcome(fmt.Sprintf("%s: restore manifest missing", errRestoreStageConflict))
+	}
 	if err != nil {
-		return task, err
+		return restoreFatalOutcome(err)
 	}
 	var expected restoreManifest
 	if json.Unmarshal(persisted, &expected) != nil || expected != manifest || !transferTask(task) || manifest.Maintenance != storage.PreparedMaintenanceTask(task) {
-		return task, fmt.Errorf("restore manifest mismatch")
+		return restoreConflictOutcome(fmt.Sprintf("%s: restore manifest mismatch", errRestoreStageConflict))
 	}
+	// Once expected == manifest matches, any missing or corrupted staged part
+	// bytes represent local replica corruption and MUST remain fatal.
 	source := &restoreReader{ctx: ctx, app: a, prefix: prefix, manifest: manifest}
 	digest := sha256.New()
 	size, err := io.Copy(digest, source)
 	err = errors.Join(err, source.Close())
 	if err != nil {
-		return task, err
+		return restoreFatalOutcome(err)
 	}
 	if size != manifest.Bytes || hex.EncodeToString(digest.Sum(nil)) != manifest.SHA256 {
-		return task, fmt.Errorf("restore transfer integrity failed")
+		return restoreFatalOutcome(fmt.Errorf("restore transfer integrity failed"))
 	}
 	source = &restoreReader{ctx: ctx, app: a, prefix: prefix, manifest: manifest}
 	if manifest.Maintenance {
-		task, err = a.Store.PublishReplicatedMaintenance(ctx, cmd.Tenant, task.ID, source, a.MaxSnapshotBytes)
+		task, err = a.Store.PublishReplicatedMaintenance(ctx, cmd.Tenant, task.ID, source, max(a.MaxSnapshotBytes, manifest.Bytes))
 		if errors.Is(err, storage.ErrConflict) {
 			err = nil
 		}
@@ -151,9 +212,12 @@ func (a *Application) runStagedRestore(ctx context.Context, cmd command) (storag
 	}
 	err = errors.Join(err, source.Close())
 	if err != nil {
-		return task, err
+		return restoreFatalOutcome(err)
 	}
-	return task, a.clearRestore(ctx, cmd.Tenant, task.ID)
+	if err := a.clearRestore(ctx, cmd.Tenant, task.ID); err != nil {
+		return restoreFatalOutcome(err)
+	}
+	return restoreApplyOutcome{task: task}
 }
 
 type restoreReader struct {
@@ -289,7 +353,13 @@ func (c *Cluster) publishRestore(ctx context.Context, task storage.Task, manifes
 		return err
 	}
 	data, err := c.propose(ctx, cmd)
-	if err == nil && manifest.Maintenance {
+	if err != nil {
+		return err
+	}
+	if err := checkProposalConflict(data); err != nil {
+		return err
+	}
+	if manifest.Maintenance {
 		var result storage.Task
 		if err = json.Unmarshal(data, &result); err == nil && result.ID == task.ID && result.Status == storage.TaskStatusQueued {
 			return storage.ErrConflict
@@ -303,12 +373,16 @@ func (c *Cluster) replicateRestore(ctx context.Context, task storage.Task, input
 	manifest := restoreManifest{Bytes: int64(len(input)), SHA256: hex.EncodeToString(digest[:]), Generation: generation}
 	c.App.mu.RLock()
 	prefix := c.App.restorePrefix(task.TenantID, task.ID)
+	maxSnapshotBytes := c.App.MaxSnapshotBytes
 	previous, err := c.App.Files.Get(ctx, prefix+"manifest.json")
+	c.App.mu.RUnlock()
 	var persisted restoreManifest
 	if err == nil && (json.Unmarshal(previous, &persisted) != nil || persisted != manifest) {
 		err = fmt.Errorf("restore input changed during transfer")
 	} else if errors.Is(err, storage.ErrNotFound) {
 		err = nil
+		// Walk the directory outside App.mu.RLock so Raft applyLoop is not
+		// stalled behind a full-store scan; FileStore's own ioGate coordinates IO.
 		objects, listErr := c.App.Files.List(ctx, "")
 		if listErr != nil {
 			err = listErr
@@ -318,12 +392,11 @@ func (c *Cluster) replicateRestore(ctx context.Context, task storage.Task, input
 			for _, object := range objects {
 				total += object.Size + 1024
 			}
-			if total > c.App.MaxSnapshotBytes {
+			if total > maxSnapshotBytes {
 				err = fmt.Errorf("restore staging exceeds snapshot byte budget; increase GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES on every replica")
 			}
 		}
 	}
-	c.App.mu.RUnlock()
 	if err != nil {
 		message := err.Error()
 		cmd, err := newCommand("task")
@@ -357,7 +430,11 @@ func (c *Cluster) replicateRestore(ctx context.Context, task storage.Task, input
 		if err != nil {
 			return err
 		}
-		if _, err := c.propose(ctx, cmd); err != nil {
+		resp, err := c.propose(ctx, cmd)
+		if err != nil {
+			return err
+		}
+		if err := checkProposalConflict(resp); err != nil {
 			return err
 		}
 	}

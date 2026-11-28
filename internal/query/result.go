@@ -15,7 +15,7 @@ var defaultIDSortSpec = []SortSpec{{Field: "id"}}
 
 func compareResults(left, right Result, specs []SortSpec) int {
 	if len(specs) == 0 && left.Path != nil && right.Path != nil {
-		return strings.Compare(resultIdentity(left), resultIdentity(right))
+		return comparePathIdentityOrder(*left.Path, *right.Path)
 	}
 	if len(specs) == 0 {
 		specs = defaultIDSortSpec
@@ -33,6 +33,25 @@ func compareResults(left, right Result, specs []SortSpec) int {
 		return cmp
 	}
 	return strings.Compare(resultIdentity(left), resultIdentity(right))
+}
+
+func comparePathIdentityOrder(left, right graph.Path) int {
+	n := min(len(left.Edges), len(right.Edges))
+	for i := 0; i < n; i++ {
+		if order := strings.Compare(left.Edges[i].ID, right.Edges[i].ID); order != 0 {
+			return order
+		}
+	}
+	if order := cmp.Compare(len(left.Edges), len(right.Edges)); order != 0 {
+		return order
+	}
+	m := min(len(left.Entities), len(right.Entities))
+	for i := 0; i < m; i++ {
+		if order := strings.Compare(left.Entities[i].ID, right.Entities[i].ID); order != 0 {
+			return order
+		}
+	}
+	return cmp.Compare(len(left.Entities), len(right.Entities))
 }
 
 func resultValue(result Result, field string) any {

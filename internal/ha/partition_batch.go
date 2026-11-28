@@ -33,6 +33,11 @@ func (c *Cluster) registerFragmentBatch(mux *http.ServeMux) {
 			c.partitionError(w, err)
 			return
 		}
+		recovery := recoveryGCStart(actions[0])
+		if recovery && c.config.Protocol < partition.RecoveryGCProtocol {
+			c.partitionError(w, fmt.Errorf("%w: snapshot recovery GC requires Raft protocol %d", storage.ErrConflict, partition.RecoveryGCProtocol))
+			return
+		}
 		if storage.ValidateTenantID(actions[0].Tenant) != nil || actions[0].Generation <= 0 {
 			c.partitionError(w, fmt.Errorf("%w: invalid fragment batch scope", storage.ErrInvalidArgument))
 			return
@@ -57,6 +62,15 @@ func (c *Cluster) registerFragmentBatch(mux *http.ServeMux) {
 			if actions[i].Operation == "prepare" && c.config.Protocol >= partition.BalancedLeafProtocol {
 				actions[i].Revision = partition.BalancedLeafRevision
 			}
+			if actions[i].Operation == "prepare" && c.config.Protocol >= partition.LargeFragmentProtocol {
+				actions[i].Revision = partition.LargeFragmentRevision
+			}
+			if actions[i].Operation == "prepare" && c.config.Protocol >= partition.BalancedBranchProtocol {
+				actions[i].Revision = partition.BalancedBranchRevision
+			}
+			if recovery {
+				actions[i].Revision = partition.RecoveryGCRevision
+			}
 		}
 		if c.config.Protocol >= partition.PlannedGCProtocol && actions[0].Operation == "data_gc_step" && actions[0].Purpose != "cancel" {
 			if err := c.planGCSteps(r.Context(), actions); err != nil {
@@ -67,6 +81,7 @@ func (c *Cluster) registerFragmentBatch(mux *http.ServeMux) {
 		cmd, err := newCommand("graph_fragment_batch")
 		if err == nil {
 			cmd.Tenant = actions[0].Tenant
+			cmd.snapshotCleanup = partitionSnapshotCleanup(actions[0])
 			cmd.Body, err = json.Marshal(actions)
 		}
 		if err != nil {
@@ -74,6 +89,19 @@ func (c *Cluster) registerFragmentBatch(mux *http.ServeMux) {
 			return
 		}
 		data, err := c.propose(r.Context(), cmd)
+		if actions[0].Operation == "prepare" && snapshotBudgetRejected(err) {
+			receipts, replayErr := c.replayPartitionPrepares(r.Context(), actions)
+			if replayErr != nil {
+				c.partitionError(w, replayErr)
+				return
+			}
+			if len(receipts) != 0 {
+				data, err = resultJSON(http.StatusOK, receipts)
+			} else {
+				c.partitionError(w, errors.Join(partition.ErrPrepareSnapshotBudget, err))
+				return
+			}
+		}
 		if err != nil {
 			c.writeError(w, err)
 			return

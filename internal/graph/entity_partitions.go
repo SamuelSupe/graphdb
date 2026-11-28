@@ -3,13 +3,12 @@ package graph
 import (
 	"context"
 	"crypto/sha256"
-	"maps"
 	"strings"
 )
 
 const entityPartitionCount = 64
 
-type entityPartitions [entityPartitionCount]map[string]struct{}
+type entityPartitions [entityPartitionCount]*ShardedMap[struct{}]
 
 // EntityStorageShard preserves the persisted 64-bucket entity page layout.
 func EntityStorageShard(id string) string {
@@ -41,9 +40,9 @@ func (g *Graph) shareEntityPartitions() *entityPartitions {
 		for id := range g.Entities.All() {
 			n := entityPartition(id)
 			if parts[n] == nil {
-				parts[n] = make(map[string]struct{})
+				parts[n] = NewShardedMap[struct{}]()
 			}
-			parts[n][id] = struct{}{}
+			parts[n].Set(id, struct{}{})
 		}
 		g.entityPartitions = parts
 	}
@@ -59,7 +58,7 @@ func (g *Graph) VisitEntityStorageShard(shard string, visit func(Entity) error) 
 		if shard != string([]byte{hex[n>>4], hex[n&15]}) {
 			continue
 		}
-		for id := range ids {
+		for id := range ids.Keys() {
 			if err := visit(g.Entities.At(id)); err != nil {
 				return err
 			}
@@ -81,7 +80,7 @@ func (g *Graph) VisitEdgeStorageShard(ctx context.Context, relationType, shard s
 		if reverse {
 			ids = g.in.At(entity.ID)
 		}
-		for id := range ids {
+		for id := range ids.Keys() {
 			edge := g.Edges.At(id)
 			if relationType == "" || edge.Type == relationType {
 				if err := visit(edge); err != nil {
@@ -106,16 +105,13 @@ func (g *Graph) refreshEntityPartitions(tracker *mutationFingerprintTracker) {
 		}
 		n := entityPartition(id)
 		if !copied[n] {
-			parts[n] = maps.Clone(parts[n])
-			if parts[n] == nil {
-				parts[n] = make(map[string]struct{})
-			}
+			parts[n] = parts[n].Clone()
 			copied[n] = true
 		}
 		if exists {
-			parts[n][id] = struct{}{}
+			parts[n].Set(id, struct{}{})
 		} else {
-			delete(parts[n], id)
+			parts[n].Delete(id)
 		}
 	}
 	g.entityPartitions = &parts
