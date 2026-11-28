@@ -33,6 +33,23 @@ func (s *TenantStore) publishGraph(tenantID string, loaded loadedGraph) {
 	}
 }
 
+// publishGraphIfGeneration fences deferred replication post-commit publications
+// so an earlier cached graph (for example from a pre-restore lease renewal)
+// cannot overwrite ReaderCache after a later restore, purge, or newer commit
+// invalidated the tenant within the same ApplyReplicated transaction.
+func (s *TenantStore) publishGraphIfGeneration(tenantID string, loaded loadedGraph, expectedGen uint64) {
+	publication := s.readPublication(tenantID)
+	publication.mu.Lock()
+	defer publication.mu.Unlock()
+	if publication.generation.Load() != expectedGen {
+		return
+	}
+	publication.generation.Add(1)
+	for _, cache := range s.readerCaches() {
+		cache.publishGraph(tenantID, loaded)
+	}
+}
+
 // Direct file replacement (including restore) invalidates readers before a
 // newly published graph can be installed. This also fences in-flight cache loads.
 func (s *TenantStore) localFileChanged(key string) {

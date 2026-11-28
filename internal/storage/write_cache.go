@@ -135,7 +135,8 @@ func (s *TenantStore) setWriteCacheContext(ctx context.Context, tenantID string,
 	publish := true
 	defer func() {
 		if publish {
-			if !deferReplicationCommit(ctx, func() { s.publishGraph(tenantID, loaded) }) {
+			expectedGen := s.readGeneration(tenantID)
+			if !deferReplicationCommit(ctx, func() { s.publishGraphIfGeneration(tenantID, loaded, expectedGen) }) {
 				s.publishGraph(tenantID, loaded)
 			}
 		}
